@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from task_mcp.store import LegacyStore, Store, TaskError, default_database
+from task_mcp.store import Store, TaskError, default_database
 
 
 @pytest.fixture
@@ -260,42 +260,15 @@ def test_order_and_deterministic_export(store, tmp_path):
     assert one["format"] == "task-mcp/v1"
 
 
-def test_migrate_legacy_database_without_losing_ids_bodies_or_audit(tmp_path):
-    database = tmp_path / "legacy.sqlite3"
-    legacy = LegacyStore(database, actor="legacy")
-    design = legacy.add_task(str(tmp_path / "repo"), "Design", "Rationale")
-    auto = legacy.add_task(str(tmp_path / "repo"), "Auto", "Existing result", kind="auto")
-    legacy.update_task(auto["id"], 1, {"status": "review", "evidence": "Old test"})
-    with sqlite3.connect(database) as db:
+def test_current_schema_reopens_without_changing_task_or_audit(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    created = task(store, project, ws)
+    with sqlite3.connect(store.path) as db:
         before_events = db.execute("SELECT count(*) FROM events").fetchone()[0]
-    migrated = Store(database)
-    tasks = migrated.get_tasks([design["id"], auto["id"]])["items"]
-    assert tasks[0]["body"] == "Rationale" and not tasks[0]["accepted"]
-    assert tasks[1]["body"] == "Existing result" and tasks[1]["accepted"]
-    assert tasks[1]["attempts"][0]["state"] == "review"
-    assert tasks[1]["attempts"][0]["evidence"] == "Old test"
-    assert migrated.list_workstreams(str(tmp_path / "repo"))["items"][0]["scope"] == sorted(
-        [design["id"], auto["id"]]
-    )
-    with sqlite3.connect(database) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+    reopened = Store(store.path)
+    assert reopened.get_tasks([created["id"]])["items"][0]["id"] == created["id"]
+    with sqlite3.connect(store.path) as db:
         assert db.execute("SELECT count(*) FROM events").fetchone()[0] >= before_events
-    assert Store(database).get_tasks([auto["id"]])["items"][0]["id"] == auto["id"]
-
-
-def test_migrate_intermediate_v2_database_to_selected_attempt_schema(tmp_path):
-    database = tmp_path / "intermediate.sqlite3"
-    legacy = LegacyStore(database)
-    created = legacy.add_task(str(tmp_path / "repo"), "Existing", kind="auto")
-    with sqlite3.connect(database) as db:
-        db.row_factory = sqlite3.Row
-        Store._migrate(db)
-        db.execute("PRAGMA user_version=2")
-        db.commit()
-    migrated = Store(database)
-    assert migrated.get_tasks([created["id"]])["items"][0]["selected_attempt_id"] is None
-    with sqlite3.connect(database) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_same_revision_concurrent_updates_allow_one_writer(store, tmp_path):

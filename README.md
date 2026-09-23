@@ -133,12 +133,9 @@ does not update the service. The CLI can print the same view:
 .venv/bin/task-mcp --export-workstream wst_your_workstream_id
 ```
 
-The schema upgrades existing v0.1 databases in place to v3, preserving project
-and task IDs, bodies, and audit rows. Legacy tracks become workstreams and their
-tasks enter corresponding scopes. Legacy Auto tasks are marked accepted as a
-migration assertion; Design tasks remain pending. Keep a database backup before
-upgrading a live installation. For a live WAL database, use SQLite's backup API
-instead of copying only the main `.sqlite3` file.
+The service creates its current SQLite schema in a private database. For a live
+WAL database, use SQLite's backup API instead of copying only the main
+`.sqlite3` file.
 
 ## Deferred work
 
@@ -147,5 +144,4 @@ persistent dynamic scope filters, mandatory claims or leases, dedicated native
 client packages, automatic client configuration, or editable export
 synchronization. A complete Codex dogfood trial and then Claude Code, OpenCode
 and Pi access/catalog validation remain product proof beyond the unit and stdio
-suite. See [DESIGN.md](DESIGN.md) for the historical prototype discussion and
-the agreed v1 boundary.
+suite. See [DESIGN.md](DESIGN.md) for the current design and boundary.
