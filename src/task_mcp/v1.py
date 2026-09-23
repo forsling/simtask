@@ -36,9 +36,13 @@ class Store(LegacyStore):
                 version = 1
             if version == 1:
                 self._migrate(db)
-                db.execute("PRAGMA user_version=2")
-            elif version != 2:
-                raise RuntimeError(f"Unsupported database version {version}; expected 1 or 2")
+                version = 2
+            if version == 2:
+                db.execute("ALTER TABLE tasks ADD COLUMN selected_attempt_id TEXT")
+                version = 3
+            if version != 3:
+                raise RuntimeError(f"Unsupported database version {version}; expected 1, 2 or 3")
+            db.execute("PRAGMA user_version=3")
             db.commit()
 
     @staticmethod
@@ -386,9 +390,10 @@ class Store(LegacyStore):
     def _scope_ids(db, workstream_id):
         rows = db.execute(
             """SELECT task_id AS id FROM scope_members WHERE workstream_id=?
+            UNION SELECT group_id AS id FROM scope_groups WHERE workstream_id=?
             UNION SELECT t.id FROM tasks t JOIN scope_groups s ON s.group_id=t.parent_group_id
             WHERE s.workstream_id=?""",
-            (workstream_id, workstream_id),
+            (workstream_id, workstream_id, workstream_id),
         ).fetchall()
         return sorted(row["id"] for row in rows)
 
@@ -528,6 +533,7 @@ class Store(LegacyStore):
             accepted_spec_revision=:accepted_spec_revision, acceptance_note=:acceptance_note,
             unresolved_json=:unresolved_json, object_type=:object_type,
             parent_group_id=:parent_group_id, order_key=:order_key, status=:status,
+            selected_attempt_id=:selected_attempt_id,
             revision=:revision, updated_at=:updated_at WHERE id=:id""",
             values,
         )
@@ -1292,6 +1298,7 @@ class Store(LegacyStore):
                 ):
                     raise TaskError("task_not_ready_for_signoff")
                 after["status"] = "done"
+                after["selected_attempt_id"] = attempt_id
             elif rejection == "rework":
                 after["status"] = "rework"
                 db.execute(
@@ -1408,6 +1415,7 @@ class Store(LegacyStore):
                                     "unresolved_items",
                                     "blocked_by",
                                     "attempts",
+                                    "selected_attempt_id",
                                     "parent_group_id",
                                     "object_type",
                                 )

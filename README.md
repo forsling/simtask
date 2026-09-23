@@ -84,7 +84,8 @@ returns a verdict; the coordinator records it with `record_review`. A recorded
 `human_review` can satisfy the review gate when the user actually reviews the
 result or explicitly directs that further review is unnecessary. Agents must
 not self-issue it. One informed `signoff_task` verdict chooses a reviewed
-attempt. Approval completes the canonical task. Rejection chooses `rework`
+attempt. Approval completes the canonical task and records the selected attempt
+ID. Rejection chooses `rework`
 for the accepted specification or `revise` to invalidate acceptance and add an
 unresolved item. The service cannot authenticate reviewer independence or the
 human verdict, so reference workflows must accurately obtain and record them.
@@ -132,7 +133,7 @@ does not update the service. The CLI can print the same view:
 .venv/bin/task-mcp --export-workstream wst_your_workstream_id
 ```
 
-The schema upgrades existing v0.1 databases in place to v2, preserving project
+The schema upgrades existing v0.1 databases in place to v3, preserving project
 and task IDs, bodies, and audit rows. Legacy tracks become workstreams and their
 tasks enter corresponding scopes. Legacy Auto tasks are marked accepted as a
 migration assertion; Design tasks remain pending. Keep a database backup before

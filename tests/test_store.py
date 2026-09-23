@@ -113,6 +113,7 @@ def test_scope_set_expression_snapshot_and_live_group_members(store, tmp_path):
     group = store.decompose_task(parent["id"], 1, [{"title": "Child A"}])
     child_a = group["members"][0]
     scoped = store.set_scope(other, 1, f"none +{parent['id']}")
+    assert parent["id"] in store.list_workstreams(project)["items"][1]["scope"]
     assert (
         child_a in scoped["groups"]
         or child_a in store.list_workstreams(project)["items"][1]["scope"]
@@ -207,6 +208,7 @@ def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_pat
         created["id"], accepted["revision"] + 1, "approve", "User approved", final["id"]
     )
     assert complete["status"] == "done"
+    assert complete["selected_attempt_id"] == final["id"]
 
 
 def test_parallel_workstream_attempts_and_group_completion(store, tmp_path):
@@ -276,9 +278,24 @@ def test_migrate_legacy_database_without_losing_ids_bodies_or_audit(tmp_path):
         [design["id"], auto["id"]]
     )
     with sqlite3.connect(database) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
         assert db.execute("SELECT count(*) FROM events").fetchone()[0] >= before_events
     assert Store(database).get_tasks([auto["id"]])["items"][0]["id"] == auto["id"]
+
+
+def test_migrate_intermediate_v2_database_to_selected_attempt_schema(tmp_path):
+    database = tmp_path / "intermediate.sqlite3"
+    legacy = LegacyStore(database)
+    created = legacy.add_task(str(tmp_path / "repo"), "Existing", kind="auto")
+    with sqlite3.connect(database) as db:
+        db.row_factory = sqlite3.Row
+        Store._migrate(db)
+        db.execute("PRAGMA user_version=2")
+        db.commit()
+    migrated = Store(database)
+    assert migrated.get_tasks([created["id"]])["items"][0]["selected_attempt_id"] is None
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_same_revision_concurrent_updates_allow_one_writer(store, tmp_path):

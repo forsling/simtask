@@ -23,7 +23,7 @@ state invariants but cannot authenticate humans or agent independence.
 The initial reference path is `init -> proposal/unresolved review ->
 superdevloop -> sign-off`. Canonical packaged skill files are returned verbatim
 with version and hash by a read-only catalog. Workstream export is versioned,
-deterministic and export-only. The SQLite v1-to-v2 schema migration preserves
+deterministic and export-only. The SQLite v0.1-to-v3 schema migration preserves
 existing IDs, descriptions and audit history. The legacy prototype discussion
 below is historical and its former auto-registration, Design/Auto kinds, tracks,
 and mutable status semantics are superseded.
