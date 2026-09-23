@@ -249,6 +249,14 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
+    def dismiss_gate_proposal(
+        proposal_id: str, expected_revision: int, note: str
+    ) -> dict[str, Any]:
+        """Dismiss a pending observer gate with a recorded coordinator decision."""
+        return store.dismiss_gate_proposal(proposal_id, expected_revision, note)
+
+    @server.tool(annotations=editing, structured_output=True)
+    @domain_errors
     def decompose_task(
         task_id: str, expected_revision: int, members: list[dict[str, str]]
     ) -> dict[str, Any]:

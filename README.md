@@ -82,6 +82,13 @@ atomically creates and links a pending prerequisite in the current scope or
 project inbox. The service records the asserted handling role but does not
 authenticate agent identity.
 
+An active-session coordinator can accept a gate proposal, or dismiss it with a
+decision note when the proposal is stale or unwanted. Dismissal removes the
+pending proposal without applying its gate, advances the task revision, and
+preserves the proposal and decision in the audit history. It remains possible
+after a proposed prerequisite target is dropped. A completed task is immutable,
+including its pending proposals.
+
 Reading or selecting a task does not create an attempt. The implementer calls
 `record_result` only on leaving a durable result and evidence. This creates an
 attempt for that workstream. Other workstreams can produce independent attempts
@@ -117,7 +124,7 @@ those rare workflows are deferred.
 | --- | --- |
 | Project and workstream | `list_projects`, `init_project`, `attach_checkout`, `init_workstream`, `list_workstreams`, `rebind_workstream`, `preflight` |
 | Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `reorder_tasks`, `get_next_task` |
-| Specification and gates | `create_task`, `update_task`, `accept_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `decompose_task` |
+| Specification and gates | `create_task`, `update_task`, `accept_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
 | Inspection | `list_events`, `export_workstream`, `get_default_skills` |
 

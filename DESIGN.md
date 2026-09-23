@@ -53,8 +53,10 @@ item. The service cannot authenticate the reviewer or the user's verdict;
 workflow clients must obtain and accurately record those decisions.
 
 An active handler may add a task gate directly. An observer proposes a gate for
-review; the proposal is nonblocking until accepted. The default is agent
-autonomy. Unresolved items are for questions that materially risk wasted work,
+review; the proposal is nonblocking until accepted. A coordinator may dismiss
+an unwanted or stale proposal with an audited reason, including when its target
+was later dropped. The default is agent autonomy. Unresolved items are for
+questions that materially risk wasted work,
 expand authorization, require user-only information, or exhaust normal recovery.
 Cheap research and reversible choices proceed without ceremony.
 

@@ -1126,6 +1126,31 @@ class Store:
 
         return self._run("gate.proposal_accepted", request, operation)
 
+    def dismiss_gate_proposal(self, proposal_id, expected_revision, note):
+        """Resolve a pending observer proposal without activating its gate."""
+        request = dict(proposal_id=proposal_id, expected_revision=expected_revision, note=note)
+
+        def operation(db, scope):
+            row = db.execute("SELECT * FROM gate_proposals WHERE id=?", (proposal_id,)).fetchone()
+            if not row:
+                raise TaskError("unknown_gate_proposal")
+            before = self._task(db, row["task_id"], scope)
+            self._revision(before, expected_revision)
+            self._require_mutable(db, before)
+            if not isinstance(note, str) or not note.strip():
+                raise TaskError("decision_note_required")
+            proposal = dict(row)
+            after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
+            self._save_task(db, after)
+            db.execute("DELETE FROM gate_proposals WHERE id=?", (proposal_id,))
+            scope.update(
+                before={"task": before, "proposal": proposal},
+                after={"task": after, "dismissed_proposal": proposal, "note": note.strip()},
+            )
+            return self._details(db, after)
+
+        return self._run("gate.proposal_dismissed", request, operation)
+
     @staticmethod
     def _would_cycle(db, task_id, blocked_by_id):
         # A group needs every member to complete, so it has implicit edges to

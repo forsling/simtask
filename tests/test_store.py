@@ -166,6 +166,63 @@ def test_prerequisites_and_observer_gate_proposals(store, tmp_path):
         store.add_prerequisite(first["id"], 2, second["id"])
 
 
+def test_cyclic_gate_proposal_can_be_dismissed_before_decomposition(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    first = task(store, project, ws, "First")
+    second = task(store, project, ws, "Second")
+    store.add_prerequisite(second["id"], 1, first["id"])
+    proposal = store.add_prerequisite(first["id"], 1, second["id"], handling="observer")
+    with pytest.raises(TaskError, match="prerequisite_cycle"):
+        store.accept_gate_proposal(proposal["id"], 1)
+    with pytest.raises(TaskError, match="gate_proposals"):
+        store.decompose_task(first["id"], 1, [{"title": "Member"}])
+    with pytest.raises(TaskError, match="decision_note_required"):
+        store.dismiss_gate_proposal(proposal["id"], 1, " ")
+    with pytest.raises(TaskError, match="revision_conflict"):
+        store.dismiss_gate_proposal(proposal["id"], 0, "Stale decision")
+    dismissed = store.dismiss_gate_proposal(
+        proposal["id"], 1, "Cyclic dependency cannot be activated"
+    )
+    assert dismissed["revision"] == 2
+    assert dismissed["gate_proposals"] == [] and dismissed["blocked_by"] == []
+    with pytest.raises(TaskError, match="unknown_gate_proposal"):
+        store.dismiss_gate_proposal(proposal["id"], 2, "Already resolved")
+    events = store.list_events(project, first["id"], include_details=True)["items"]
+    decision = next(
+        event
+        for event in events
+        if event["action"] == "gate.proposal_dismissed" and event["outcome"] == "ok"
+    )
+    assert decision["actor"] == "test-coordinator"
+    assert decision["request"]["note"] == "Cyclic dependency cannot be activated"
+    assert decision["before"]["proposal"]["id"] == proposal["id"]
+    assert decision["before"]["proposal"]["detail"] == second["id"]
+    assert decision["after"]["task"]["revision"] == 2
+    assert store.decompose_task(first["id"], 2, [{"title": "Member"}])["members"]
+
+
+def test_gate_proposal_can_be_dismissed_after_target_is_dropped(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    owner = task(store, project, ws, "Owner")
+    target = task(store, project, ws, "Target")
+    proposal = store.add_prerequisite(owner["id"], 1, target["id"], handling="observer")
+    store.set_disposition(target["id"], 1, "dropped", "No longer needed")
+    with pytest.raises(TaskError, match="invalid_prerequisite"):
+        store.accept_gate_proposal(proposal["id"], 1)
+    dismissed = store.dismiss_gate_proposal(proposal["id"], 1, "Target was dropped")
+    assert dismissed["revision"] == 2 and dismissed["gate_proposals"] == []
+    assert store.get_tasks([target["id"]])["items"][0]["status"] == "dropped"
+
+
+def test_completed_task_gate_proposals_cannot_be_dismissed(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    owner = task(store, project, ws, "Owner")
+    proposal = store.add_unresolved(owner["id"], 1, "Possible issue", handling="observer")
+    completed = complete(store, owner["id"], ws, 1)
+    with pytest.raises(TaskError, match="completed_task_immutable"):
+        store.dismiss_gate_proposal(proposal["id"], completed["revision"], "Too late")
+
+
 def test_pending_prerequisite_proposal_is_atomic_and_disposition_preserves_acceptance(
     store, tmp_path
 ):

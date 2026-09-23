@@ -18,7 +18,8 @@ async def exercise(database: Path):
     )
     async with Client(server, read_timeout_seconds=15) as client:
         tools = (await client.list_tools()).tools
-        assert len(tools) >= 29
+        assert len(tools) >= 30
+        assert "dismiss_gate_proposal" in {tool.name for tool in tools}
         print(f"Connected over stdio; discovered {len(tools)} tools.")
 
         async def call(name, **arguments):
@@ -54,11 +55,25 @@ async def exercise(database: Path):
         )
         assert stale.is_error and "revision_conflict" in str(stale.content)
         print("Rejected an update from an outdated revision.")
+        proposal = await call(
+            "add_unresolved",
+            task_id=task_id,
+            expected_revision=1,
+            text="Synthetic observer concern",
+            handling="observer",
+        )
+        dismissed = await call(
+            "dismiss_gate_proposal",
+            proposal_id=proposal["id"],
+            expected_revision=1,
+            note="Synthetic coordinator decision: concern does not apply",
+        )
+        assert dismissed["gate_proposals"] == [] and dismissed["revision"] == 2
         result = await call(
             "record_result",
             task_id=task_id,
             workstream_id=workstream_id,
-            expected_revision=1,
+            expected_revision=2,
             implementer="demo-implementer",
             summary="Demo delivered",
             evidence="Synthetic demonstration passed.",

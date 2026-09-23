@@ -18,7 +18,11 @@ those specification fields invalidates prior acceptance; ask for fresh task
 acceptance before autonomous implementation. A session working on a task may
 add an unresolved item or prerequisite directly. An observer proposes a gate
 with `handling="observer"`; it does not block until accepted. Resolve ambiguous
-scope references with stable IDs. Resolve unresolved items and gate proposals
+scope references with stable IDs. The active coordinator should use
+`accept_gate_proposal` only for a valid gate, or `dismiss_gate_proposal` with a
+clear decision note for an unwanted, stale, or invalid proposal. Dismissal is
+audited and does not apply the gate; it still works if a proposed prerequisite
+was later dropped. Resolve unresolved items and gate proposals
 before converting a task into a group. Groups hold context and completion only;
 put blockers on their concrete members. Preserve deferred context and audit
 history.
