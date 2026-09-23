@@ -18,5 +18,7 @@ those specification fields invalidates prior acceptance; ask for fresh task
 acceptance before autonomous implementation. A session working on a task may
 add an unresolved item or prerequisite directly. An observer proposes a gate
 with `handling="observer"`; it does not block until accepted. Resolve ambiguous
-scope references with stable IDs. Preserve deferred context and existing audit
+scope references with stable IDs. Resolve unresolved items and gate proposals
+before converting a task into a group. Groups hold context and completion only;
+put blockers on their concrete members. Preserve deferred context and audit
 history.

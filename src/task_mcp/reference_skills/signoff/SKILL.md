@@ -11,6 +11,7 @@ the user is judging. Ask for the user's informed verdict. Call `signoff_task`
 only after that explicit verdict, selecting one passed or human-reviewed
 attempt. Approval completes the task. Rejection with `rework` means the accepted
 specification remains correct and the attempt needs repair and fresh review.
+Once complete, the task is immutable; capture later requirements as new tasks.
 Rejection with `revise` invalidates acceptance and adds an unresolved item for
 the requested change. Group completion derives from every member's completion;
 there is no separate group sign-off. The service records assertions but cannot

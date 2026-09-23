@@ -18,6 +18,9 @@ For a new project, call `init_project`. For another checkout, call
 scope. For a new branch in an attached checkout, call `init_workstream` with an
 explicit set expression. `none` is an empty scope; a workstream name/ID copies
 its current scope once; `+task-id` and `-task-id` change that snapshot. A group
-reference is a live relation for future members. Do not infer scope from a
+reference is a live relation for future members. An explicit `-task-id`
+exclusion persists even when the task is a member of a scoped group;
+`+task-id` clears that exclusion. After changing explicit scope, re-read the
+workstream revision before another scope edit. Do not infer scope from a
 branch name or Git history. Call `preflight` before unattended work, and stop on
 a mismatched binding until the user chooses `rebind_workstream` or a new one.

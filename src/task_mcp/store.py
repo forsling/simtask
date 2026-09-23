@@ -119,8 +119,13 @@ class Store:
             (timestamp, actor, action, outcome, project_id, task_id, request_json,
              before_json, after_json, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                timestamp(), self.actor, action, outcome, scope.get("project_id"),
-                scope.get("task_id"), json.dumps(request, ensure_ascii=False),
+                timestamp(),
+                self.actor,
+                action,
+                outcome,
+                scope.get("project_id"),
+                scope.get("task_id"),
+                json.dumps(request, ensure_ascii=False),
                 json.dumps(scope["before"], ensure_ascii=False) if "before" in scope else None,
                 json.dumps(scope["after"], ensure_ascii=False) if "after" in scope else None,
                 error,
@@ -177,11 +182,23 @@ class Store:
 
         return self._run("projects.listed", dict(limit=limit, offset=offset), operation)
 
-    def list_events(self, project=None, task_id=None, after_sequence=0,
-                    through_sequence=None, limit=50, include_details=False):
-        request = dict(project=project, task_id=task_id, after_sequence=after_sequence,
-                       through_sequence=through_sequence, limit=limit,
-                       include_details=include_details)
+    def list_events(
+        self,
+        project=None,
+        task_id=None,
+        after_sequence=0,
+        through_sequence=None,
+        limit=50,
+        include_details=False,
+    ):
+        request = dict(
+            project=project,
+            task_id=task_id,
+            after_sequence=after_sequence,
+            through_sequence=through_sequence,
+            limit=limit,
+            include_details=include_details,
+        )
 
         def operation(db, scope):
             self._page(limit, after_sequence)
@@ -199,14 +216,24 @@ class Store:
                 values.append(project_id)
             if task_id is not None:
                 self._task(db, task_id, scope)
-                where.append("(task_id=? OR EXISTS (SELECT 1 FROM "
-                             "json_each(events.request_json, '$.ids') WHERE value=?))")
+                where.append(
+                    "(task_id=? OR EXISTS (SELECT 1 FROM "
+                    "json_each(events.request_json, '$.ids') WHERE value=?))"
+                )
                 values.extend([task_id, task_id])
-            columns = ("*" if include_details else
-                       "sequence, timestamp, actor, action, outcome, project_id, task_id, error")
-            rows = [dict(row) for row in db.execute(
-                f"SELECT {columns} FROM events WHERE {' AND '.join(where)} "
-                "ORDER BY sequence LIMIT ?", (*values, limit + 1)).fetchall()]
+            columns = (
+                "*"
+                if include_details
+                else "sequence, timestamp, actor, action, outcome, project_id, task_id, error"
+            )
+            rows = [
+                dict(row)
+                for row in db.execute(
+                    f"SELECT {columns} FROM events WHERE {' AND '.join(where)} "
+                    "ORDER BY sequence LIMIT ?",
+                    (*values, limit + 1),
+                ).fetchall()
+            ]
             if include_details:
                 for row in rows:
                     for field in ("request", "before", "after"):
@@ -375,13 +402,16 @@ class Store:
                 raise TaskError("checkout_not_attached: use attach_checkout")
             if not branch and not name:
                 raise TaskError("workstream_name_required")
-            members, groups = self._scope_expression(db, selected["id"], scope_expression)
+            members, groups, exclusions = self._scope_expression(
+                db, selected["id"], scope_expression
+            )
             ws = self._insert_workstream(db, selected["id"], name or branch, branch, canonical)
-            self._set_scope(db, ws["id"], members, groups)
+            self._set_scope(db, ws["id"], members, groups, exclusions)
             scope["after"] = {
                 "workstream": ws,
                 "members": sorted(members),
                 "groups": sorted(groups),
+                "exclusions": sorted(exclusions),
             }
             return scope["after"]
 
@@ -464,15 +494,24 @@ class Store:
             """SELECT task_id AS id FROM scope_members WHERE workstream_id=?
             UNION SELECT group_id AS id FROM scope_groups WHERE workstream_id=?
             UNION SELECT t.id FROM tasks t JOIN scope_groups s ON s.group_id=t.parent_group_id
-            WHERE s.workstream_id=?""",
+            WHERE s.workstream_id=? AND NOT EXISTS (
+                SELECT 1 FROM scope_exclusions e WHERE e.workstream_id=s.workstream_id
+                AND e.task_id=s.group_id)""",
             (workstream_id, workstream_id, workstream_id),
         ).fetchall()
-        return sorted(row["id"] for row in rows)
+        exclusions = {
+            row["task_id"]
+            for row in db.execute(
+                "SELECT task_id FROM scope_exclusions WHERE workstream_id=?", (workstream_id,)
+            )
+        }
+        return sorted(row["id"] for row in rows if row["id"] not in exclusions)
 
     @staticmethod
-    def _set_scope(db, workstream_id, members, groups):
+    def _set_scope(db, workstream_id, members, groups, exclusions):
         db.execute("DELETE FROM scope_members WHERE workstream_id=?", (workstream_id,))
         db.execute("DELETE FROM scope_groups WHERE workstream_id=?", (workstream_id,))
+        db.execute("DELETE FROM scope_exclusions WHERE workstream_id=?", (workstream_id,))
         db.executemany(
             "INSERT INTO scope_members VALUES (?, ?)",
             [(workstream_id, member) for member in sorted(members)],
@@ -481,6 +520,14 @@ class Store:
             "INSERT INTO scope_groups VALUES (?, ?)",
             [(workstream_id, group) for group in sorted(groups)],
         )
+        db.executemany(
+            "INSERT INTO scope_exclusions VALUES (?, ?)",
+            [(workstream_id, item) for item in sorted(exclusions)],
+        )
+
+    @staticmethod
+    def _touch_workstream(db, workstream_id):
+        db.execute("UPDATE workstreams SET revision=revision+1 WHERE id=?", (workstream_id,))
 
     @staticmethod
     def _resolve_reference(db, project_id, term):
@@ -505,8 +552,8 @@ class Store:
             raise TaskError("invalid_scope_expression")
         tokens = shlex.split(expression)
         if not tokens or tokens == ["none"]:
-            return set(), set()
-        members, groups = set(), set()
+            return set(), set(), set()
+        members, groups, exclusions = set(), set(), set()
         first = tokens[0]
         if first == "none":
             tokens = tokens[1:]
@@ -530,6 +577,12 @@ class Store:
                     "SELECT group_id FROM scope_groups WHERE workstream_id=?", (ws_id,)
                 )
             }
+            exclusions = {
+                r["task_id"]
+                for r in db.execute(
+                    "SELECT task_id FROM scope_exclusions WHERE workstream_id=?", (ws_id,)
+                )
+            }
             tokens = tokens[1:]
         for token in tokens:
             if len(token) < 2 or token[0] not in "+-":
@@ -538,9 +591,11 @@ class Store:
             target = groups if kind == "group" else members
             if token[0] == "+":
                 target.add(identity)
+                exclusions.discard(identity)
             else:
                 target.discard(identity)
-        return members, groups
+                exclusions.add(identity)
+        return members, groups, exclusions
 
     def set_scope(self, workstream_id, expected_revision, expression):
         request = dict(
@@ -566,14 +621,28 @@ class Store:
                         (workstream_id,),
                     )
                 ],
+                "exclusions": [
+                    row["task_id"]
+                    for row in db.execute(
+                        "SELECT task_id FROM scope_exclusions WHERE workstream_id=? "
+                        "ORDER BY task_id",
+                        (workstream_id,),
+                    )
+                ],
             }
-            members, groups = self._scope_expression(db, before["project_id"], expression)
-            self._set_scope(db, workstream_id, members, groups)
-            db.execute("UPDATE workstreams SET revision=revision+1 WHERE id=?", (workstream_id,))
+            members, groups, exclusions = self._scope_expression(
+                db, before["project_id"], expression
+            )
+            self._set_scope(db, workstream_id, members, groups, exclusions)
+            self._touch_workstream(db, workstream_id)
             scope.update(
                 project_id=before["project_id"],
                 before={"workstream": before, **previous},
-                after={"members": sorted(members), "groups": sorted(groups)},
+                after={
+                    "members": sorted(members),
+                    "groups": sorted(groups),
+                    "exclusions": sorted(exclusions),
+                },
             )
             return {**self._workstream(db, workstream_id), **scope["after"]}
 
@@ -590,6 +659,22 @@ class Store:
         task["accepted"] = task["accepted_spec_revision"] == task["spec_revision"]
         scope["project_id"] = task["project_id"]
         return task
+
+    @staticmethod
+    def _group_complete(db, group_id):
+        return not db.execute(
+            "SELECT 1 FROM tasks WHERE parent_group_id=? AND status!='done' LIMIT 1",
+            (group_id,),
+        ).fetchone()
+
+    @staticmethod
+    def _require_mutable(db, task, concrete=True):
+        if task["status"] == "done" or (
+            task["object_type"] == "group" and Store._group_complete(db, task["id"])
+        ):
+            raise TaskError("completed_task_immutable: create a new task for changed requirements")
+        if concrete and task["object_type"] != "task":
+            raise TaskError("group_not_executable: groups hold context and completion only")
 
     @staticmethod
     def _save_task(db, task):
@@ -611,7 +696,11 @@ class Store:
     @staticmethod
     def _details(db, task):
         task = dict(task)
-        task["accepted"] = task["accepted_spec_revision"] == task["spec_revision"]
+        task["accepted"] = (
+            task["accepted_spec_revision"] == task["spec_revision"]
+            if task["object_type"] == "task"
+            else None
+        )
         if task["parent_group_id"]:
             group = db.execute(
                 "SELECT id,title,body,acceptance_criteria FROM tasks WHERE id=?",
@@ -645,13 +734,7 @@ class Store:
                     (task["id"],),
                 )
             ]
-            task["complete"] = (
-                bool(task["members"])
-                and not db.execute(
-                    "SELECT 1 FROM tasks WHERE parent_group_id=? AND status!='done' LIMIT 1",
-                    (task["id"],),
-                ).fetchone()
-            )
+            task["complete"] = bool(task["members"]) and Store._group_complete(db, task["id"])
         return task
 
     def get_tasks(self, ids):
@@ -748,6 +831,7 @@ class Store:
                 group = self._task(db, group_id, {})
                 if group["project_id"] != project_id or group["object_type"] != "group":
                     raise TaskError("invalid_group")
+                self._require_mutable(db, group, concrete=False)
             task_id = self._insert_task(
                 db,
                 project_id,
@@ -766,6 +850,7 @@ class Store:
                 )
             if scope == "workstream":
                 db.execute("INSERT INTO scope_members VALUES (?, ?)", (workstream_id, task_id))
+                self._touch_workstream(db, workstream_id)
             task = self._details(db, self._task(db, task_id, event))
             event["after"] = task
             return task
@@ -778,6 +863,7 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            self._require_mutable(db, before, concrete=False)
             allowed = {"title", "body", "acceptance_criteria"}
             if not isinstance(changes, dict) or not changes or set(changes) - allowed:
                 raise TaskError("invalid_patch: edit title, body, or acceptance_criteria")
@@ -806,6 +892,7 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            self._require_mutable(db, before)
             if not isinstance(user_note, str) or not user_note.strip():
                 raise TaskError("user_verdict_required")
             after = {
@@ -830,10 +917,9 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            self._require_mutable(db, before)
             if disposition not in {"open", "deferred", "dropped"} or not note.strip():
                 raise TaskError("invalid_disposition: use open, deferred or dropped with a reason")
-            if before["status"] == "done":
-                raise TaskError("signoff_required: completed tasks cannot be reopened here")
             after = {
                 **before,
                 "status": disposition,
@@ -862,8 +948,7 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
-            if before["object_type"] != "task":
-                raise TaskError("invalid_prerequisite: use a concrete task")
+            self._require_mutable(db, before)
             if workstream_id:
                 self._workstream(db, workstream_id, before["project_id"])
                 if task_id not in self._scope_ids(db, workstream_id):
@@ -874,6 +959,7 @@ class Store:
             db.execute("INSERT INTO prerequisites VALUES (?, ?)", (task_id, proposed_id))
             if workstream_id:
                 db.execute("INSERT INTO scope_members VALUES (?, ?)", (workstream_id, proposed_id))
+                self._touch_workstream(db, workstream_id)
             after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
             self._save_task(db, after)
             scope.update(before=before, after={"task": after, "proposal_id": proposed_id})
@@ -892,6 +978,7 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            self._require_mutable(db, before)
             if not isinstance(text, str) or not text.strip():
                 raise TaskError("invalid_unresolved_item")
             if handling == "observer":
@@ -936,6 +1023,7 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            self._require_mutable(db, before)
             if not user_note.strip():
                 raise TaskError("user_verdict_required")
             items = [x for x in before["unresolved_items"] if x["id"] != item_id]
@@ -964,11 +1052,12 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            self._require_mutable(db, before)
             dependency = self._task(db, blocked_by_id, {})
             if before["project_id"] != dependency["project_id"] or task_id == blocked_by_id:
                 raise TaskError("invalid_prerequisite")
-            if dependency["object_type"] != "task" or before["object_type"] != "task":
-                raise TaskError("invalid_prerequisite: use concrete tasks")
+            if dependency["status"] == "dropped":
+                raise TaskError("invalid_prerequisite: dropped work cannot satisfy a dependency")
             if handling == "observer":
                 proposal = dict(
                     id=_id("gat_"),
@@ -1008,6 +1097,7 @@ class Store:
                 raise TaskError("unknown_gate_proposal")
             before = self._task(db, row["task_id"], scope)
             self._revision(before, expected_revision)
+            self._require_mutable(db, before)
             if row["gate_type"] == "unresolved":
                 after = {
                     **before,
@@ -1015,6 +1105,12 @@ class Store:
                     + [{"id": _id("unr_"), "text": row["detail"]}],
                 }
             else:
+                dependency = self._task(db, row["detail"], {})
+                if (
+                    dependency["project_id"] != before["project_id"]
+                    or dependency["status"] == "dropped"
+                ):
+                    raise TaskError("invalid_prerequisite")
                 if self._would_cycle(db, row["task_id"], row["detail"]):
                     raise TaskError("prerequisite_cycle")
                 db.execute(
@@ -1032,15 +1128,28 @@ class Store:
 
     @staticmethod
     def _would_cycle(db, task_id, blocked_by_id):
-        return bool(
-            db.execute(
-                """WITH RECURSIVE dependencies(id) AS (
-            SELECT blocked_by_id FROM prerequisites WHERE task_id=?
-            UNION SELECT p.blocked_by_id FROM prerequisites p JOIN dependencies d ON p.task_id=d.id)
-            SELECT 1 FROM dependencies WHERE id=?""",
-                (blocked_by_id, task_id),
-            ).fetchone()
-        )
+        # A group needs every member to complete, so it has implicit edges to
+        # those members in the effective dependency graph.
+        pending = [blocked_by_id]
+        visited = set()
+        while pending:
+            current = pending.pop()
+            if current == task_id:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(
+                row["blocked_by_id"]
+                for row in db.execute(
+                    "SELECT blocked_by_id FROM prerequisites WHERE task_id=?", (current,)
+                )
+            )
+            pending.extend(
+                row["id"]
+                for row in db.execute("SELECT id FROM tasks WHERE parent_group_id=?", (current,))
+            )
+        return False
 
     def decompose_task(self, task_id, expected_revision, members):
         request = dict(task_id=task_id, expected_revision=expected_revision, members=members)
@@ -1050,6 +1159,13 @@ class Store:
             self._revision(before, expected_revision)
             if before["object_type"] != "task" or before["parent_group_id"]:
                 raise TaskError("invalid_group: nested groups are not supported")
+            self._require_mutable(db, before)
+            if before["status"] != "open":
+                raise TaskError("invalid_group: resume the task before decomposition")
+            if before["unresolved_items"]:
+                raise TaskError("unresolved_items: settle them before decomposition")
+            if db.execute("SELECT 1 FROM gate_proposals WHERE task_id=?", (task_id,)).fetchone():
+                raise TaskError("gate_proposals: resolve proposed gates before decomposition")
             if db.execute("SELECT 1 FROM attempts WHERE task_id=?", (task_id,)).fetchone():
                 raise TaskError("attempt_exists: cannot decompose after implementation")
             if not isinstance(members, list) or not members:
@@ -1065,6 +1181,11 @@ class Store:
                 """INSERT OR IGNORE INTO scope_groups
                 SELECT workstream_id, ? FROM scope_members WHERE task_id=?""",
                 (task_id, task_id),
+            )
+            db.execute(
+                """UPDATE workstreams SET revision=revision+1
+                WHERE id IN (SELECT workstream_id FROM scope_members WHERE task_id=?)""",
+                (task_id,),
             )
             children = []
             for member in members:
@@ -1084,6 +1205,7 @@ class Store:
                     (child_id, task_id),
                 )
                 children.append(child_id)
+            db.execute("DELETE FROM prerequisites WHERE task_id=?", (task_id,))
             scope.update(before=before, after={"group": after, "members": children})
             return self._details(db, after)
 
@@ -1104,10 +1226,34 @@ class Store:
                 raise TaskError("revision_conflict: re-read the current project order")
             if len(ordered_ids) != len(current) or set(ordered_ids) != set(current):
                 raise TaskError("invalid_order: include every project task exactly once")
-            for index, task_id in enumerate(ordered_ids, 1):
-                db.execute(
-                    "UPDATE tasks SET order_key=?, revision=revision+1 WHERE id=?", (index, task_id)
+            old_positions = {identity: index for index, identity in enumerate(current, 1)}
+            completed = {
+                row["id"]
+                for row in db.execute(
+                    "SELECT id FROM tasks WHERE project_id=? AND status='done'", (project_id,)
                 )
+            }
+            completed.update(
+                row["id"]
+                for row in db.execute(
+                    """SELECT g.id FROM tasks g WHERE g.project_id=? AND g.object_type='group'
+                AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.parent_group_id=g.id
+                AND child.status!='done')""",
+                    (project_id,),
+                )
+            )
+            if any(
+                old_positions[identity] != index
+                for index, identity in enumerate(ordered_ids, 1)
+                if identity in completed
+            ):
+                raise TaskError("completed_task_immutable: ordering cannot move signed-off tasks")
+            for index, task_id in enumerate(ordered_ids, 1):
+                if old_positions[task_id] != index:
+                    db.execute(
+                        "UPDATE tasks SET order_key=?, revision=revision+1 WHERE id=?",
+                        (index, task_id),
+                    )
             scope.update(before={"ordered_ids": current}, after={"ordered_ids": ordered_ids})
             return scope["after"]
 
@@ -1130,8 +1276,10 @@ class Store:
 
     @staticmethod
     def _gate_reasons(db, task, workstream_id=None):
+        if task["object_type"] == "group":
+            return ["closed_or_group"]
         reasons = []
-        if task["object_type"] != "task" or task["status"] in {"done", "dropped", "deferred"}:
+        if task["status"] in {"done", "dropped", "deferred"}:
             reasons.append("closed_or_group")
         if not task["accepted"]:
             reasons.append("pending_acceptance")
@@ -1260,7 +1408,9 @@ class Store:
                 raise TaskError("unknown_attempt")
             before = dict(row)
             scope["task_id"] = before["task_id"]
-            scope["project_id"] = self._task(db, before["task_id"], {})["project_id"]
+            task = self._task(db, before["task_id"], {})
+            scope["project_id"] = task["project_id"]
+            self._require_mutable(db, task)
             if before["revision"] != expected_revision:
                 raise TaskError("revision_conflict: re-read the attempt")
             if before["state"] != "review" or verdict not in {"pass", "rework"}:
@@ -1297,7 +1447,9 @@ class Store:
                 raise TaskError("unknown_attempt")
             before = dict(row)
             scope["task_id"] = before["task_id"]
-            scope["project_id"] = self._task(db, before["task_id"], {})["project_id"]
+            task = self._task(db, before["task_id"], {})
+            scope["project_id"] = task["project_id"]
+            self._require_mutable(db, task)
             if before["revision"] != expected_revision:
                 raise TaskError("revision_conflict")
             if before["state"] != "review" or not user_note.strip():
@@ -1417,7 +1569,7 @@ class Store:
                         "revision": task["revision"],
                         "order_key": task["order_key"],
                         "view": view,
-                        "accepted": task["accepted"],
+                        "accepted": task["accepted"] if task["object_type"] == "task" else None,
                         "object_type": task["object_type"],
                     }
                 )

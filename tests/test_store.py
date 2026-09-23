@@ -32,6 +32,12 @@ def task(store, project, ws, title="Implement", source="user"):
     )
 
 
+def complete(store, task_id, workstream_id, revision):
+    result = store.record_result(task_id, workstream_id, revision, "worker", "Done", "Verified")
+    store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
+    return store.signoff_task(task_id, revision + 1, "approve", "User approved", result["id"])
+
+
 def test_explicit_init_and_attachment_do_not_write_checkouts(store, tmp_path):
     path = tmp_path / "checkout"
     path.mkdir()
@@ -123,6 +129,28 @@ def test_scope_set_expression_snapshot_and_live_group_members(store, tmp_path):
     assert not child_b["accepted"]
 
 
+def test_explicit_exclusions_override_live_group_expansion(store, tmp_path):
+    project, ws, path = setup(store, tmp_path)
+    parent = task(store, project, ws, "Parent")
+    group = store.decompose_task(parent["id"], 1, [{"title": "A"}, {"title": "B"}])
+    a, b = group["members"]
+    revision = store.list_workstreams(project)["items"][0]["revision"]
+    changed = store.set_scope(ws, revision, f"none +{parent['id']} -{a}")
+    assert changed["exclusions"] == [a]
+    assert a not in store.list_workstreams(project)["items"][0]["scope"]
+    assert b in store.list_workstreams(project)["items"][0]["scope"]
+    later = store.create_task(project, "Later", group_id=parent["id"])
+    assert later["id"] in store.list_workstreams(project)["items"][0]["scope"]
+    inherited = store.init_workstream(
+        project, path, branch="other", scope_expression="main", confirmed=True
+    )["workstream"]["id"]
+    assert a not in store.list_workstreams(project)["items"][1]["scope"]
+    store.set_scope(inherited, 1, f"main +{a}")
+    assert a in store.list_workstreams(project)["items"][1]["scope"]
+    store.set_scope(inherited, 2, f"none +{parent['id']} -{parent['id']}")
+    assert store.list_workstreams(project)["items"][1]["scope"] == []
+
+
 def test_prerequisites_and_observer_gate_proposals(store, tmp_path):
     project, ws, _ = setup(store, tmp_path)
     first = task(store, project, ws, "First")
@@ -173,7 +201,129 @@ def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
         store.record_review(attempt["id"], 1, "reviewer", "pass", "Reviewed")
         store.signoff_task(member, accepted["revision"] + 1, "approve", "Approved", attempt["id"])
     assert store.get_tasks([parent["id"]])["items"][0]["complete"]
+    completed_group = store.get_tasks([parent["id"]])["items"][0]
+    assert completed_group["accepted"] is None
+    with pytest.raises(TaskError, match="completed_task_immutable"):
+        store.update_task(parent["id"], completed_group["revision"], {"body": "Changed"})
+    with pytest.raises(TaskError, match="completed_task_immutable"):
+        store.create_task(project, "Late required member", group_id=parent["id"])
     assert store.get_next_task(ws)["task"]["id"] == downstream["id"]
+
+
+def test_group_has_no_execution_gates_and_requires_resolved_decomposition(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    parent = task(store, project, ws, "Parent")
+    gated = store.add_unresolved(parent["id"], 1, "Choose the split")
+    with pytest.raises(TaskError, match="unresolved_items"):
+        store.decompose_task(parent["id"], 2, [{"title": "A"}])
+    resolved = store.resolve_unresolved(
+        parent["id"], 2, gated["unresolved_items"][0]["id"], "Split chosen"
+    )
+    group = store.decompose_task(parent["id"], resolved["revision"], [{"title": "A"}])
+    assert group["unresolved_items"] == []
+    assert group["blocked_by"] == [] and group["attempts"] == []
+    for action in (
+        lambda: store.accept_task(parent["id"], group["revision"], "Accept"),
+        lambda: store.set_disposition(parent["id"], group["revision"], "deferred", "Wait"),
+        lambda: store.add_unresolved(parent["id"], group["revision"], "Gate"),
+        lambda: store.propose_prerequisite(parent["id"], group["revision"], "New task"),
+        lambda: store.record_result(parent["id"], ws, group["revision"], "worker", "Done", "OK"),
+    ):
+        with pytest.raises(TaskError, match="group_not_executable|task_not_eligible"):
+            action()
+
+
+def test_effective_cycle_detection_includes_group_member_edges(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    parent = task(store, project, ws, "Parent")
+    member = store.decompose_task(parent["id"], 1, [{"title": "Member"}])["members"][0]
+    other = task(store, project, ws, "Other")
+    store.add_prerequisite(member, 1, other["id"])
+    with pytest.raises(TaskError, match="prerequisite_cycle"):
+        store.add_prerequisite(other["id"], 1, parent["id"])
+    proposed = store.add_prerequisite(other["id"], 1, parent["id"], handling="observer")
+    with pytest.raises(TaskError, match="prerequisite_cycle"):
+        store.accept_gate_proposal(proposed["id"], 1)
+    with pytest.raises(TaskError, match="prerequisite_cycle"):
+        store.add_prerequisite(member, 2, parent["id"])
+
+
+def test_group_prerequisites_before_and_after_decomposition(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    foundation = task(store, project, ws, "Foundation")
+    parent = task(store, project, ws, "Parent")
+    downstream = task(store, project, ws, "Downstream")
+    store.add_prerequisite(parent["id"], 1, foundation["id"])
+    store.add_prerequisite(downstream["id"], 1, parent["id"])
+    group = store.decompose_task(parent["id"], 2, [{"title": "A"}, {"title": "B"}])
+    assert group["blocked_by"] == []
+    for member in group["members"]:
+        assert store.get_tasks([member])["items"][0]["blocked_by"] == [foundation["id"]]
+    complete(store, foundation["id"], ws, 1)
+    for member in group["members"]:
+        accepted = store.accept_task(member, 1, "User accepted member")
+        complete(store, member, ws, accepted["revision"])
+    assert store.get_next_task(ws)["task"]["id"] == downstream["id"]
+    later = task(store, project, ws, "Later")
+    linked = store.add_prerequisite(later["id"], 1, parent["id"])
+    assert linked["blocked_by"] == [parent["id"]]
+    assert store.list_tasks(project, ws, state="ready")["items"][0]["id"] == downstream["id"]
+
+
+def test_every_explicit_scope_write_bumps_revision_atomically(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    assert store.list_workstreams(project)["items"][0]["revision"] == 1
+    included = task(store, project, ws, "Included")
+    assert store.list_workstreams(project)["items"][0]["revision"] == 2
+    store.create_task(project, "Inbox")
+    assert store.list_workstreams(project)["items"][0]["revision"] == 2
+    store.set_scope(ws, 2, f"none +{included['id']}")
+    assert store.list_workstreams(project)["items"][0]["revision"] == 3
+    store.decompose_task(included["id"], 1, [{"title": "Child"}])
+    assert store.list_workstreams(project)["items"][0]["revision"] == 4
+    child = store.get_tasks([included["id"]])["items"][0]["members"][0]
+    store.propose_prerequisite(child, 1, "Needed", workstream_id=ws)
+    assert store.list_workstreams(project)["items"][0]["revision"] == 5
+    with pytest.raises(TaskError, match="revision_conflict"):
+        store.set_scope(ws, 4, "none")
+
+
+def test_scope_revision_and_membership_roll_back_with_failed_audit(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    with sqlite3.connect(store.path) as db:
+        db.execute("""CREATE TRIGGER reject_task_event BEFORE INSERT ON events
+            WHEN NEW.action='task.created'
+            BEGIN SELECT RAISE(ABORT, 'audit rejected'); END""")
+        db.commit()
+    with pytest.raises(sqlite3.IntegrityError, match="audit rejected"):
+        task(store, project, ws, "Never committed")
+    workstream = store.list_workstreams(project)["items"][0]
+    assert workstream["revision"] == 1 and workstream["scope"] == []
+    assert store.list_tasks(project)["items"] == []
+
+
+def test_completed_tasks_and_attempts_are_immutable(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    created = task(store, project, ws, "Completed")
+    done = complete(store, created["id"], ws, 1)
+    attempt_id = done["selected_attempt_id"]
+    other = task(store, project, ws, "Other")
+    actions = (
+        lambda: store.update_task(done["id"], done["revision"], {"body": "Changed"}),
+        lambda: store.accept_task(done["id"], done["revision"], "Again"),
+        lambda: store.set_disposition(done["id"], done["revision"], "open", "Reopen"),
+        lambda: store.add_unresolved(done["id"], done["revision"], "New gate"),
+        lambda: store.add_prerequisite(done["id"], done["revision"], other["id"]),
+        lambda: store.propose_prerequisite(done["id"], done["revision"], "New task"),
+        lambda: store.record_result(done["id"], ws, done["revision"], "worker", "Again", "OK"),
+        lambda: store.record_review(attempt_id, 2, "another", "pass", "Again"),
+        lambda: store.human_review(attempt_id, 2, "Again"),
+        lambda: store.reorder_tasks(project, [other["id"], done["id"]], [done["id"], other["id"]]),
+    )
+    for action in actions:
+        with pytest.raises(TaskError, match="completed_task_immutable|task_not_eligible"):
+            action()
+    assert store.get_tasks([done["id"]])["items"][0]["body"] == created["body"]
 
 
 def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_path):

@@ -47,7 +47,10 @@ Workstream scope is an explicit set of canonical project tasks. `none` begins
 empty. A workstream name or ID as the first expression term snapshots its scope.
 `+task-id` and `-task-id` then add or remove references. Titles are accepted
 only when unambiguous. A group reference remains live: later group members enter
-its scoped workstreams, but begin pending acceptance. A task proposed from a
+its scoped workstreams, but begin pending acceptance. An explicit `-task-id`
+exclusion persists and overrides membership inherited from a scoped group;
+`+task-id` removes that exclusion. Every explicit scope change advances the
+workstream revision. A task proposed from a
 workstream may enter that scope or the project inbox. It cannot be delegated to
 another workstream by creating it. Project order is global and advisory;
 prerequisites are hard gates. `get_next_task` returns the first full eligible
@@ -63,12 +66,15 @@ specification revision and invalidates acceptance. Resolving an unresolved item,
 changing scope or order, or adding evidence does not invalidate acceptance.
 Unresolved items are live gates; resolve them after settling the matter and
 record any material decision in the task description. A `blocked_by` prerequisite
-clears as an eligibility constraint when its prerequisite is signed off.
+clears as an eligibility constraint when its prerequisite is signed off. A task
+may depend on a group; that gate clears after every required member completes.
 
 Use `decompose_task` to turn a task into a first-class group while retaining its
 ID, description, acceptance history and audit history. The call atomically
 creates required pending member tasks. Groups cannot nest, have no implementation
-attempts, and derive completion from all members being complete. Use related
+attempts or execution gates, and derive completion from all members being
+complete. Resolve unresolved items and proposed gates before decomposition;
+existing prerequisites move to the concrete members. Use related
 pending proposals for optional work. A session actively handling a task may add
 an unresolved item or prerequisite. An observer can submit a nonblocking gate
 proposal for an active session or the user to accept. `propose_prerequisite`
@@ -85,9 +91,10 @@ returns a verdict; the coordinator records it with `record_review`. A recorded
 result or explicitly directs that further review is unnecessary. Agents must
 not self-issue it. One informed `signoff_task` verdict chooses a reviewed
 attempt. Approval completes the canonical task and records the selected attempt
-ID. Rejection chooses `rework`
-for the accepted specification or `revise` to invalidate acceptance and add an
-unresolved item. The service cannot authenticate reviewer independence or the
+ID. Completed tasks are immutable; changed requirements become new tasks.
+Rejection chooses `rework` for the accepted specification or `revise` to
+invalidate acceptance and add an unresolved item. The service cannot
+authenticate reviewer independence or the
 human verdict, so reference workflows must accurately obtain and record them.
 
 The ordinary path is:
