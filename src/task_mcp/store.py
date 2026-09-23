@@ -489,5 +489,10 @@ class LegacyStore:
 
 
 # The v0.1 storage implementation remains here solely as the migration substrate.
-# The public Store is the v1 model in v1.py.
-from task_mcp.v1 import Store  # noqa: E402, F401
+# Resolve the public Store lazily so importing task_mcp.v1 directly has no cycle.
+def __getattr__(name):
+    if name == "Store":
+        from task_mcp.v1 import Store
+
+        return Store
+    raise AttributeError(name)

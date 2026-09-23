@@ -257,9 +257,11 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def reorder_tasks(project: str, ordered_ids: list[str]) -> dict[str, Any]:
-        """Set one explicit project-level task order; include every task ID once."""
-        return store.reorder_tasks(project, ordered_ids)
+    def reorder_tasks(
+        project: str, ordered_ids: list[str], expected_order: list[str]
+    ) -> dict[str, Any]:
+        """Set project order using the previously read full order as a concurrency check."""
+        return store.reorder_tasks(project, ordered_ids, expected_order)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors

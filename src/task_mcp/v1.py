@@ -125,11 +125,22 @@ class Store(LegacyStore):
                     db.execute(
                         """INSERT INTO attempts VALUES
                         (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (_id("att_"), legacy["id"], workstream_id, "legacy-unknown",
-                         "Migrated legacy implementation result", legacy["evidence"], 1,
-                         "rework" if legacy["status"] == "rework" else "review", None,
-                         legacy["review"] or None, None, 1, legacy["updated_at"],
-                         legacy["updated_at"]),
+                        (
+                            _id("att_"),
+                            legacy["id"],
+                            workstream_id,
+                            "legacy-unknown",
+                            "Migrated legacy implementation result",
+                            legacy["evidence"],
+                            1,
+                            "rework" if legacy["status"] == "rework" else "review",
+                            None,
+                            legacy["review"] or None,
+                            None,
+                            1,
+                            legacy["updated_at"],
+                            legacy["updated_at"],
+                        ),
                     )
 
     def _project(self, db, project, scope, create=False):
@@ -463,12 +474,28 @@ class Store(LegacyStore):
             before = self._workstream(db, workstream_id)
             if before["revision"] != expected_revision:
                 raise TaskError("revision_conflict: re-read the workstream")
+            previous = {
+                "members": [
+                    row["task_id"]
+                    for row in db.execute(
+                        "SELECT task_id FROM scope_members WHERE workstream_id=? ORDER BY task_id",
+                        (workstream_id,),
+                    )
+                ],
+                "groups": [
+                    row["group_id"]
+                    for row in db.execute(
+                        "SELECT group_id FROM scope_groups WHERE workstream_id=? ORDER BY group_id",
+                        (workstream_id,),
+                    )
+                ],
+            }
             members, groups = self._scope_expression(db, before["project_id"], expression)
             self._set_scope(db, workstream_id, members, groups)
             db.execute("UPDATE workstreams SET revision=revision+1 WHERE id=?", (workstream_id,))
             scope.update(
                 project_id=before["project_id"],
-                before=before,
+                before={"workstream": before, **previous},
                 after={"members": sorted(members), "groups": sorted(groups)},
             )
             return {**self._workstream(db, workstream_id), **scope["after"]}
@@ -663,7 +690,8 @@ class Store(LegacyStore):
             if group_id:
                 db.execute(
                     "INSERT INTO prerequisites SELECT ?,blocked_by_id "
-                    "FROM prerequisites WHERE task_id=?", (task_id, group_id)
+                    "FROM prerequisites WHERE task_id=?",
+                    (task_id, group_id),
                 )
             if scope == "workstream":
                 db.execute("INSERT INTO scope_members VALUES (?, ?)", (workstream_id, task_id))
@@ -986,7 +1014,8 @@ class Store(LegacyStore):
                 )
                 db.execute(
                     "INSERT INTO prerequisites SELECT ?,blocked_by_id "
-                    "FROM prerequisites WHERE task_id=?", (child_id, task_id)
+                    "FROM prerequisites WHERE task_id=?",
+                    (child_id, task_id),
                 )
                 children.append(child_id)
             scope.update(before=before, after={"group": after, "members": children})
@@ -994,8 +1023,8 @@ class Store(LegacyStore):
 
         return self._run("task.decomposed", request, operation)
 
-    def reorder_tasks(self, project, ordered_ids):
-        request = dict(project=project, ordered_ids=ordered_ids)
+    def reorder_tasks(self, project, ordered_ids, expected_order=None):
+        request = dict(project=project, ordered_ids=ordered_ids, expected_order=expected_order)
 
         def operation(db, scope):
             project_id = self._project(db, project, scope)["id"]
@@ -1005,28 +1034,33 @@ class Store(LegacyStore):
                     "SELECT id FROM tasks WHERE project_id=? ORDER BY order_key,id", (project_id,)
                 )
             ]
+            if expected_order != current:
+                raise TaskError("revision_conflict: re-read the current project order")
             if len(ordered_ids) != len(current) or set(ordered_ids) != set(current):
                 raise TaskError("invalid_order: include every project task exactly once")
             for index, task_id in enumerate(ordered_ids, 1):
                 db.execute(
                     "UPDATE tasks SET order_key=?, revision=revision+1 WHERE id=?", (index, task_id)
                 )
-            scope["after"] = {"ordered_ids": ordered_ids}
+            scope.update(before={"ordered_ids": current}, after={"ordered_ids": ordered_ids})
             return scope["after"]
 
         return self._run("tasks.reordered", request, operation)
 
     @staticmethod
     def _unsatisfied_prerequisite(db, task_id):
-        return bool(db.execute(
-            """SELECT 1 FROM prerequisites p JOIN tasks dependency
+        return bool(
+            db.execute(
+                """SELECT 1 FROM prerequisites p JOIN tasks dependency
             ON dependency.id=p.blocked_by_id WHERE p.task_id=? AND (
                 (dependency.object_type='task' AND dependency.status!='done') OR
                 (dependency.object_type='group' AND EXISTS (
                     SELECT 1 FROM tasks child WHERE child.parent_group_id=dependency.id
                     AND child.status!='done')))
-            LIMIT 1""", (task_id,)
-        ).fetchone())
+            LIMIT 1""",
+                (task_id,),
+            ).fetchone()
+        )
 
     @staticmethod
     def _gate_reasons(db, task, workstream_id=None):

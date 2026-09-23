@@ -1,0 +1,308 @@
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
+
+import pytest
+
+from task_mcp.store import LegacyStore, Store, TaskError, default_database
+
+
+@pytest.fixture
+def store(tmp_path):
+    return Store(tmp_path / "private" / "tasks.sqlite3", actor="test-coordinator")
+
+
+def setup(store, tmp_path, branch="main"):
+    path = str(tmp_path / "checkout")
+    result = store.init_project(path, branch=branch, confirmed=True)
+    return result["project"]["id"], result["workstream"]["id"], path
+
+
+def task(store, project, ws, title="Implement", source="user"):
+    return store.create_task(
+        project,
+        title,
+        "Goal and boundaries",
+        "Observable acceptance",
+        source=source,
+        user_request="User requested this outcome" if source == "user" else "",
+        workstream_id=ws,
+        scope="workstream",
+    )
+
+
+def test_explicit_init_and_attachment_do_not_write_checkouts(store, tmp_path):
+    path = tmp_path / "checkout"
+    path.mkdir()
+    with pytest.raises(TaskError, match="project_not_initialized"):
+        store.list_tasks(str(path))
+    with pytest.raises(TaskError, match="confirmation_required"):
+        store.init_project(str(path), branch="main")
+    project, ws, canonical = setup(store, tmp_path)
+    assert store.preflight(project, canonical, branch="main")["workstream"]["id"] == ws
+    assert list(path.iterdir()) == []
+    other = tmp_path / "other"
+    other.mkdir()
+    with pytest.raises(TaskError, match="checkout_not_attached"):
+        store.init_workstream(project, str(other), branch="feature", confirmed=True)
+    store.attach_checkout(project, str(other), confirmed=True)
+    feature = store.init_workstream(project, str(other), branch="feature", confirmed=True)
+    assert feature["members"] == []
+    with pytest.raises(TaskError, match="workstream_mismatch"):
+        store.preflight(project, canonical, branch="feature", workstream_id=ws)
+    assert list(other.iterdir()) == []
+
+
+def test_workstream_rebinding_and_named_non_git_context(store, tmp_path):
+    project, ws, path = setup(store, tmp_path)
+    with pytest.raises(TaskError, match="workstream_name_required"):
+        store.init_workstream(project, path, confirmed=True)
+    renamed = store.rebind_workstream(ws, 1, path, branch="renamed", confirmed=True)
+    assert renamed["id"] == ws and renamed["revision"] == 2
+    assert store.preflight(project, path, branch="renamed")["workstream"]["id"] == ws
+    with pytest.raises(TaskError, match="workstream_not_initialized"):
+        store.preflight(project, path, branch="main")
+    named = store.init_workstream(project, path, name="detached", confirmed=True)
+    assert (
+        store.preflight(project, path, workstream_id=named["workstream"]["id"])["workstream"][
+            "name"
+        ]
+        == "detached"
+    )
+
+
+def test_pending_acceptance_spec_invalidation_and_unresolved_resolution(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    proposed = task(store, project, ws, source="agent")
+    assert not proposed["accepted"]
+    assert store.get_next_task(ws)["diagnostics"]["pending_acceptance"] == 1
+    accepted = store.accept_task(proposed["id"], 1, "User accepted exact specification")
+    assert accepted["accepted"]
+    gated = store.add_unresolved(proposed["id"], 2, "Need user-only credential")
+    assert store.get_next_task(ws)["diagnostics"]["unresolved_items"] == 1
+    resolved = store.resolve_unresolved(
+        proposed["id"], 3, gated["unresolved_items"][0]["id"], "Credential provided"
+    )
+    assert resolved["accepted"]
+    assert store.get_next_task(ws)["task"]["id"] == proposed["id"]
+    edited = store.update_task(proposed["id"], 4, {"body": "Materially different goal"})
+    assert edited["spec_revision"] == 2 and not edited["accepted"]
+    with pytest.raises(TaskError, match="task_not_eligible"):
+        store.record_result(proposed["id"], ws, 5, "implementer", "Done", "Tests pass")
+
+
+def test_scope_set_expression_snapshot_and_live_group_members(store, tmp_path):
+    project, ws, path = setup(store, tmp_path)
+    one = task(store, project, ws, "One")
+    two = store.create_task(project, "Two", source="agent")
+    assert store.preflight(project, path, branch="main")["scope"] == [one["id"]]
+    branch = store.init_workstream(
+        project,
+        path,
+        branch="other",
+        name="other",
+        scope_expression=f"main +{two['id']} -{one['id']}",
+        confirmed=True,
+    )
+    other = branch["workstream"]["id"]
+    assert store.get_next_task(other)["diagnostics"]["pending_acceptance"] == 1
+    third = task(store, project, ws, "Three")
+    assert third["id"] not in store.list_workstreams(project)["items"][1]["scope"]
+    parent = task(store, project, ws, "Parent")
+    group = store.decompose_task(parent["id"], 1, [{"title": "Child A"}])
+    child_a = group["members"][0]
+    scoped = store.set_scope(other, 1, f"none +{parent['id']}")
+    assert (
+        child_a in scoped["groups"]
+        or child_a in store.list_workstreams(project)["items"][1]["scope"]
+    )
+    child_b = store.create_task(project, "Child B", group_id=parent["id"])
+    assert child_b["id"] in store.list_workstreams(project)["items"][1]["scope"]
+    assert not child_b["accepted"]
+
+
+def test_prerequisites_and_observer_gate_proposals(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    first = task(store, project, ws, "First")
+    second = task(store, project, ws, "Second")
+    observer = store.add_unresolved(first["id"], 1, "Possible issue", handling="observer")
+    assert store.get_next_task(ws)["task"]["id"] == first["id"]
+    activated = store.accept_gate_proposal(observer["id"], 1)
+    assert activated["unresolved_items"]
+    blocked = store.add_prerequisite(second["id"], 1, first["id"])
+    assert blocked["blocked_by"] == [first["id"]]
+    assert store.get_next_task(ws)["diagnostics"]["prerequisites"] == 1
+    with pytest.raises(TaskError, match="prerequisite_cycle"):
+        store.add_prerequisite(first["id"], 2, second["id"])
+
+
+def test_pending_prerequisite_proposal_is_atomic_and_disposition_preserves_acceptance(
+    store, tmp_path
+):
+    project, ws, _ = setup(store, tmp_path)
+    parent = task(store, project, ws)
+    added = store.propose_prerequisite(
+        parent["id"], 1, "Research dependency", "Scope stays pending", workstream_id=ws
+    )
+    proposal = added["proposal"]
+    assert not proposal["accepted"]
+    assert proposal["id"] in added["task"]["blocked_by"]
+    assert proposal["id"] in store.list_workstreams(project)["items"][0]["scope"]
+    deferred = store.set_disposition(parent["id"], 2, "deferred", "Wait for research")
+    assert deferred["accepted"] and deferred["status"] == "deferred"
+    resumed = store.set_disposition(parent["id"], 3, "open", "Research resumed")
+    assert resumed["accepted"] and resumed["body"] == parent["body"]
+
+
+def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    parent = task(store, project, ws, "Grouped work")
+    downstream = task(store, project, ws, "Downstream")
+    store.add_prerequisite(downstream["id"], 1, parent["id"])
+    group = store.decompose_task(parent["id"], 1, [{"title": "One"}, {"title": "Two"}])
+    assert downstream["id"] in {
+        item["id"] for item in store.list_tasks(project, ws, state="prerequisites")["items"]
+    }
+    for member in group["members"]:
+        accepted = store.accept_task(member, 1, "User accepted member")
+        attempt = store.record_result(
+            member, ws, accepted["revision"], "worker", "Done", "Verified"
+        )
+        store.record_review(attempt["id"], 1, "reviewer", "pass", "Reviewed")
+        store.signoff_task(member, accepted["revision"] + 1, "approve", "Approved", attempt["id"])
+    assert store.get_tasks([parent["id"]])["items"][0]["complete"]
+    assert store.get_next_task(ws)["task"]["id"] == downstream["id"]
+
+
+def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    created = task(store, project, ws)
+    assert store.get_tasks([created["id"]])["items"][0]["attempts"] == []
+    result = store.record_result(created["id"], ws, 1, "worker", "Done", "pytest passed")
+    with pytest.raises(TaskError, match="independent_review_required"):
+        store.record_review(result["id"], 1, "worker", "pass", "Looks good")
+    with pytest.raises(TaskError, match="review_required"):
+        store.signoff_task(created["id"], 2, "approve", "Approved", result["id"])
+    reviewed = store.record_review(result["id"], 1, "reviewer", "pass", "Checked diff")
+    assert reviewed["state"] == "passed"
+    rejected = store.signoff_task(created["id"], 2, "reject", "Fix input loss", result["id"])
+    assert rejected["accepted"] and rejected["status"] == "rework"
+    retry = store.record_result(created["id"], ws, 3, "worker", "Fixed", "repro passed")
+    human = store.human_review(retry["id"], 1, "User reviewed and waived another reviewer")
+    assert human["state"] == "human_review"
+    revised = store.signoff_task(
+        created["id"], 4, "reject", "Change requirements", retry["id"], rejection="revise"
+    )
+    assert not revised["accepted"] and revised["unresolved_items"]
+    resolved = store.resolve_unresolved(
+        created["id"], 5, revised["unresolved_items"][0]["id"], "Settled"
+    )
+    accepted = store.accept_task(created["id"], resolved["revision"], "Accepted revised spec")
+    final = store.record_result(
+        created["id"], ws, accepted["revision"], "worker", "New result", "verified"
+    )
+    store.record_review(final["id"], 1, "reviewer", "pass", "Reviewed new result")
+    complete = store.signoff_task(
+        created["id"], accepted["revision"] + 1, "approve", "User approved", final["id"]
+    )
+    assert complete["status"] == "done"
+
+
+def test_parallel_workstream_attempts_and_group_completion(store, tmp_path):
+    project, ws, path = setup(store, tmp_path)
+    parent = task(store, project, ws, "Group")
+    group = store.decompose_task(parent["id"], 1, [{"title": "A"}, {"title": "B"}])
+    a, b = group["members"]
+    assert not group["complete"]
+    branch = store.init_workstream(
+        project,
+        path,
+        branch="alternative",
+        scope_expression=f"none +{parent['id']}",
+        confirmed=True,
+    )
+    other = branch["workstream"]["id"]
+    for member in (a, b):
+        accepted = store.accept_task(member, 1, "User accepted member")
+        result = store.record_result(
+            member, ws, accepted["revision"], "worker-1", "Done", "tests pass"
+        )
+        alternate = store.record_result(
+            member, other, accepted["revision"] + 1, "worker-2", "Alternative", "tests pass"
+        )
+        store.record_review(result["id"], 1, "reviewer", "pass", "Reviewed")
+        store.record_review(alternate["id"], 1, "reviewer", "pass", "Reviewed")
+        store.signoff_task(
+            member, accepted["revision"] + 2, "approve", "Winner selected", alternate["id"]
+        )
+    assert store.get_tasks([parent["id"]])["items"][0]["complete"]
+
+
+def test_order_and_deterministic_export(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    first = task(store, project, ws, "First")
+    second = task(store, project, ws, "Second")
+    store.reorder_tasks(
+        project, [second["id"], first["id"]], expected_order=[first["id"], second["id"]]
+    )
+    with pytest.raises(TaskError, match="revision_conflict"):
+        store.reorder_tasks(
+            project, [first["id"], second["id"]], expected_order=[first["id"], second["id"]]
+        )
+    assert store.get_next_task(ws)["task"]["id"] == second["id"]
+    one = store.export_workstream(ws)
+    two = store.export_workstream(ws)
+    assert one == two
+    assert one["content"].index(second["id"]) < one["content"].index(first["id"])
+    assert one["format"] == "task-mcp/v1"
+
+
+def test_migrate_legacy_database_without_losing_ids_bodies_or_audit(tmp_path):
+    database = tmp_path / "legacy.sqlite3"
+    legacy = LegacyStore(database, actor="legacy")
+    design = legacy.add_task(str(tmp_path / "repo"), "Design", "Rationale")
+    auto = legacy.add_task(str(tmp_path / "repo"), "Auto", "Existing result", kind="auto")
+    legacy.update_task(auto["id"], 1, {"status": "review", "evidence": "Old test"})
+    with sqlite3.connect(database) as db:
+        before_events = db.execute("SELECT count(*) FROM events").fetchone()[0]
+    migrated = Store(database)
+    tasks = migrated.get_tasks([design["id"], auto["id"]])["items"]
+    assert tasks[0]["body"] == "Rationale" and not tasks[0]["accepted"]
+    assert tasks[1]["body"] == "Existing result" and tasks[1]["accepted"]
+    assert tasks[1]["attempts"][0]["state"] == "review"
+    assert tasks[1]["attempts"][0]["evidence"] == "Old test"
+    assert migrated.list_workstreams(str(tmp_path / "repo"))["items"][0]["scope"] == sorted(
+        [design["id"], auto["id"]]
+    )
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] >= before_events
+    assert Store(database).get_tasks([auto["id"]])["items"][0]["id"] == auto["id"]
+
+
+def test_same_revision_concurrent_updates_allow_one_writer(store, tmp_path):
+    project, ws, _ = setup(store, tmp_path)
+    created = task(store, project, ws)
+    barrier = Barrier(2)
+
+    def write(title):
+        other = Store(store.path, actor=title)
+        barrier.wait(timeout=5)
+        try:
+            return other.update_task(created["id"], 1, {"title": title})
+        except TaskError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(write, ["Agent A", "Agent B"]))
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert sum("revision_conflict" in result for result in results if isinstance(result, str)) == 1
+    events = store.list_events(task_id=created["id"], include_details=True)["items"]
+    assert sorted(e["outcome"] for e in events if e["action"] == "task.updated") == ["error", "ok"]
+
+
+def test_default_data_location_is_private(monkeypatch, tmp_path):
+    monkeypatch.delenv("TASK_MCP_DB", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert default_database() == Path(tmp_path / "data/task-mcp/tasks.sqlite3")
