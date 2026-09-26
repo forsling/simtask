@@ -95,6 +95,26 @@ Cheap research and reversible choices proceed without ceremony.
 
 ## Surface and boundary
 
+The optional local browser companion invokes a narrow allowlist of the same
+Store operations as MCP. It adds no task state model, business transition
+logic, synchronization or agent dependency. Project/workstream queues retain
+their derived views; stored disposition and global group progress are labelled
+separately. Human decision dialogs require a note and explicit confirmation;
+attempt review revisions and task sign-off revisions remain distinct. Text is
+rendered as text, never trusted HTML. Failed concurrent writes preserve drafts
+and require explicit reconciliation with the current version.
+
+Only an explicit CLI `ui` command or `open_task_viewer` MCP call launches the
+companion. A POSIX lock and private per-database sidecar discover and reuse its
+loopback-only ephemeral listener. A bearer token, exact Host/Origin checks,
+custom request header and restrictive CSP protect access. The browser cannot
+choose a database path or dispatch arbitrary Store methods. The detached
+process persists until explicitly stopped or terminated; no service, automatic
+startup, remote assets or public hosting is installed. This is a new local
+listener capability under the MCP server's existing trust boundary, not an
+approval-policy change. Read requests keep the Store's existing audited-write
+semantics. The service does not authenticate the human behind a token.
+
 The initial recommended path is `init -> proposal/unresolved review ->
 superdevloop -> sign-off`. Features with unsettled design use `feature-capture`
 then `feature-design` before implementation. Capture does bounded research and

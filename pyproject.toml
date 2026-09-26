@@ -29,4 +29,4 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/task_mcp"]
-artifacts = ["src/task_mcp/reference_skills/*/SKILL.md"]
+artifacts = ["src/task_mcp/reference_skills/*/SKILL.md", "src/task_mcp/viewer_assets/*"]

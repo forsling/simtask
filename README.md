@@ -27,8 +27,49 @@ It records only synthetic decisions. The configured executable for a client is
 descriptive attribution label if useful. The default database is
 `$XDG_DATA_HOME/task-mcp/tasks.sqlite3`, falling back to
 `~/.local/share/task-mcp/tasks.sqlite3`. Override with `TASK_MCP_DB` or `--db`.
-No network listener is needed. Connect this command in each client's own MCP
+No network listener is needed for stdio. Connect this command in each client's own MCP
 configuration; Task MCP does not install its connection.
+
+## Local browser workspace
+
+An optional browser viewer/editor works without an agent or model:
+
+```sh
+.venv/bin/task-mcp ui
+# Select a different database explicitly at launch:
+.venv/bin/task-mcp ui --db /absolute/path/tasks.sqlite3
+# Stop that database's viewer:
+.venv/bin/task-mcp ui --db /absolute/path/tasks.sqlite3 --stop
+```
+
+Open the private link printed by the command. Repeated launches reuse the live
+viewer for that database. The explicit `open_task_viewer` MCP tool returns the
+same link for its configured database; it does not change client approvals or
+open a browser automatically. The listener stays running after the CLI or MCP
+session ends, until **Stop viewer**, `ui --stop`, or the process/machine stops.
+There is no automatic startup or installed OS service. The current launcher
+uses POSIX file locking (Linux/macOS).
+
+Browse projects and workstreams, search/filter task titles, inspect global
+groups, and read specifications, evidence and audit history. Dedicated dialogs
+record creation, edits, acceptance, questions, defer/resume/drop, human review
+and sign-off. Concurrent changes retain your draft and offer reconciliation.
+The app uses the existing Store and database; it has no synchronized copy.
+Task text is displayed as safe, whitespace-preserving text, including Markdown
+source. Full task setup, result recording and uncommon workflow operations
+remain available through MCP.
+
+The listener binds only `127.0.0.1` on an ephemeral port. Its private launch link
+is a bearer credential: keep it private. Host/Origin checks, a custom token
+header, strict content policy and no external assets protect browser access.
+The token is removed from the address bar and kept in per-tab session storage.
+Reads still append Store audit events. Whole-server pre-approval now includes
+the ability to explicitly launch this local listener and expose the configured
+database to a token-holding browser; it is not a read-only viewer. Nothing here
+changes Codex's approval settings.
+
+For a disposable visual demo, run `.venv/bin/python examples/viewer_demo.py`.
+See [viewer usage, security and lifecycle](docs/viewer.md) for details.
 
 ## Performance and client approvals
 
@@ -266,6 +307,7 @@ those rare workflows are deferred.
 | Specification and gates | `create_task`, `update_task`, `accept_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
 | Inspection | `list_events`, `export_workstream`, `get_default_skills` |
+| Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
 
 Mutations that change a task or workstream require the last revision read.
 `reorder_tasks` takes the previously read complete project order as

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Task MCP · Workspace</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Task MCP home"
+          ><span class="mark">t.</span
+          ><span>Task MCP<small>YOUR LOCAL WORKSPACE</small></span></a
+        >
+        <div class="connection"><span></span> Local, on your machine</div>
+        <label class="overline" for="project">PROJECT</label
+        ><select id="project"></select>
+        <p id="project-path" class="path"></p>
+        <p class="overline">WORKSTREAMS</p>
+        <nav id="workstreams" aria-label="Workstreams"></nav>
+        <button id="groups" class="nav secondary">
+          ◈ &nbsp; Shared groups
+        </button>
+        <div class="sidebar-bottom">
+          <p>Clear context.<br />Deliberate progress.</p>
+          <small>Private task state · SQLite</small
+          ><button id="stop" class="text-button">Stop viewer</button>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <p class="overline" id="eyebrow">WORKSPACE</p>
+            <h1 id="heading">Your tasks, in focus.</h1>
+            <p id="subtitle">Choose a project to get started.</p>
+          </div>
+          <div class="header-actions">
+            <button id="refresh" class="button">↻ Refresh</button
+            ><button id="new" class="button primary">＋ New task</button>
+          </div>
+        </header>
+        <div id="notice" role="status" aria-live="polite"></div>
+        <div class="toolbar">
+          <label class="search"
+            ><span>⌕</span
+            ><input
+              id="search"
+              type="search"
+              placeholder="Search titles…"
+              aria-label="Search task titles" /></label
+          ><select id="filter" aria-label="Filter workflow">
+            <option value="">All workflow states</option>
+            <option value="ready">Ready</option>
+            <option value="pending_acceptance">Needs acceptance</option>
+            <option value="unresolved_items">Open questions</option>
+            <option value="prerequisites">Prerequisites</option>
+            <option value="review">Needs review</option>
+            <option value="signoff">Awaiting sign-off</option>
+            <option value="done">Done</option>
+            <option value="deferred">Deferred</option>
+            <option value="dropped">Dropped</option></select
+          ><span id="count"></span>
+        </div>
+        <div class="workspace">
+          <section class="queue" aria-label="Task queue" id="queue"></section>
+          <article id="detail" class="detail">
+            <div class="empty">
+              <div class="empty-icon">↗</div>
+              <h2>A little clarity goes a long way.</h2>
+              <p>
+                Select a task to see its specification,<br />decisions and
+                delivery history.
+              </p>
+            </div>
+          </article>
+        </div>
+      </main>
+    </div>
+    <dialog id="dialog">
+      <form id="form">
+        <div class="dialog-top">
+          <p class="overline">TASK MCP · HUMAN DECISION</p>
+          <button
+            type="button"
+            id="close"
+            class="icon"
+            aria-label="Close dialog"
+          >
+            ×
+          </button>
+        </div>
+        <h2 id="dialog-title"></h2>
+        <p id="dialog-description"></p>
+        <div id="fields"></div>
+        <p id="form-error" role="alert"></p>
+        <div id="conflict"></div>
+        <footer>
+          <button type="button" id="cancel" class="button">Cancel</button
+          ><button id="submit" class="button primary" type="submit">
+            Save
+          </button>
+        </footer>
+      </form>
+    </dialog>
+  </body>
+</html>

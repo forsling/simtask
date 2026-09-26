@@ -13,6 +13,6 @@ def test_real_stdio_client_server_round_trip():
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "discovered 35 tools" in result.stdout
+    assert "discovered 36 tools" in result.stdout
     assert "Rejected an update from an outdated revision" in result.stdout
     assert "Demo passed" in result.stdout

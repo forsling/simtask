@@ -72,6 +72,26 @@ def create_server(store: Store) -> MCPServer:
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     )
 
+    @server.tool(
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+        structured_output=True,
+    )
+    @domain_errors
+    def open_task_viewer() -> dict[str, Any]:
+        """Explicitly start/reuse a protected loopback editor; return its private browser link.
+
+        The companion outlives this stdio session. Stop it in the UI or with
+        task-mcp ui --stop. This adds a local listener to whole-server trust.
+        """
+        from task_mcp.viewer import launch_viewer
+
+        return launch_viewer(store.path)
+
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def list_projects(limit: int = 50, offset: int = 0) -> dict[str, Any]:
@@ -445,12 +465,26 @@ def create_server(store: Store) -> MCPServer:
 
 def main():
     parser = argparse.ArgumentParser(description="Local Task MCP v1 server (stdio).")
+    parser.add_argument("command", nargs="?", choices=("ui",))
+    parser.add_argument("--stop", action="store_true", help="Stop the explicit local viewer")
     parser.add_argument("--db", type=Path, default=default_database())
     parser.add_argument("--actor", default=os.environ.get("TASK_MCP_ACTOR", "local-agent"))
     parser.add_argument("--export-workstream", metavar="WORKSTREAM_ID")
     parser.add_argument("--export-format", choices=("markdown", "legacy"))
     parser.add_argument("--exclude-closed", action="store_true", help="Omit done/dropped tasks")
     args = parser.parse_args()
+    if args.command == "ui":
+        from task_mcp.viewer import launch_viewer, stop_viewer
+
+        if args.export_workstream or args.export_format or args.exclude_closed:
+            parser.error("ui cannot be combined with export options")
+        if args.stop:
+            print("Viewer stopped." if stop_viewer(args.db) else "Viewer is not running.")
+        else:
+            print(launch_viewer(args.db)["url"])
+        return
+    if args.stop:
+        parser.error("--stop requires ui")
     if not args.export_workstream and (args.export_format or args.exclude_closed):
         parser.error("--export-format and --exclude-closed require --export-workstream")
     store = Store(args.db, args.actor)

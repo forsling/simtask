@@ -51,13 +51,14 @@ DESTRUCTIVE = {
 }
 
 CATALOG = {"get_default_skills"}
+LAUNCHER = {"open_task_viewer"}
 
 
 def test_every_published_tool_has_an_explicit_safety_policy(tmp_path):
     server = create_server(Store(tmp_path / "tasks.sqlite3"))
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
 
-    assert set(tools) == ADDITIVE | DESTRUCTIVE | CATALOG
+    assert set(tools) == ADDITIVE | DESTRUCTIVE | CATALOG | LAUNCHER
     assert not (ADDITIVE & DESTRUCTIVE or ADDITIVE & CATALOG or DESTRUCTIVE & CATALOG)
     for name in ADDITIVE:
         hints = tools[name].annotations
@@ -80,6 +81,12 @@ def test_every_published_tool_has_an_explicit_safety_policy(tmp_path):
         assert hints.destructive_hint is False, name
         assert hints.idempotent_hint is True, name
         assert hints.open_world_hint is False, name
+    for name in LAUNCHER:
+        hints = tools[name].annotations
+        assert hints.read_only_hint is False
+        assert hints.destructive_hint is False
+        assert hints.idempotent_hint is True
+        assert hints.open_world_hint is False
 
 
 def _business_payload(database, task_id):
