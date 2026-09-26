@@ -42,6 +42,9 @@ def create_server(store: Store) -> MCPServer:
             "or named workstream for each task-using session. Exact bindings resume without "
             "confirmation; confirm an explicit action to create, attach or rebind. "
             "A session may retain multiple returned project/workstream IDs. "
+            "Groups have one global ID; only local concrete members enter a workstream queue. "
+            "Use list_groups/get_tasks for whole-group progress and supply group revisions "
+            "when creating or attaching members. "
             "Tasks have current user acceptance, unresolved items, prerequisites and scoped "
             "attempts. get_next_task selects without claiming. A reviewer other than the "
             "implementer records ordinary review; human_review requires an actual user "
@@ -139,6 +142,28 @@ def create_server(store: Store) -> MCPServer:
         """Inspect one workstream's scoped queue and counts without initializing or rebinding."""
         return store.workstream_status(workstream_id, limit, offset)
 
+    @server.tool(annotations=additive, structured_output=True)
+    @domain_errors
+    def list_groups(project: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """Discover shared groups globally or through a member/scoped project."""
+        return store.list_groups(project, limit, offset)
+
+    @server.tool(annotations=additive, structured_output=True)
+    @domain_errors
+    def create_group(
+        workstream_id: str, title: str, body: str = "", acceptance_criteria: str = ""
+    ) -> dict[str, Any]:
+        """Create an empty global group and include it in this workstream's scope."""
+        return store.create_group(workstream_id, title, body, acceptance_criteria)
+
+    @server.tool(annotations=additive, structured_output=True)
+    @domain_errors
+    def add_group_member(
+        group_id: str, expected_revision: int, task_id: str, expected_task_revision: int
+    ) -> dict[str, Any]:
+        """Atomically attach a local task to a shared group with revision checks."""
+        return store.add_group_member(group_id, expected_revision, task_id, expected_task_revision)
+
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def rebind_workstream(
@@ -180,8 +205,9 @@ def create_server(store: Store) -> MCPServer:
         workstream_id: str | None = None,
         scope: Literal["inbox", "workstream"] = "inbox",
         group_id: str | None = None,
+        group_expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        """Create a pending proposal, or record a directly requested accepted task."""
+        """Create a local task; group membership also requires the group's read revision."""
         return store.create_task(
             project,
             title,
@@ -192,6 +218,7 @@ def create_server(store: Store) -> MCPServer:
             workstream_id,
             scope,
             group_id,
+            group_expected_revision,
         )
 
     @server.tool(annotations=additive, structured_output=True)

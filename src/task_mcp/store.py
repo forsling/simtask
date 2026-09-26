@@ -19,7 +19,7 @@ SCHEMA = (
     """CREATE TABLE IF NOT EXISTS project_paths (
         path TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id))""",
     """CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id),
         title TEXT NOT NULL, body TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
         status TEXT NOT NULL, object_type TEXT NOT NULL, spec_revision INTEGER NOT NULL,
         accepted_spec_revision INTEGER, acceptance_note TEXT NOT NULL,
@@ -102,10 +102,25 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as db:
             db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA foreign_keys=OFF")
             db.execute("BEGIN IMMEDIATE")
             for statement in SCHEMA:
                 db.execute(statement)
+            columns = {row["name"]: row for row in db.execute("PRAGMA table_info(tasks)")}
+            if columns["project_id"]["notnull"]:
+                db.execute(
+                    SCHEMA[2].replace(
+                        "CREATE TABLE IF NOT EXISTS tasks (", "CREATE TABLE tasks_new ("
+                    )
+                )
+                db.execute("INSERT INTO tasks_new SELECT * FROM tasks")
+                db.execute("DROP TABLE tasks")
+                db.execute("ALTER TABLE tasks_new RENAME TO tasks")
+                db.execute(SCHEMA[3])
+            if db.execute("PRAGMA foreign_key_check").fetchone():
+                raise RuntimeError("task database has invalid foreign keys")
             db.commit()
+            db.execute("PRAGMA foreign_keys=ON")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
@@ -175,7 +190,8 @@ class Store:
             self._page(limit, offset)
             rows = db.execute(
                 """SELECT p.*, count(t.id) AS task_count FROM projects p LEFT JOIN tasks t
-                ON p.id=t.project_id GROUP BY p.id ORDER BY p.name, p.id LIMIT ? OFFSET ?""",
+                ON p.id=t.project_id AND t.object_type='task'
+                GROUP BY p.id ORDER BY p.name, p.id LIMIT ? OFFSET ?""",
                 (limit + 1, offset),
             ).fetchall()
             return self._paged([dict(row) for row in rows], limit, offset)
@@ -378,6 +394,7 @@ class Store:
             ]
             for row in rows:
                 row["scope"] = self._scope_ids(db, row["id"])
+                row["groups"] = self._scope_group_ids(db, row["id"])
                 row["status"] = self._status_summary(db, row["id"], row["scope"])
             return self._paged(rows, limit, offset)
 
@@ -449,10 +466,10 @@ class Store:
 
     def _status_summary(self, db, workstream_id, ids=None):
         ids = ids if ids is not None else self._scope_ids(db, workstream_id)
+        scoped_ids = set(ids)
         counts = {
             key: 0
             for key in (
-                "group",
                 "ready",
                 "pending_acceptance",
                 "unresolved_items",
@@ -479,12 +496,35 @@ class Store:
             for reason in item["gate_diagnostics"]:
                 if reason in overlapping:
                     overlapping[reason] += 1
+        ws = self._workstream(db, workstream_id)
+        referenced_groups = []
+        for row in db.execute(
+            "SELECT g.id,g.title FROM tasks g JOIN scope_groups s ON s.group_id=g.id "
+            "WHERE s.workstream_id=? ORDER BY g.title,g.id",
+            (workstream_id,),
+        ):
+            group = self._details(db, self._task(db, row["id"], {}))
+            referenced_groups.append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "global_progress": group["progress"],
+                    "complete": group["complete"],
+                    "project_member_count": group["progress"]["by_project"].get(
+                        ws["project_id"], {"total": 0}
+                    )["total"],
+                    "scoped_member_count": sum(
+                        member_id in scoped_ids for member_id in group["members"]
+                    ),
+                }
+            )
         return {
             "recorded_state": "registered",
             "agent_liveness": "unknown",
             "scoped_count": len(ids),
             "counts": counts,
             "overlapping_gate_diagnostics": overlapping,
+            "referenced_groups": referenced_groups,
         }
 
     def init(
@@ -706,6 +746,7 @@ class Store:
             "workstream": ws,
             "scope_revision": ws["revision"],
             "queue": self._scoped_queue(db, ws["id"]),
+            "groups": self._scope_group_ids(db, ws["id"]),
             "status": self._status_summary(db, ws["id"]),
         }
 
@@ -815,20 +856,28 @@ class Store:
                 ws = dict(rows[0])
             else:
                 raise TaskError("workstream_name_required: select a named workstream")
-            return {"project": selected, "workstream": ws, "scope": self._scope_ids(db, ws["id"])}
+            return {
+                "project": selected,
+                "workstream": ws,
+                "scope": self._scope_ids(db, ws["id"]),
+                "groups": self._scope_group_ids(db, ws["id"]),
+            }
 
         return self._run("workstream.preflight", request, operation)
 
     @staticmethod
     def _scope_ids(db, workstream_id):
         rows = db.execute(
-            """SELECT task_id AS id FROM scope_members WHERE workstream_id=?
-            UNION SELECT group_id AS id FROM scope_groups WHERE workstream_id=?
+            """SELECT t.id FROM tasks t JOIN scope_members m ON m.task_id=t.id
+            JOIN workstreams w ON w.id=m.workstream_id
+            WHERE m.workstream_id=? AND t.project_id=w.project_id AND t.object_type='task'
             UNION SELECT t.id FROM tasks t JOIN scope_groups s ON s.group_id=t.parent_group_id
-            WHERE s.workstream_id=? AND NOT EXISTS (
+            JOIN workstreams w ON w.id=s.workstream_id
+            WHERE s.workstream_id=? AND t.project_id=w.project_id AND t.object_type='task'
+            AND NOT EXISTS (
                 SELECT 1 FROM scope_exclusions e WHERE e.workstream_id=s.workstream_id
                 AND e.task_id=s.group_id)""",
-            (workstream_id, workstream_id, workstream_id),
+            (workstream_id, workstream_id),
         ).fetchall()
         exclusions = {
             row["task_id"]
@@ -837,6 +886,16 @@ class Store:
             )
         }
         return sorted(row["id"] for row in rows if row["id"] not in exclusions)
+
+    @staticmethod
+    def _scope_group_ids(db, workstream_id):
+        return [
+            row["group_id"]
+            for row in db.execute(
+                "SELECT group_id FROM scope_groups WHERE workstream_id=? ORDER BY group_id",
+                (workstream_id,),
+            )
+        ]
 
     @staticmethod
     def _set_scope(db, workstream_id, members, groups, exclusions):
@@ -863,12 +922,20 @@ class Store:
     @staticmethod
     def _resolve_reference(db, project_id, term):
         row = db.execute(
-            "SELECT id, object_type FROM tasks WHERE id=? AND project_id=?", (term, project_id)
+            "SELECT id, object_type FROM tasks WHERE id=? AND "
+            "(project_id=? OR object_type='group')",
+            (term, project_id),
         ).fetchone()
         if row:
             return row["id"], row["object_type"]
         rows = db.execute(
-            "SELECT id, object_type FROM tasks WHERE title=? AND project_id=?", (term, project_id)
+            "SELECT id, object_type FROM tasks WHERE title=? AND "
+            "(project_id=? OR (object_type='group' AND EXISTS "
+            "(SELECT 1 FROM tasks child WHERE child.parent_group_id=tasks.id "
+            "AND child.project_id=?)) OR (object_type='group' AND EXISTS "
+            "(SELECT 1 FROM scope_groups s JOIN workstreams w ON w.id=s.workstream_id "
+            "WHERE s.group_id=tasks.id AND w.project_id=?)))",
+            (term, project_id, project_id, project_id),
         ).fetchall()
         if len(rows) != 1:
             raise TaskError(
@@ -993,10 +1060,17 @@ class Store:
 
     @staticmethod
     def _group_complete(db, group_id):
-        return not db.execute(
-            "SELECT 1 FROM tasks WHERE parent_group_id=? AND status!='done' LIMIT 1",
-            (group_id,),
-        ).fetchone()
+        return (
+            bool(
+                db.execute(
+                    "SELECT 1 FROM tasks WHERE parent_group_id=? LIMIT 1", (group_id,)
+                ).fetchone()
+            )
+            and not db.execute(
+                "SELECT 1 FROM tasks WHERE parent_group_id=? AND status!='done' LIMIT 1",
+                (group_id,),
+            ).fetchone()
+        )
 
     @staticmethod
     def _require_mutable(db, task, concrete=True):
@@ -1058,14 +1132,34 @@ class Store:
             )
         ]
         if task["object_type"] == "group":
-            task["members"] = [
-                r["id"]
+            task["origin_project_id"] = task["project_id"]
+            task["project_id"] = None
+            members = [
+                dict(r)
                 for r in db.execute(
-                    "SELECT id FROM tasks WHERE parent_group_id=? ORDER BY order_key,id",
+                    "SELECT id,project_id,title,status,revision FROM tasks "
+                    "WHERE parent_group_id=? ORDER BY project_id,order_key,id",
                     (task["id"],),
                 )
             ]
-            task["complete"] = bool(task["members"]) and Store._group_complete(db, task["id"])
+            task["members"] = [member["id"] for member in members]
+            task["member_details"] = members
+            task["progress"] = {
+                "total": len(members),
+                "done": sum(member["status"] == "done" for member in members),
+                "remaining": sum(member["status"] != "done" for member in members),
+                "by_project": {
+                    project_id: {
+                        "total": sum(member["project_id"] == project_id for member in members),
+                        "done": sum(
+                            member["project_id"] == project_id and member["status"] == "done"
+                            for member in members
+                        ),
+                    }
+                    for project_id in sorted({member["project_id"] for member in members})
+                },
+            }
+            task["complete"] = bool(members) and task["progress"]["remaining"] == 0
         return task
 
     def get_tasks(self, ids):
@@ -1080,6 +1174,116 @@ class Store:
             return {"items": tasks}
 
         return self._run("tasks.read", {"ids": ids}, operation)
+
+    def list_groups(self, project=None, limit=50, offset=0):
+        request = dict(project=project, limit=limit, offset=offset)
+
+        def operation(db, scope):
+            self._page(limit, offset)
+            selected = self._project(db, project, scope) if project is not None else None
+            rows = db.execute(
+                "SELECT g.id FROM tasks g WHERE g.object_type='group' "
+                + (
+                    "AND (g.project_id=? OR EXISTS (SELECT 1 FROM tasks child "
+                    "WHERE child.parent_group_id=g.id AND child.project_id=?) "
+                    "OR EXISTS (SELECT 1 FROM scope_groups s JOIN workstreams w "
+                    "ON w.id=s.workstream_id WHERE s.group_id=g.id AND w.project_id=?)) "
+                    if selected
+                    else ""
+                )
+                + "ORDER BY g.created_at,g.id LIMIT ? OFFSET ?",
+                ((selected["id"],) * 3 if selected else ()) + (limit + 1, offset),
+            ).fetchall()
+            groups = []
+            for row in rows:
+                detail = self._details(db, self._task(db, row["id"], {}))
+                groups.append(
+                    {
+                        key: detail[key]
+                        for key in ("id", "title", "revision", "progress", "complete")
+                    }
+                )
+            return self._paged(groups, limit, offset)
+
+        return self._run("groups.listed", request, operation)
+
+    def create_group(self, workstream_id, title, body="", acceptance_criteria=""):
+        request = dict(
+            workstream_id=workstream_id,
+            title=title,
+            body=body,
+            acceptance_criteria=acceptance_criteria,
+        )
+
+        def operation(db, scope):
+            ws = self._workstream(db, workstream_id)
+            scope["project_id"] = ws["project_id"]
+            if (
+                not isinstance(title, str)
+                or not title.strip()
+                or not isinstance(body, str)
+                or not isinstance(acceptance_criteria, str)
+            ):
+                raise TaskError("invalid_specification")
+            now = timestamp()
+            group_id = _id("tsk_")
+            db.execute(
+                """INSERT INTO tasks
+                (id,project_id,title,body,acceptance_criteria,status,object_type,
+                spec_revision,accepted_spec_revision,acceptance_note,unresolved_json,
+                parent_group_id,order_key,selected_attempt_id,revision,created_at,updated_at)
+                VALUES (?,NULL,?,?,?,'open','group',1,NULL,'','[]',NULL,0,NULL,1,?,?)""",
+                (group_id, title.strip(), body, acceptance_criteria, now, now),
+            )
+            db.execute("INSERT INTO scope_groups VALUES (?,?)", (workstream_id, group_id))
+            self._touch_workstream(db, workstream_id)
+            detail = self._details(db, self._task(db, group_id, scope))
+            scope["after"] = detail
+            return detail
+
+        return self._run("group.created", request, operation)
+
+    def add_group_member(self, group_id, expected_revision, task_id, expected_task_revision):
+        request = dict(
+            group_id=group_id,
+            expected_revision=expected_revision,
+            task_id=task_id,
+            expected_task_revision=expected_task_revision,
+        )
+
+        def operation(db, scope):
+            group = self._task(db, group_id, scope)
+            self._revision(group, expected_revision)
+            if group["object_type"] != "group":
+                raise TaskError("invalid_group")
+            self._require_mutable(db, group, concrete=False)
+            member = self._task(db, task_id, {})
+            self._revision(member, expected_task_revision)
+            if member["object_type"] != "task" or member["parent_group_id"]:
+                raise TaskError("invalid_member: nested groups or reassignment are unsupported")
+            self._require_mutable(db, member)
+            if self._would_cycle(db, group_id, task_id):
+                raise TaskError("prerequisite_cycle")
+            after_group = {**group, "revision": group["revision"] + 1, "updated_at": timestamp()}
+            after_member = {
+                **member,
+                "parent_group_id": group_id,
+                "revision": member["revision"] + 1,
+                "updated_at": timestamp(),
+            }
+            self._save_task(db, after_member)
+            self._save_task(db, after_group)
+            scope.update(
+                project_id=member["project_id"],
+                before={"group": group, "member": member},
+                after={"group": after_group, "member": after_member},
+            )
+            return {
+                "group": self._details(db, after_group),
+                "member": self._details(db, after_member),
+            }
+
+        return self._run("group.member_added", request, operation)
 
     @staticmethod
     def _insert_task(
@@ -1135,6 +1339,7 @@ class Store:
         workstream_id=None,
         scope="inbox",
         group_id=None,
+        group_expected_revision=None,
     ):
         request = dict(
             project=project,
@@ -1146,6 +1351,7 @@ class Store:
             workstream_id=workstream_id,
             scope=scope,
             group_id=group_id,
+            group_expected_revision=group_expected_revision,
         )
 
         def operation(db, event):
@@ -1160,8 +1366,11 @@ class Store:
                 self._workstream(db, workstream_id, project_id)
             if group_id:
                 group = self._task(db, group_id, {})
-                if group["project_id"] != project_id or group["object_type"] != "group":
+                if group["object_type"] != "group":
                     raise TaskError("invalid_group")
+                if group_expected_revision is None:
+                    raise TaskError("group_revision_required: read the group first")
+                self._revision(group, group_expected_revision)
                 self._require_mutable(db, group, concrete=False)
             task_id = self._insert_task(
                 db,
@@ -1179,11 +1388,21 @@ class Store:
                     "FROM prerequisites WHERE task_id=?",
                     (task_id, group_id),
                 )
+                updated_group = {
+                    **group,
+                    "revision": group["revision"] + 1,
+                    "updated_at": timestamp(),
+                }
+                self._save_task(db, updated_group)
             if scope == "workstream":
                 db.execute("INSERT INTO scope_members VALUES (?, ?)", (workstream_id, task_id))
                 self._touch_workstream(db, workstream_id)
             task = self._details(db, self._task(db, task_id, event))
-            event["after"] = task
+            if group_id:
+                event["before"] = {"group": group}
+                event["after"] = {"task": task, "group": self._details(db, updated_group)}
+            else:
+                event["after"] = task
             return task
 
         return self._run("task.created", request, operation)
@@ -1385,7 +1604,10 @@ class Store:
             self._revision(before, expected_revision)
             self._require_mutable(db, before)
             dependency = self._task(db, blocked_by_id, {})
-            if before["project_id"] != dependency["project_id"] or task_id == blocked_by_id:
+            if (
+                dependency["object_type"] != "group"
+                and before["project_id"] != dependency["project_id"]
+            ) or task_id == blocked_by_id:
                 raise TaskError("invalid_prerequisite")
             if dependency["status"] == "dropped":
                 raise TaskError("invalid_prerequisite: dropped work cannot satisfy a dependency")
@@ -1438,9 +1660,9 @@ class Store:
             else:
                 dependency = self._task(db, row["detail"], {})
                 if (
-                    dependency["project_id"] != before["project_id"]
-                    or dependency["status"] == "dropped"
-                ):
+                    dependency["object_type"] != "group"
+                    and dependency["project_id"] != before["project_id"]
+                ) or dependency["status"] == "dropped":
                     raise TaskError("invalid_prerequisite")
                 if self._would_cycle(db, row["task_id"], row["detail"]):
                     raise TaskError("prerequisite_cycle")
@@ -1575,7 +1797,9 @@ class Store:
             current = [
                 r["id"]
                 for r in db.execute(
-                    "SELECT id FROM tasks WHERE project_id=? ORDER BY order_key,id", (project_id,)
+                    "SELECT id FROM tasks WHERE project_id=? AND object_type='task' "
+                    "ORDER BY order_key,id",
+                    (project_id,),
                 )
             ]
             if expected_order != current:
@@ -1589,15 +1813,6 @@ class Store:
                     "SELECT id FROM tasks WHERE project_id=? AND status='done'", (project_id,)
                 )
             }
-            completed.update(
-                row["id"]
-                for row in db.execute(
-                    """SELECT g.id FROM tasks g WHERE g.project_id=? AND g.object_type='group'
-                AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.parent_group_id=g.id
-                AND child.status!='done')""",
-                    (project_id,),
-                )
-            )
             if any(
                 old_positions[identity] != index
                 for index, identity in enumerate(ordered_ids, 1)
@@ -1624,7 +1839,9 @@ class Store:
                 (dependency.object_type='task' AND dependency.status!='done') OR
                 (dependency.object_type='group' AND EXISTS (
                     SELECT 1 FROM tasks child WHERE child.parent_group_id=dependency.id
-                    AND child.status!='done')))
+                    AND child.status!='done')) OR
+                (dependency.object_type='group' AND NOT EXISTS (
+                    SELECT 1 FROM tasks child WHERE child.parent_group_id=dependency.id)))
             LIMIT 1""",
                 (task_id,),
             ).fetchone()
@@ -1712,6 +1929,8 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            if before["object_type"] != "task":
+                raise TaskError("group_not_executable: groups have no implementation attempts")
             self._workstream(db, workstream_id, before["project_id"])
             if task_id not in self._scope_ids(db, workstream_id):
                 raise TaskError("task_out_of_scope")
@@ -1901,7 +2120,9 @@ class Store:
                 ids = set(self._scope_ids(db, workstream_id))
             result = []
             for row in db.execute(
-                "SELECT id FROM tasks WHERE project_id=? ORDER BY order_key,id", (project_id,)
+                "SELECT id FROM tasks WHERE project_id=? AND object_type='task' "
+                "ORDER BY order_key,id",
+                (project_id,),
             ):
                 if ids is not None and row["id"] not in ids:
                     continue
@@ -1941,6 +2162,20 @@ class Store:
                 f"Workstream: {ws['id']} ({ws['name']})",
                 "",
             ]
+            groups = self._status_summary(db, workstream_id)["referenced_groups"]
+            if groups:
+                lines.extend(
+                    [
+                        "## Referenced groups",
+                        "",
+                        "Group progress is global. Task entries below are local to this project.",
+                        "",
+                        "```json",
+                        _json(groups),
+                        "```",
+                        "",
+                    ]
+                )
             for task_id in sorted(
                 ids,
                 key=lambda x: db.execute("SELECT order_key FROM tasks WHERE id=?", (x,)).fetchone()[

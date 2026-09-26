@@ -29,7 +29,9 @@ without another mutation.
 first scope expression term snapshots its current scope; pass that source's
 last read `expected_revision`. `+task-id` and
 `-task-id` adjust it. Group inclusion remains live for future members, while
-explicit exclusions persist. Use `list_workstreams` for global or project
+explicit exclusions persist. Only members owned by this workstream's project
+enter its executable queue; `groups` and `referenced_groups` show global
+progress separately. Use `list_workstreams` for global or project
 filtered candidates and `workstream_status` to inspect a scoped queue without
 binding the current session to it. Those calls report registered bindings and
 task state, never whether an agent is running. The older setup and `preflight`

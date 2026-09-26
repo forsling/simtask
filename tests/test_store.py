@@ -290,12 +290,14 @@ def test_scope_set_expression_snapshot_and_live_group_members(store, tmp_path):
     group = store.decompose_task(parent["id"], 1, [{"title": "Child A"}])
     child_a = group["members"][0]
     scoped = store.set_scope(other, 1, f"none +{parent['id']}")
-    assert parent["id"] in store.list_workstreams(project)["items"][1]["scope"]
+    assert parent["id"] in store.list_workstreams(project)["items"][1]["groups"]
     assert (
         child_a in scoped["groups"]
         or child_a in store.list_workstreams(project)["items"][1]["scope"]
     )
-    child_b = store.create_task(project, "Child B", group_id=parent["id"])
+    child_b = store.create_task(
+        project, "Child B", group_id=parent["id"], group_expected_revision=group["revision"]
+    )
     assert child_b["id"] in store.list_workstreams(project)["items"][1]["scope"]
     assert not child_b["accepted"]
 
@@ -310,7 +312,12 @@ def test_explicit_exclusions_override_live_group_expansion(store, tmp_path):
     assert changed["exclusions"] == [a]
     assert a not in store.list_workstreams(project)["items"][0]["scope"]
     assert b in store.list_workstreams(project)["items"][0]["scope"]
-    later = store.create_task(project, "Later", group_id=parent["id"])
+    later = store.create_task(
+        project,
+        "Later",
+        group_id=parent["id"],
+        group_expected_revision=store.get_tasks([parent["id"]])["items"][0]["revision"],
+    )
     assert later["id"] in store.list_workstreams(project)["items"][0]["scope"]
     inherited = store.init_workstream(
         project, path, branch="other", scope_expression="main", confirmed=True
@@ -434,7 +441,12 @@ def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
     with pytest.raises(TaskError, match="completed_task_immutable"):
         store.update_task(parent["id"], completed_group["revision"], {"body": "Changed"})
     with pytest.raises(TaskError, match="completed_task_immutable"):
-        store.create_task(project, "Late required member", group_id=parent["id"])
+        store.create_task(
+            project,
+            "Late required member",
+            group_id=parent["id"],
+            group_expected_revision=completed_group["revision"],
+        )
     assert store.get_next_task(ws)["task"]["id"] == downstream["id"]
 
 

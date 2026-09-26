@@ -18,9 +18,11 @@ async def exercise(database: Path):
     )
     async with Client(server, read_timeout_seconds=15) as client:
         tools = (await client.list_tools()).tools
-        assert len(tools) == 32
+        assert len(tools) == 35
         assert "dismiss_gate_proposal" in {tool.name for tool in tools}
-        assert {"init", "workstream_status"} <= {tool.name for tool in tools}
+        assert {"init", "workstream_status", "create_group", "list_groups", "add_group_member"} <= {
+            tool.name for tool in tools
+        }
         print(f"Connected over stdio; discovered {len(tools)} tools.")
 
         async def call(name, **arguments):
@@ -108,6 +110,56 @@ async def exercise(database: Path):
             user_note="Synthetic demo approval, not a real user verdict.",
         )
         assert signed["status"] == "done"
+        second = await call(
+            "init",
+            path="/tmp/task-mcp-demo-service-b",
+            branch="feature",
+            action="create_project",
+            confirmed=True,
+        )
+        third = await call(
+            "init",
+            path="/tmp/task-mcp-demo-service-c",
+            branch="release",
+            action="create_project",
+            confirmed=True,
+        )
+        group = await call(
+            "create_group", workstream_id=workstream_id, title="Shared three-repository feature"
+        )
+        assert group["project_id"] is None and not group["complete"]
+        for context in (second, third):
+            await call(
+                "set_scope",
+                workstream_id=context["workstream"]["id"],
+                expected_revision=1,
+                expression=f"none +{group['id']}",
+            )
+        members = []
+        for context, title in ((setup, "Service A"), (second, "Service B"), (third, "Service C")):
+            current_group = (await call("get_tasks", ids=[group["id"]]))["items"][0]
+            member = await call(
+                "create_task",
+                project=context["project"]["id"],
+                title=title,
+                source="user",
+                user_request="Synthetic group demo",
+                group_id=group["id"],
+                group_expected_revision=current_group["revision"],
+            )
+            members.append(member)
+        detail = (await call("get_tasks", ids=[group["id"]]))["items"][0]
+        assert detail["progress"]["total"] == 3 and not detail["complete"]
+        for context, member in zip((setup, second, third), members, strict=True):
+            status = await call("workstream_status", workstream_id=context["workstream"]["id"])
+            assert member["id"] in {item["id"] for item in status["items"]}
+            foreign = {item["id"] for item in members} - {member["id"]}
+            assert not foreign & {item["id"] for item in status["items"]}
+            groups = await call("list_groups", project=context["project"]["id"])
+            assert groups["items"][0]["id"] == group["id"]
+        second_export = await call("export_workstream", workstream_id=second["workstream"]["id"])
+        assert members[1]["id"] in second_export["content"]
+        assert members[2]["id"] not in second_export["content"]
         exported = await call("export_workstream", workstream_id=workstream_id)
         assert "task-mcp/v1" in exported["content"] and task_id in exported["content"]
         catalog = await call("get_default_skills")

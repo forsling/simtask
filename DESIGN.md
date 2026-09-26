@@ -29,13 +29,17 @@ disjoint task view counts, plus explicitly overlapping gate diagnostics. They
 make no claim about agent liveness or integrated feature completion. Page
 offsets browse current state; stable IDs support durable resumption.
 
-Tasks are canonical project objects. A workstream's explicit scope consists of
-included tasks, included groups, and excluded task IDs. A group inclusion is
-live: future members enter that workstream unless individually excluded. An
+Concrete tasks are canonical project objects. One global group model holds
+context and membership across projects. A workstream's explicit scope consists
+of local tasks, group references, and exclusions. A group inclusion is live:
+future members of the workstream's own project enter it unless individually excluded. An
 explicit exclusion takes precedence over group expansion. A workstream can
 snapshot another workstream's current expression, then add or remove references.
 Project task order is global and advisory; scope and prerequisites are gates.
 Every explicit scope change increments the workstream revision atomically.
+Local queues, status counts and exports include only concrete tasks from the
+workstream's project. Group references and whole-group progress are separate;
+an empty local slice does not imply global completion.
 
 ## Tasks and groups
 
@@ -49,12 +53,26 @@ after completion is a new task.
 
 Groups store overarching context and aggregate completion. They are never
 implementable and carry no unresolved items, disposition, attempts, or execution
-gates. Decomposition converts a concrete task in place only after its unresolved
-items are cleared and its gate proposals handled. Existing prerequisites move
-to the new concrete members. A group completes when all required members are
-complete. A concrete task may depend on a group; that dependency clears only
-when all members complete. Cycle checks include both prerequisite links and
-the implicit group-to-member completion edges.
+gates. `create_group` creates an empty globally identified group in the caller's
+workstream scope; it does not require a home project. `add_group_member` or
+`create_task(group_id=..., group_expected_revision=...)` attaches a concrete
+task from any project with revision checks. `list_groups` discovers one group
+globally or through member/scoped projects. Existing decomposition converts a
+concrete task in place after resolving its unresolved items and proposals;
+existing prerequisites move to the new concrete members. Legacy group IDs and
+their stored project origins survive migration, but origin is metadata rather
+than task ownership. Public group details expose `project_id=null` and optional
+`origin_project_id` provenance for old rows. All groups use the same membership,
+scope and completion rules.
+
+An empty group remains incomplete and mutable. A nonempty group completes only
+when every member is signed off; completed groups are immutable. Each member
+keeps its own accepted specification, attempt, review and sign-off. A concrete
+task may depend on whole-group completion, including a group with members in
+other projects; direct concrete task prerequisites remain project-local. Cycle
+checks include prerequisite links and implicit group-to-member completion
+edges. SQLite write serialization and revision checks protect a race between
+membership changes and last-member sign-off.
 
 ## Delivery and authority
 
@@ -86,6 +104,8 @@ configuration, or installed skills.
 
 Deferred: TASKS.md import, nested groups, per-workstream ordering, persistent
 dynamic filters, claims or leases, native client installers, automatic client
-configuration, editable export synchronization, and full rare-workflow parity.
+configuration, editable export synchronization, peer group links, arbitrary
+cross-project concrete task prerequisites, joint attempts, synchronized lifecycle, and full
+rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.

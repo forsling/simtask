@@ -23,6 +23,9 @@ scope references with stable IDs. The active coordinator should use
 clear decision note for an unwanted, stale, or invalid proposal. Dismissal is
 audited and does not apply the gate; it still works if a proposed prerequisite
 was later dropped. Resolve unresolved items and gate proposals
-before converting a task into a group. Groups hold context and completion only;
-put blockers on their concrete members. Preserve deferred context and audit
-history.
+before converting a task into a group. `create_group` makes an empty group in
+the current workstream scope, while `list_groups` discovers the same group
+through its member projects. Pass the current group revision when creating or
+attaching a member, including a member in another project. Groups hold context
+and whole-group completion only; put execution blockers on concrete members.
+Preserve deferred context and audit history.

@@ -74,7 +74,9 @@ counts. `workstream_status(workstream_id, limit?, offset?)` returns that
 workstream's compact scoped queue and count diagnostics without init or rebind.
 Its `counts` are disjoint task views (ready, pending acceptance, unresolved,
 prerequisites, review, sign-off, done, deferred, dropped). They count only
-scoped tasks and groups; `scoped_count` equals their sum.
+concrete tasks owned by that workstream's project; `scoped_count` equals their
+sum. `groups` and `referenced_groups` identify explicitly included groups and
+their whole-group progress separately, even when this project has no members.
 The separate
 `overlapping_gate_diagnostics` counts can overlap for tasks with several gates.
 The single `view` shown in `list_tasks` and status drill-down prioritizes
@@ -86,11 +88,12 @@ durable resume; offset pages are for browsing current state, not a snapshot of a
 changing board. Completed tasks in different repositories remain separate;
 these views do not claim an integrated feature is complete.
 
-Workstream scope is an explicit set of canonical project tasks. `none` begins
+Workstream scope is an explicit set of local concrete tasks and group references. `none` begins
 empty. A workstream name or ID as the first expression term snapshots its scope.
 `+task-id` and `-task-id` then add or remove references. Titles are accepted
-only when unambiguous. A group reference remains live: later group members enter
-its scoped workstreams, but begin pending acceptance. An explicit `-task-id`
+only when unambiguous. A group reference remains live: later group members from
+the workstream's own project enter its scoped queue, but begin pending acceptance.
+Members from other projects never enter the local queue. An explicit `-task-id`
 exclusion persists and overrides membership inherited from a scoped group;
 `+task-id` removes that exclusion. Every explicit scope change advances the
 workstream revision. A task proposed from a
@@ -116,7 +119,25 @@ Use `decompose_task` to turn a task into a first-class group while retaining its
 ID, description, acceptance history and audit history. The call atomically
 creates required pending member tasks. Groups cannot nest, have no implementation
 attempts or execution gates, and derive completion from all members being
-complete. Resolve unresolved items and proposed gates before decomposition;
+complete. An empty group is incomplete and mutable. `create_group(workstream_id,
+title, ...)` creates the same kind of group directly, without selecting a home
+project; it is included in that workstream's explicit group scope. The group has
+one global ID and can hold concrete tasks from several projects. `list_groups`
+discovers it globally or through any member/scoped project; `get_tasks` on its ID
+shows every member's project and whole-group progress. All public group details
+show `project_id=null`; `origin_project_id` is optional legacy provenance for
+groups created before this storage change, not an ownership boundary.
+
+Pass `group_id` and the group's last read `group_expected_revision` to
+`create_task` to create a new member in its own project, or call
+`add_group_member` with both the group and existing task revisions. Membership
+changes are atomic. Existing members keep their independent acceptance,
+implementation, review and sign-off. A group becomes complete only when it has
+at least one member and every member is signed off; pending, deferred or dropped
+members keep it incomplete. Completed groups cannot gain members or be edited.
+A concrete task may depend on a group in another project, and that gate clears
+only on whole-group completion; concrete task-to-task prerequisites remain within
+one project. Resolve unresolved items and proposed gates before decomposition;
 existing prerequisites move to the concrete members. Use related
 pending proposals for optional work. A session actively handling a task may add
 an unresolved item or prerequisite. An observer can submit a nonblocking gate
@@ -167,6 +188,7 @@ those rare workflows are deferred.
 | --- | --- |
 | Project and workstream | `init`, `list_projects`, `list_workstreams`, `workstream_status`; compatibility: `init_project`, `attach_checkout`, `init_workstream`, `rebind_workstream`, `preflight` |
 | Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `reorder_tasks`, `get_next_task` |
+| Groups | `create_group`, `list_groups`, `add_group_member`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `accept_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
 | Inspection | `list_events`, `export_workstream`, `get_default_skills` |
@@ -190,6 +212,8 @@ does not update the service. The CLI can print the same view:
 .venv/bin/task-mcp --export-workstream wst_your_workstream_id
 ```
 
+The service transactionally upgrades the earlier task table to allow global
+groups without project ownership, preserving existing IDs and related rows.
 The service creates its current SQLite schema in a private database. For a live
 WAL database, use SQLite's backup API instead of copying only the main
 `.sqlite3` file.
