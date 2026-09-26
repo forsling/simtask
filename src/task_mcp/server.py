@@ -53,9 +53,13 @@ def create_server(store: Store) -> MCPServer:
             "get_default_skills returns the canonical reference workflows."
         ),
     )
+    # Audited reads and append-only writes both change local state. A revision or
+    # updated_at bump alone does not erase business content, so append-only tools
+    # can truthfully declare destructive_hint=False.
     additive = ToolAnnotations(
         read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
     )
+    # Existing content, bindings, gates, order, or verdicts may be replaced here.
     editing = ToolAnnotations(
         read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
     )
@@ -98,7 +102,7 @@ def create_server(store: Store) -> MCPServer:
             confirmed,
         )
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def init_project(
         path: str,
@@ -109,13 +113,13 @@ def create_server(store: Store) -> MCPServer:
         """Explicitly initialize a project and default workstream after user confirmation."""
         return store.init_project(path, branch, workstream_name, confirmed)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def attach_checkout(project: str, path: str, confirmed: bool = False) -> dict[str, Any]:
         """Attach another canonical checkout path to an existing project."""
         return store.attach_checkout(project, path, confirmed)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def init_workstream(
         project: str,
@@ -193,7 +197,7 @@ def create_server(store: Store) -> MCPServer:
         """Replace scope using auditable set expression: none, a workstream base, +/-task/group."""
         return store.set_scope(workstream_id, expected_revision, expression)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def create_task(
         project: str,
@@ -262,7 +266,7 @@ def create_server(store: Store) -> MCPServer:
         """Defer, resume, or drop a task with a reason; preserve its specification."""
         return store.set_disposition(task_id, expected_revision, disposition, note)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def add_unresolved(
         task_id: str,
@@ -281,7 +285,7 @@ def create_server(store: Store) -> MCPServer:
         """Remove a resolved item after a user decision; acceptance remains valid."""
         return store.resolve_unresolved(task_id, expected_revision, item_id, user_note)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def add_prerequisite(
         task_id: str,
@@ -292,7 +296,7 @@ def create_server(store: Store) -> MCPServer:
         """Link an existing task prerequisite, or submit an observer gate proposal."""
         return store.add_prerequisite(task_id, expected_revision, blocked_by_id, handling)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def propose_prerequisite(
         task_id: str,
@@ -343,7 +347,7 @@ def create_server(store: Store) -> MCPServer:
         """Select first eligible task with full context, without creating an attempt."""
         return store.get_next_task(workstream_id)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def record_result(
         task_id: str,

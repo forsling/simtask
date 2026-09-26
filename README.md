@@ -30,6 +30,44 @@ descriptive attribution label if useful. The default database is
 No network listener is needed. Connect this command in each client's own MCP
 configuration; Task MCP does not install its connection.
 
+## Performance and client approvals
+
+Measure the server separately from the client that hosts it:
+
+```sh
+.venv/bin/python examples/benchmark.py --samples 20
+```
+
+The benchmark uses disposable databases and compares direct Store calls with
+real subprocess stdio MCP calls. `--source /absolute/path/tasks.sqlite3` measures
+SQLite-consistent, read-only-source backups; `--project ID --workstream ID`
+select an existing scope in those copies. `--work-dir /existing/directory`
+places the disposable copies on a chosen filesystem. Startup and per-call
+samples are reported separately. It never benchmarks writes against the source
+database or changes the client's approval policy.
+
+Tool annotations describe actual behavior, not a performance preference.
+Creation, additive membership/gates and new result attempts are non-destructive
+writes. Overwrites, removals, lifecycle decisions and `init` (which can rebind an
+existing workstream) retain destructive annotations. Audited reads are still
+declared writes because they append events; only the static skill catalog is
+read-only. Revision checks, workflow gates and audit history apply regardless
+of the client's approval decisions.
+
+In dogfooding, local mutations took milliseconds while the host's synchronous
+approval review added seconds before execution. Accurate additive annotations
+avoid incorrectly classifying creation as destruction; they do not guarantee
+that a client will omit approval, nor eliminate approval for genuine edits.
+See [the performance investigation](docs/performance.md) for measurements and
+the distinction between server validation and end-to-end verification. After
+an annotation change, an existing client connection must refresh its discovered
+tool descriptors; a fast fresh subprocess alone does not verify that refresh.
+
+For diagnosis and optional, user-chosen per-tool or whole-server pre-approval,
+see [troubleshooting slow client calls](docs/performance.md#troubleshooting-slow-client-calls).
+Those settings belong to the client, not the task database, and never replace
+the workflow's required user decisions or human sign-off.
+
 ## Session init and workstreams
 
 Call `init` with the absolute path of the target checkout and its branch, or an
