@@ -7,15 +7,18 @@ const vm = require("node:vm");
 const elements = new Map();
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
-    textContent: "", disabled: false, open: false, closeCount: 0,
+    textContent: "", disabled: false, open: false, closeCount: 0, dataset: {},
+    classList: {add() {}, remove() {}, toggle() {}, contains: () => false},
     replaceChildren() {},
+    querySelector: () => null,
     showModal() { this.open = true; },
     close() { this.open = false; this.closeCount++; },
   });
   return elements.get(id);
 }
 const context = vm.createContext({
-  document: {getElementById: element},
+  document: {getElementById: element, addEventListener() {}},
+  window: {addEventListener() {}}, setTimeout: () => 0,
   location: {hash: ""}, sessionStorage: {getItem: () => ""},
   history: {replaceState() {}}, FormData: class {},
 });

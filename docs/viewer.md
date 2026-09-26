@@ -9,30 +9,40 @@ and returns the link. No browser is launched automatically.
 
 ## Working with tasks
 
-- Choose a project by name and a registered workstream in the sidebar. “All
-  project tasks” includes tasks outside any one workstream. Workstream names
-  and counts describe recorded state, not a running agent.
-- Search task titles and filter the derived workflow state. The detail view
-  separately names stored disposition. A review/sign-off badge does not remove
-  unresolved questions or prerequisites; Store still validates every decision.
+- The sidebar lists projects; the current project expands to its registered
+  workstreams, each with a count of tasks that need you. “All tasks” includes
+  tasks outside any one workstream. Workstream names and counts describe
+  recorded state, not a running agent.
+- The list groups tasks by what they need: **Needs you** (sign-off, spec
+  acceptance, open questions), **In progress** (in review, ready, blocked),
+  **Later** (deferred) and **Closed** (done/dropped, collapsed). Search filters
+  titles across every section. Keyboard: `/` search, `j`/`k` move, `n` new
+  task, `e` edit, `r` refresh.
+- Each task opens with a single “next step” panel stating what, if anything,
+  you can do now, with its buttons. A review/sign-off state does not remove
+  open questions or prerequisites; Store still validates every decision.
 - Shared groups show all members across all projects and global completion.
   Opening a member moves to its own project's queue. A group's completion does
   not mean a particular local workstream delivered all of its members.
 - New tasks capture your request and begin accepted in the selected workstream,
   or the project inbox when viewing the whole project. Editing title,
   specification or acceptance criteria invalidates specification acceptance.
-- Accept a specification, resolve a question, or defer/resume/drop with an
+- Accept a specification, answer a question, or defer/resume/drop with an
   explicit confirmation and recorded decision note. These are domain operations,
   not a generic status picker. Dropped/deferred context remains recoverable by
   resuming the task. Completed tasks cannot be edited.
 - Review the result and evidence before recording a human review. The dialog
   records your review or your explicit instruction that additional independent
   review is unnecessary; it does not sign off. A separately confirmed sign-off
-  approves the chosen reviewed result permanently. Rejection requests either
-  implementation rework or specification revision.
-- Audit history includes actor, action, outcome and decision notes. Text and
-  Markdown source remain plain, whitespace-preserving text to avoid script or
-  remote-content execution. No remote fonts, scripts or image services load.
+  approves the chosen reviewed result permanently. “Request changes” asks you
+  to choose implementation rework or specification revision.
+- Activity shows actor, action, outcome and decision notes; routine read
+  events are counted rather than listed. Task text is rendered as a safe
+  Markdown subset (paragraphs, lists, headings, code, bold/italic) built from
+  DOM text nodes, never parsed as HTML. Link targets are shown as text and
+  never followed or fetched. A single-line acceptance criterion joined by
+  semicolons is displayed as a list; the stored text is unchanged. No remote
+  fonts, scripts or image services load. Light and dark themes follow the OS.
 
 This first browser version does not create projects/workstreams, change scope
 or group membership, record implementation results, or handle gate proposals.
