@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from task_mcp.export import FORMAT, render_markdown
+
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, canonical_path TEXT NOT NULL UNIQUE,
@@ -2146,14 +2148,74 @@ class Store:
 
         return self._run("tasks.listed", request, operation)
 
-    def export_workstream(self, workstream_id, include_closed=True):
+    def _markdown_export(self, db, project, ws, ids, include_closed):
+        tasks = []
+        references = {
+            identity: {"explicit scope"} for identity in self._scope_group_ids(db, ws["id"])
+        }
+        for task in sorted(
+            (self._details(db, self._task(db, identity, {})) for identity in ids),
+            key=lambda task: (task["order_key"], task["id"]),
+        ):
+            if not include_closed and task["status"] in {"done", "dropped"}:
+                continue
+            task["view"] = self._status_view(task, self._gate_reasons(db, task, ws["id"]))
+            if task["parent_group_id"]:
+                references.setdefault(task["parent_group_id"], set()).add("task membership")
+            task["prerequisites"] = []
+            for identity in task["blocked_by"]:
+                dependency = self._task(db, identity, {})
+                if dependency["object_type"] == "group":
+                    complete = self._group_complete(db, identity)
+                    state = "complete" if complete else "incomplete"
+                    references.setdefault(identity, set()).add("prerequisite")
+                else:
+                    complete = dependency["status"] == "done"
+                    state = self._status_view(dependency, self._gate_reasons(db, dependency))
+                task["prerequisites"].append(
+                    {
+                        "id": identity,
+                        "title": dependency["title"],
+                        "object_type": dependency["object_type"],
+                        "complete": complete,
+                        "state": state,
+                    }
+                )
+            tasks.append(task)
+        groups = []
+        scoped = set(ids)
+        exported = {task["id"] for task in tasks}
+        for identity, reasons in references.items():
+            group = self._details(db, self._task(db, identity, {}))
+            group.update(
+                reference=", ".join(sorted(reasons)),
+                project_member_count=group["progress"]["by_project"].get(
+                    project["id"], {"total": 0}
+                )["total"],
+                scoped_member_count=len(scoped.intersection(group["members"])),
+                exported_member_count=len(exported.intersection(group["members"])),
+            )
+            groups.append(group)
+        groups.sort(key=lambda group: (group["title"], group["id"]))
+        content = render_markdown(project, ws, tasks, groups, len(ids), include_closed)
+        return {
+            "format": FORMAT,
+            "sha256": hashlib.sha256(content.encode()).hexdigest(),
+            "content": content,
+        }
+
+    def export_workstream(self, workstream_id, include_closed=True, format="markdown"):
         def operation(db, scope):
+            if format not in ("markdown", "legacy"):
+                raise TaskError("invalid_export_format: use markdown or legacy")
             ws = self._workstream(db, workstream_id)
             scope["project_id"] = ws["project_id"]
             project = db.execute(
                 "SELECT * FROM projects WHERE id=?", (ws["project_id"],)
             ).fetchone()
             ids = self._scope_ids(db, workstream_id)
+            if format == "markdown":
+                return self._markdown_export(db, project, ws, ids, include_closed)
             lines = [
                 "# Task MCP workstream export",
                 "",
@@ -2229,6 +2291,6 @@ class Store:
 
         return self._run(
             "workstream.exported",
-            {"workstream_id": workstream_id, "include_closed": include_closed},
+            {"workstream_id": workstream_id, "include_closed": include_closed, "format": format},
             operation,
         )

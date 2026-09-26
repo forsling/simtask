@@ -647,7 +647,7 @@ def test_order_and_deterministic_export(store, tmp_path):
     two = store.export_workstream(ws)
     assert one == two
     assert one["content"].index(second["id"]) < one["content"].index(first["id"])
-    assert one["format"] == "task-mcp/v1"
+    assert one["format"] == "task-mcp/v2"
 
 
 def test_current_schema_reopens_without_changing_task_or_audit(store, tmp_path):

@@ -241,14 +241,31 @@ static skill catalog appends a local audit event, including reads and domain
 errors. Task mutations retain before/after snapshots. The configured actor label
 is not authenticated. `list_events` supports a stable pagination ceiling.
 
-`export_workstream` returns a versioned Markdown document with a structured JSON
-block for each scoped task, including gates and attempts, plus a SHA-256 hash.
+## Text exports
+
+`export_workstream(workstream_id, include_closed=true, format="markdown")`
+returns a human-readable Markdown snapshot (`task-mcp/v2`) and its SHA-256 hash.
+It starts with project/checkout identity and an ordered workflow overview, then
+shows specifications, acceptance criteria, questions, prerequisites, evidence
+and review history in text. Workflow labels match `list_tasks` for that
+workstream: "Awaiting sign-off" is distinct from the stored "open" disposition.
+Shared-group progress is global; detailed task entries stay in the local scope.
+
 The output is deterministic for unchanged state and is export-only: editing it
-does not update the service. The CLI can print the same view:
+does not update the service. The CLI prints exactly the same content to stdout:
 
 ```sh
 .venv/bin/task-mcp --export-workstream wst_your_workstream_id
+.venv/bin/task-mcp --export-workstream wst_your_workstream_id --exclude-closed
+.venv/bin/task-mcp --export-workstream wst_your_workstream_id --export-format legacy
 ```
+
+`include_closed=false` / `--exclude-closed` omits done and dropped tasks, not
+deferred tasks. The previous embedded-JSON layout remains available as
+`format="legacy"` / `--export-format legacy` (`task-mcp/v1`); consumers of that
+layout should select it explicitly. Export itself never creates a file.
+See [the format details](docs/exports.md) and a
+[synthetic example report](docs/export-example.md).
 
 The service transactionally upgrades the earlier task table to allow global
 groups without project ownership, preserving existing IDs and related rows.

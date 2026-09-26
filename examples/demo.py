@@ -161,7 +161,19 @@ async def exercise(database: Path):
         assert members[1]["id"] in second_export["content"]
         assert members[2]["id"] not in second_export["content"]
         exported = await call("export_workstream", workstream_id=workstream_id)
-        assert "task-mcp/v1" in exported["content"] and task_id in exported["content"]
+        assert exported["format"] == "task-mcp/v2" and task_id in exported["content"]
+        assert "- Workflow: Done (done)" in exported["content"]
+        assert "```json" not in exported["content"]
+        open_export = await call(
+            "export_workstream", workstream_id=workstream_id, include_closed=False
+        )
+        assert task_id not in open_export["content"]
+        legacy = await call("export_workstream", workstream_id=workstream_id, format="legacy")
+        assert legacy["format"] == "task-mcp/v1" and "```json" in legacy["content"]
+        invalid = await client.call_tool(
+            "export_workstream", {"workstream_id": workstream_id, "format": "unsupported"}
+        )
+        assert invalid.is_error
         catalog = await call("get_default_skills")
         assert catalog["version"] == "1.0.0" and len(catalog["items"]) == 4
     async with Client(server, read_timeout_seconds=15) as restarted:

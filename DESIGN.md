@@ -102,6 +102,14 @@ deterministic workstream view, never an editable synchronized ledger. The server
 writes its private SQLite database; it does not edit project files, client
 configuration, or installed skills.
 
+The default `task-mcp/v2` export is human-readable Markdown with the same derived
+workflow views as the scoped queue, readable specifications/gates/result history,
+and a separate global group summary. Stored disposition is labelled separately.
+Only local scoped concrete tasks receive full entries. Other-workstream and
+superseded-specification attempts remain visible as labelled history, not as
+current delivery claims. The legacy `task-mcp/v1` embedded-JSON layout remains an
+explicit compatibility option; neither export is an import or database backup.
+
 Deferred: TASKS.md import, nested groups, per-workstream ordering, persistent
 dynamic filters, claims or leases, native client installers, automatic client
 configuration, editable export synchronization, peer group links, arbitrary

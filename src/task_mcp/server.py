@@ -412,9 +412,17 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def export_workstream(workstream_id: str, include_closed: bool = True) -> dict[str, Any]:
-        """Return a deterministic, human-readable, machine-parseable v1 workstream export."""
-        return store.export_workstream(workstream_id, include_closed)
+    def export_workstream(
+        workstream_id: str,
+        include_closed: bool = True,
+        format: Literal["markdown", "legacy"] = "markdown",
+    ) -> dict[str, Any]:
+        """Return a readable v2 Markdown snapshot, or legacy v1 with embedded JSON.
+
+        Both include a content hash. Closed means done/dropped, not deferred.
+        Export returns text only; it never saves files or synchronizes edits.
+        """
+        return store.export_workstream(workstream_id, include_closed, format)
 
     @server.tool(annotations=catalog, structured_output=True)
     def get_default_skills() -> dict[str, Any]:
@@ -429,9 +437,20 @@ def main():
     parser.add_argument("--db", type=Path, default=default_database())
     parser.add_argument("--actor", default=os.environ.get("TASK_MCP_ACTOR", "local-agent"))
     parser.add_argument("--export-workstream", metavar="WORKSTREAM_ID")
+    parser.add_argument("--export-format", choices=("markdown", "legacy"))
+    parser.add_argument("--exclude-closed", action="store_true", help="Omit done/dropped tasks")
     args = parser.parse_args()
+    if not args.export_workstream and (args.export_format or args.exclude_closed):
+        parser.error("--export-format and --exclude-closed require --export-workstream")
     store = Store(args.db, args.actor)
     if args.export_workstream:
-        print(store.export_workstream(args.export_workstream)["content"])
+        print(
+            store.export_workstream(
+                args.export_workstream,
+                include_closed=not args.exclude_closed,
+                format=args.export_format or "markdown",
+            )["content"],
+            end="",
+        )
     else:
         create_server(store).run(transport="stdio")
