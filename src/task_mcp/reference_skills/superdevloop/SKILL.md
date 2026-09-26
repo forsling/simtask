@@ -11,6 +11,9 @@ init workflow before work. Retain that returned workstream ID, even when the
 session is handling other repositories. Use
 `get_next_task(workstream_id)` to select one full eligible task without claiming
 it. An empty scope or only gated tasks is a useful stop; report its diagnostics.
+Do not accept feature briefs or clear design gates to drain the queue. When the
+user requests a design discussion, fetch `get_default_skills` and follow
+`feature-design`; save newly suggested future features through `feature-capture`.
 Project ordering is advisory, but scope, acceptance, unresolved items, and
 prerequisites are hard gates. Never invent an accepted task or move work into
 another workstream. New work is a pending proposal in this scope or the inbox.

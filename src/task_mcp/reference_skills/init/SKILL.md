@@ -36,3 +36,10 @@ filtered candidates and `workstream_status` to inspect a scoped queue without
 binding the current session to it. Those calls report registered bindings and
 task state, never whether an agent is running. The older setup and `preflight`
 primitives remain available to existing clients.
+
+For "add a design task" or a feature idea to save for later, fetch
+`get_default_skills` and read/follow its `feature-capture` entry. For "let's
+design X", "review design tasks" or `designrev`, use `feature-design`.
+These are ordinary tasks with unresolved design gates; no client installation
+or new task type is needed. Use `proposal-review` for ordinary proposals and
+non-design unresolved items, and `signoff` for judging delivered work.

@@ -3,8 +3,8 @@
 import hashlib
 from importlib.resources import files
 
-REFERENCE_VERSION = "1.0.0"
-SKILLS = ("init", "proposal-review", "superdevloop", "signoff")
+REFERENCE_VERSION = "1.1.0"
+SKILLS = ("init", "feature-capture", "feature-design", "proposal-review", "superdevloop", "signoff")
 
 
 def default_skills():

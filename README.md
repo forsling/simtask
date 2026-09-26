@@ -212,9 +212,45 @@ The ordinary path is:
 init → proposal/unresolved review → superdevloop → human sign-off
 ```
 
+For a feature whose design is still open, use the two-phase path:
+
+```text
+init → feature-capture → feature-design → accepted implementation → review → human sign-off
+```
+
+Say **"add a design task for X"** or **"capture this feature for later"** to use
+`feature-capture`. The agent does bounded preliminary research and saves the
+desired outcome, motivation, current context, tentative scope, assumptions,
+possible directions and material open questions. You do not need to answer all
+of those questions during capture. The ordinary task starts pending and gets a
+`Feature design required (feature-design): ...` unresolved item; neither the
+capture request nor the intermediate create call makes it implementation-ready.
+
+Say **"let's design X"**, **"review design tasks"**, or **"designrev"** to use
+`feature-design`. The agent refreshes its code understanding, explains what
+exists, compares approaches and tradeoffs, recommends a path, and works through
+decisions with you. It saves the resulting specification and acceptance
+criteria, preserving unsettled questions. Larger features can become a group of
+concrete implementation tasks. Acceptance records your informed decision on
+the exact resulting scope; design discussion alone does not authorize building
+it. An already given decision is sufficient when it covers that scope.
+"Review design tasks" includes captured ideas in the project inbox by default;
+an explicit workstream request narrows that search. Accepted inbox work enters
+a workstream only when placement is part of the agreed plan.
+
+"Design task" is conversational shorthand for this workflow, not a stored task
+type. The design-gate prefix is a readable skill convention, not parsed server
+metadata. Pending briefs can display as `pending_acceptance` even with a design
+gate; the design skill reads their details as well as tasks in `unresolved_items`.
+Ordinary proposals and unrelated blockers still use `proposal-review`.
+
 The canonical reference skill files are packaged under
 `src/task_mcp/reference_skills/`. `get_default_skills` returns their exact text,
-version and SHA-256 hashes. Agents may fetch and follow them directly. Copying
+version and SHA-256 hashes. MCP startup instructions and the catalog tool route
+these phrases to the matching skill, so a fresh connected session can fetch and
+follow it without prior chat history or installing client skills. Existing
+connections may need to reconnect to receive changed server instructions.
+Agents may also use the primitives directly. Copying
 them to a client's native skill location requires explicit user authorization;
 the server does not install or update clients. Single-agent devloop and guided
 task flows are possible using the same primitives, but reference adapters for

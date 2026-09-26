@@ -1,6 +1,7 @@
 """Exercise the real stdio MCP interface against a disposable v1 database."""
 
 import asyncio
+import hashlib
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +17,10 @@ async def exercise(database: Path):
         args=["-m", "task_mcp", "--db", str(database), "--actor", "demo-coordinator"],
         env={"PYTHONPATH": str(root / "src")},
     )
-    async with Client(server, read_timeout_seconds=15) as client:
+    async with Client(server, read_timeout_seconds=60) as client:
+        assert client.instructions
+        for entrypoint in ("get_default_skills", "feature-capture", "feature-design"):
+            assert entrypoint in client.instructions
         tools = (await client.list_tools()).tools
         assert len(tools) == 35
         assert "dismiss_gate_proposal" in {tool.name for tool in tools}
@@ -175,8 +179,21 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.0.0" and len(catalog["items"]) == 4
-    async with Client(server, read_timeout_seconds=15) as restarted:
+        assert catalog["version"] == "1.1.0"
+        assert {item["name"] for item in catalog["items"]} == {
+            "init",
+            "feature-capture",
+            "feature-design",
+            "proposal-review",
+            "superdevloop",
+            "signoff",
+        }
+        for item in catalog["items"]:
+            canonical = (root / "src/task_mcp/reference_skills" / item["path"]).read_bytes()
+            assert item["content"].encode() == canonical
+            assert item["sha256"] == hashlib.sha256(canonical).hexdigest()
+            assert item["version"] == catalog["version"]
+    async with Client(server, read_timeout_seconds=60) as restarted:
         result = await restarted.call_tool("get_tasks", {"ids": [task_id]})
         assert not result.is_error
         assert result.structured_content["items"][0]["status"] == "done"

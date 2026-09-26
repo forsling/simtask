@@ -96,7 +96,29 @@ Cheap research and reversible choices proceed without ceremony.
 ## Surface and boundary
 
 The initial recommended path is `init -> proposal/unresolved review ->
-superdevloop -> sign-off`. Canonical packaged skill files are returned verbatim
+superdevloop -> sign-off`. Features with unsettled design use `feature-capture`
+then `feature-design` before implementation. Capture does bounded research and
+saves a pending feature brief with an active unresolved design gate. Pending
+creation precedes adding the gate so there is no accepted, ungated intermediate
+task. The human-readable `Feature design required (feature-design):` prefix
+identifies the workflow by convention; no schema, task type or parser is added.
+Design resumes those briefs, researches current behavior, compares alternatives,
+recommends an approach and records the user's decisions. Selection includes
+pending-acceptance tasks whose unresolved gates are hidden by their derived view.
+Unrelated unresolved items do not automatically imply feature design.
+
+Design saves the agreed specification before resolving settled gates, keeping
+unfinished decisions blocked. Decomposition keeps the parent pending while
+clearing settled gates and creates pending members; only exact specifications
+covered by the user's informed acceptance become eligible. Prior informed
+authorization remains usable; a capture/design request alone is not permission
+to implement. Finishing design creates no implementation attempt or review.
+MCP instructions route familiar design-task language to the two packaged skills
+through `get_default_skills`, making them discoverable without client installation.
+The database enforces the gates; interpreting language, researching choices and
+obtaining real user decisions remain agent workflow responsibilities.
+
+Canonical packaged skill files are returned verbatim
 with version and hash by a read-only catalog. Export is a versioned,
 deterministic workstream view, never an editable synchronized ledger. The server
 writes its private SQLite database; it does not edit project files, client
