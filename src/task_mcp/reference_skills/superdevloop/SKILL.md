@@ -5,8 +5,10 @@ description: Implement scoped accepted tasks with a fresh implementer and review
 
 # Superdevloop
 
-Run `preflight` for the current checkout and branch. Stop on unknown or
-mismatched workstream until initialization or rebinding is confirmed. Use
+Run `init` for the explicit target checkout and branch/name. Resume its `ready`
+context; settle `new_branch`, `unregistered_checkout` or `mismatch` through the
+init workflow before work. Retain that returned workstream ID, even when the
+session is handling other repositories. Use
 `get_next_task(workstream_id)` to select one full eligible task without claiming
 it. An empty scope or only gated tasks is a useful stop; report its diagnostics.
 Project ordering is advisory, but scope, acceptance, unresolved items, and

@@ -38,8 +38,10 @@ def create_server(store: Store) -> MCPServer:
         "task-mcp",
         version="1.0.0",
         instructions=(
-            "Task MCP v1 is opt-in. Use init_project only after a user-visible confirmation, "
-            "then preflight the checkout and workstream before autonomous work. "
+            "Task MCP v1 is opt-in. Call init with an explicit target checkout and branch "
+            "or named workstream for each task-using session. Exact bindings resume without "
+            "confirmation; confirm an explicit action to create, attach or rebind. "
+            "A session may retain multiple returned project/workstream IDs. "
             "Tasks have current user acceptance, unresolved items, prerequisites and scoped "
             "attempts. get_next_task selects without claiming. A reviewer other than the "
             "implementer records ordinary review; human_review requires an actual user "
@@ -63,6 +65,35 @@ def create_server(store: Store) -> MCPServer:
     def list_projects(limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """Discover initialized project IDs, names and canonical paths."""
         return store.list_projects(limit, offset)
+
+    @server.tool(annotations=editing, structured_output=True)
+    @domain_errors
+    def init(
+        path: str,
+        branch: str | None = None,
+        workstream_name: str | None = None,
+        action: Literal[
+            "create_project", "new_workstream", "attach_workstream", "rebind_workstream"
+        ]
+        | None = None,
+        project: str | None = None,
+        workstream_id: str | None = None,
+        scope_expression: str = "none",
+        expected_revision: int | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Discover or resume a checkout binding; confirmed actions change setup atomically."""
+        return store.init(
+            path,
+            branch,
+            workstream_name,
+            action,
+            project,
+            workstream_id,
+            scope_expression,
+            expected_revision,
+            confirmed,
+        )
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -96,9 +127,17 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def list_workstreams(project: str) -> dict[str, Any]:
-        """List workstream bindings, revisions and current scoped task IDs."""
-        return store.list_workstreams(project)
+    def list_workstreams(
+        project: str | None = None, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        """List workstreams globally or by project with task counts, not agent liveness."""
+        return store.list_workstreams(project, limit, offset)
+
+    @server.tool(annotations=additive, structured_output=True)
+    @domain_errors
+    def workstream_status(workstream_id: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """Inspect one workstream's scoped queue and counts without initializing or rebinding."""
+        return store.workstream_status(workstream_id, limit, offset)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors

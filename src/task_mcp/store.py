@@ -362,21 +362,352 @@ class Store:
 
         return self._run("checkout.attached", request, operation)
 
-    def list_workstreams(self, project):
+    def list_workstreams(self, project=None, limit=50, offset=0):
         def operation(db, scope):
-            selected = self._project(db, project, scope)
+            self._page(limit, offset)
+            selected = self._project(db, project, scope) if project is not None else None
             rows = [
                 dict(row)
                 for row in db.execute(
-                    "SELECT * FROM workstreams WHERE project_id=? ORDER BY created_at,id",
-                    (selected["id"],),
+                    "SELECT w.*, p.name AS project_name, p.canonical_path AS project_path "
+                    "FROM workstreams w JOIN projects p ON p.id=w.project_id "
+                    + ("WHERE w.project_id=? " if selected else "")
+                    + "ORDER BY p.name,p.id,w.created_at,w.id LIMIT ? OFFSET ?",
+                    ((selected["id"],) if selected else ()) + (limit + 1, offset),
                 )
             ]
             for row in rows:
                 row["scope"] = self._scope_ids(db, row["id"])
-            return {"items": rows}
+                row["status"] = self._status_summary(db, row["id"], row["scope"])
+            return self._paged(rows, limit, offset)
 
-        return self._run("workstreams.listed", {"project": project}, operation)
+        return self._run(
+            "workstreams.listed", {"project": project, "limit": limit, "offset": offset}, operation
+        )
+
+    def workstream_status(self, workstream_id, limit=50, offset=0):
+        request = dict(workstream_id=workstream_id, limit=limit, offset=offset)
+
+        def operation(db, scope):
+            self._page(limit, offset)
+            ws = self._workstream(db, workstream_id)
+            project = db.execute(
+                "SELECT * FROM projects WHERE id=?", (ws["project_id"],)
+            ).fetchone()
+            scope["project_id"] = ws["project_id"]
+            queue = self._scoped_queue(db, workstream_id)
+            return {
+                "project": dict(project),
+                "workstream": ws,
+                "status": self._status_summary(db, workstream_id),
+                **self._paged(queue[offset : offset + limit + 1], limit, offset),
+            }
+
+        return self._run("workstream.status_read", request, operation)
+
+    def _scoped_queue(self, db, workstream_id):
+        ids = set(self._scope_ids(db, workstream_id))
+        queue = []
+        for row in db.execute(
+            "SELECT id FROM tasks WHERE project_id=(SELECT project_id FROM workstreams WHERE id=?) "
+            "ORDER BY order_key,id",
+            (workstream_id,),
+        ):
+            if row["id"] not in ids:
+                continue
+            task = self._task(db, row["id"], {})
+            reasons = self._gate_reasons(db, task, workstream_id)
+            view = self._status_view(task, reasons)
+            queue.append(
+                {
+                    "id": task["id"],
+                    "title": task["title"],
+                    "revision": task["revision"],
+                    "order_key": task["order_key"],
+                    "view": view,
+                    "accepted": task["accepted"] if task["object_type"] == "task" else None,
+                    "object_type": task["object_type"],
+                    "gate_diagnostics": reasons,
+                }
+            )
+        return queue
+
+    @staticmethod
+    def _status_view(task, reasons):
+        if task["object_type"] == "group":
+            return "group"
+        if task["status"] in {"done", "dropped", "deferred"}:
+            return task["status"]
+        if "signoff" in reasons:
+            return "signoff"
+        if "review" in reasons:
+            return "review"
+        for reason in ("pending_acceptance", "unresolved_items", "prerequisites"):
+            if reason in reasons:
+                return reason
+        return "ready"
+
+    def _status_summary(self, db, workstream_id, ids=None):
+        ids = ids if ids is not None else self._scope_ids(db, workstream_id)
+        counts = {
+            key: 0
+            for key in (
+                "group",
+                "ready",
+                "pending_acceptance",
+                "unresolved_items",
+                "prerequisites",
+                "review",
+                "signoff",
+                "done",
+                "deferred",
+                "dropped",
+            )
+        }
+        overlapping = {
+            key: 0
+            for key in (
+                "pending_acceptance",
+                "unresolved_items",
+                "prerequisites",
+                "review",
+                "signoff",
+            )
+        }
+        for item in self._scoped_queue(db, workstream_id):
+            counts[item["view"]] += 1
+            for reason in item["gate_diagnostics"]:
+                if reason in overlapping:
+                    overlapping[reason] += 1
+        return {
+            "recorded_state": "registered",
+            "agent_liveness": "unknown",
+            "scoped_count": len(ids),
+            "counts": counts,
+            "overlapping_gate_diagnostics": overlapping,
+        }
+
+    def init(
+        self,
+        path,
+        branch=None,
+        workstream_name=None,
+        action=None,
+        project=None,
+        workstream_id=None,
+        scope_expression="none",
+        expected_revision=None,
+        confirmed=False,
+    ):
+        request = dict(
+            path=path,
+            branch=branch,
+            workstream_name=workstream_name,
+            action=action,
+            project=project,
+            workstream_id=workstream_id,
+            scope_expression=scope_expression,
+            expected_revision=expected_revision,
+            confirmed=confirmed,
+        )
+
+        def operation(db, scope):
+            canonical = self._canonical_path(path)
+            if not branch and not workstream_name:
+                raise TaskError("workstream_name_required: detached or non-Git use needs a name")
+            if branch is not None and (not isinstance(branch, str) or not branch.strip()):
+                raise TaskError("invalid_branch")
+            if workstream_name is not None and (
+                not isinstance(workstream_name, str) or not workstream_name.strip()
+            ):
+                raise TaskError("invalid_workstream_name")
+            attached = db.execute(
+                "SELECT p.* FROM projects p JOIN project_paths a ON a.project_id=p.id "
+                "WHERE a.path=?",
+                (canonical,),
+            ).fetchone()
+            selected = dict(attached) if attached else None
+            if project is not None:
+                chosen = self._project(db, project, scope)
+                if selected and selected["id"] != chosen["id"]:
+                    return {
+                        "state": "mismatch",
+                        "message": "Checkout is attached to another project",
+                        "path": canonical,
+                        "project": selected,
+                    }
+            else:
+                chosen = selected
+            if action == "rebind_workstream" and workstream_id and chosen is None:
+                target = self._workstream(db, workstream_id)
+                chosen = dict(
+                    db.execute(
+                        "SELECT * FROM projects WHERE id=?", (target["project_id"],)
+                    ).fetchone()
+                )
+            candidate = None
+            if chosen:
+                if branch:
+                    candidate = db.execute(
+                        "SELECT * FROM workstreams WHERE project_id=? AND branch=?",
+                        (chosen["id"], branch),
+                    ).fetchone()
+                else:
+                    candidate = db.execute(
+                        "SELECT * FROM workstreams WHERE project_id=? AND branch IS NULL "
+                        "AND name=?",
+                        (chosen["id"], workstream_name),
+                    ).fetchone()
+            if candidate and candidate["checkout_path"] == canonical and selected:
+                ws = dict(candidate)
+                if workstream_id and workstream_id != ws["id"]:
+                    return {
+                        "state": "mismatch",
+                        "message": "Target has another workstream binding",
+                        "path": canonical,
+                        "project": selected,
+                        "workstream": ws,
+                    }
+                return self._ready_init(db, selected, ws)
+            if candidate and not (
+                action == "rebind_workstream" and confirmed and workstream_id == candidate["id"]
+            ):
+                return {
+                    "state": "mismatch",
+                    "message": "Branch is bound to another checkout; "
+                    "choose explicit rebind_workstream",
+                    "path": canonical,
+                    "project": chosen,
+                    "workstream": dict(candidate),
+                }
+            if not action or not confirmed:
+                if selected:
+                    rows = db.execute(
+                        "SELECT * FROM workstreams WHERE project_id=? ORDER BY created_at,id",
+                        (selected["id"],),
+                    ).fetchall()
+                    return {
+                        "state": "new_branch",
+                        "message": "Choose an initial scope or an explicit workstream rebind",
+                        "path": canonical,
+                        "project": selected,
+                        "candidates": [dict(row) for row in rows],
+                        "choices": ["new_workstream", "rebind_workstream"],
+                    }
+                projects = [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT * FROM projects ORDER BY name,id LIMIT 51"
+                    ).fetchall()
+                ]
+                workstreams = [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT id,project_id,name,branch,checkout_path,revision "
+                        "FROM workstreams ORDER BY created_at,id LIMIT 51"
+                    ).fetchall()
+                ]
+                return {
+                    "state": "unregistered_checkout",
+                    "message": "Choose how this checkout relates to existing projects",
+                    "path": canonical,
+                    "choices": ["create_project", "attach_workstream", "rebind_workstream"],
+                    "project_candidates": projects[:50],
+                    "more_projects": len(projects) > 50,
+                    "workstream_candidates": workstreams[:50],
+                    "more_workstreams": len(workstreams) > 50,
+                }
+            if action not in {
+                "create_project",
+                "new_workstream",
+                "attach_workstream",
+                "rebind_workstream",
+            }:
+                raise TaskError("invalid_init_action")
+            if action == "create_project":
+                if selected or project or workstream_id:
+                    raise TaskError("checkout_already_registered: choose its existing project")
+                now = timestamp()
+                selected = dict(
+                    id=_id("prj_"),
+                    name=Path(canonical).name,
+                    canonical_path=canonical,
+                    created_at=now,
+                )
+                db.execute(
+                    "INSERT INTO projects VALUES (:id,:name,:canonical_path,:created_at)", selected
+                )
+                db.execute("INSERT INTO project_paths VALUES (?,?)", (canonical, selected["id"]))
+                ws = self._insert_workstream(
+                    db, selected["id"], workstream_name or branch, branch, canonical
+                )
+            elif action in {"new_workstream", "attach_workstream"}:
+                if not chosen:
+                    raise TaskError("project_required: select an existing project")
+                if action == "new_workstream" and not selected:
+                    raise TaskError("checkout_not_attached: choose attach_workstream")
+                if action == "attach_workstream" and selected:
+                    raise TaskError("checkout_already_attached: choose new_workstream")
+                tokens = shlex.split(scope_expression) if isinstance(scope_expression, str) else []
+                if tokens and tokens[0] != "none" and not tokens[0].startswith(("+", "-")):
+                    base = db.execute(
+                        "SELECT revision FROM workstreams WHERE project_id=? AND (id=? OR name=?)",
+                        (chosen["id"], tokens[0], tokens[0]),
+                    ).fetchone()
+                    if base and (
+                        type(expected_revision) is not int or base["revision"] != expected_revision
+                    ):
+                        raise TaskError("revision_conflict: re-read the scope source workstream")
+                members, groups, exclusions = self._scope_expression(
+                    db, chosen["id"], scope_expression
+                )
+                if not selected:
+                    db.execute("INSERT INTO project_paths VALUES (?,?)", (canonical, chosen["id"]))
+                selected = chosen
+                ws = self._insert_workstream(
+                    db, selected["id"], workstream_name or branch, branch, canonical
+                )
+                self._set_scope(db, ws["id"], members, groups, exclusions)
+            else:
+                if not workstream_id:
+                    raise TaskError("workstream_id_required: select a durable binding")
+                ws = self._workstream(db, workstream_id)
+                if chosen and ws["project_id"] != chosen["id"]:
+                    raise TaskError("workstream_project_mismatch")
+                if type(expected_revision) is not int or ws["revision"] != expected_revision:
+                    raise TaskError("revision_conflict: re-read the workstream")
+                selected = dict(
+                    db.execute("SELECT * FROM projects WHERE id=?", (ws["project_id"],)).fetchone()
+                )
+                if not attached:
+                    db.execute(
+                        "INSERT INTO project_paths VALUES (?,?)", (canonical, selected["id"])
+                    )
+                try:
+                    db.execute(
+                        "UPDATE workstreams SET checkout_path=?,branch=?,name=?,"
+                        "revision=revision+1 "
+                        "WHERE id=?",
+                        (canonical, branch, workstream_name or branch, workstream_id),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise TaskError("workstream_exists: target binding conflicts") from exc
+                ws = self._workstream(db, workstream_id)
+            scope.update(project_id=selected["id"], after={"project": selected, "workstream": ws})
+            return self._ready_init(db, selected, ws)
+
+        return self._run("session.initialized", request, operation)
+
+    def _ready_init(self, db, project, ws):
+        return {
+            "state": "ready",
+            "message": "Workstream ready",
+            "project": project,
+            "workstream": ws,
+            "scope_revision": ws["revision"],
+            "queue": self._scoped_queue(db, ws["id"]),
+            "status": self._status_summary(db, ws["id"]),
+        }
 
     def init_workstream(
         self, project, path, branch=None, name=None, scope_expression="none", confirmed=False
@@ -1576,15 +1907,7 @@ class Store:
                     continue
                 task = self._task(db, row["id"], {})
                 reasons = self._gate_reasons(db, task, workstream_id)
-                view = (
-                    "done"
-                    if task["status"] == "done"
-                    else "group"
-                    if task["object_type"] == "group"
-                    else "ready"
-                    if not reasons
-                    else reasons[0]
-                )
+                view = self._status_view(task, reasons)
                 if state and state != view:
                     continue
                 result.append(

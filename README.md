@@ -30,18 +30,61 @@ descriptive attribution label if useful. The default database is
 No network listener is needed. Connect this command in each client's own MCP
 configuration; Task MCP does not install its connection.
 
-## First project and workstream
+## Session init and workstreams
 
-The reference `init` flow detects the canonical checkout path and Git branch,
-shows them and the proposed scope to the user, and obtains confirmation before
-calling `init_project`. Unknown projects are never registered by task creation.
-For another checkout of an existing project, call `attach_checkout`, then
-`init_workstream` if it needs its own scope. For a new branch in an attached
-checkout, call `init_workstream` with an explicit set expression. Detached HEAD
-and non-Git contexts need a workstream name. A workstream has a durable ID, while
-its branch name is a mutable binding. `rebind_workstream` preserves history when
-the branch or checkout changes. Call `preflight` before autonomous work; a
-mismatched or unknown binding is an actionable stop.
+Call `init` with the absolute path of the target checkout and its branch, or an
+explicit `workstream_name` for detached/non-Git work. The target is independent
+of the MCP server process cwd and the agent session cwd. For example, a session
+in a parent directory can call `init(path="/work/service-a", branch="main")`
+and then `init(path="/work/service-b", branch="feature")`. Keep both returned
+project/workstream IDs for subsequent task calls; there is no global current
+project or persistent session entity. Repeating either call returns its own
+`ready` context and scoped queue without changing the other.
+
+An exact existing path/branch binding returns `ready` with project and
+workstream identities, revision, binding and compact scoped queue. No confirmation
+or separate preflight is needed for ordinary resume. A known checkout on an
+unbound branch returns `new_branch` and that project's registered workstream
+candidates. An unknown checkout returns `unregistered_checkout` with project and
+workstream candidates and the choices `create_project`, `attach_workstream`, and
+`rebind_workstream`. A branch bound to another checkout returns `mismatch`.
+Candidates are recorded bindings, not scanned Git refs or running agents. The
+initial call may append an audit event but changes no project, task, scope or
+workstream state.
+
+After choosing setup, call `init` again with `confirmed=true` and `action`:
+`create_project` creates a project and its first workstream;
+`new_workstream` creates a branch/name in the already attached checkout;
+`attach_workstream` atomically attaches an unknown checkout to the specified
+existing project and creates its workstream; `rebind_workstream` moves a selected
+durable workstream binding to this path/branch, preserving scope and history.
+Rebind requires `workstream_id` and its last read `expected_revision`. Failed
+setup calls roll back attachment and workstream changes together. An exact
+binding reached by retry returns `ready` without duplicating state. New
+workstreams take an explicit `scope_expression` (default `none`); no project
+relationship or scope is inferred from directory/branch names. `list_projects`
+is a global administrative catalog, not a current-project selector. The old
+setup primitives and `preflight` remain for compatibility.
+When a new workstream snapshots an existing workstream as its first scope
+expression term, pass that source's last read revision as `expected_revision`.
+
+`list_workstreams(project?, limit?, offset?)` lists registered workstreams
+globally or within one project, with binding, revision and derived scoped task
+counts. `workstream_status(workstream_id, limit?, offset?)` returns that
+workstream's compact scoped queue and count diagnostics without init or rebind.
+Its `counts` are disjoint task views (ready, pending acceptance, unresolved,
+prerequisites, review, sign-off, done, deferred, dropped). They count only
+scoped tasks and groups; `scoped_count` equals their sum.
+The separate
+`overlapping_gate_diagnostics` counts can overlap for tasks with several gates.
+The single `view` shown in `list_tasks` and status drill-down prioritizes
+terminal disposition, then review/sign-off, then acceptance/unresolved/
+prerequisite gates; use diagnostics to see every simultaneous gate.
+`recorded_state=registered` means only that the binding exists;
+`agent_liveness=unknown` explicitly makes no running-agent claim. IDs support
+durable resume; offset pages are for browsing current state, not a snapshot of a
+changing board. Completed tasks in different repositories remain separate;
+these views do not claim an integrated feature is complete.
 
 Workstream scope is an explicit set of canonical project tasks. `none` begins
 empty. A workstream name or ID as the first expression term snapshots its scope.
@@ -122,7 +165,7 @@ those rare workflows are deferred.
 
 | Area | Tools |
 | --- | --- |
-| Project and workstream | `list_projects`, `init_project`, `attach_checkout`, `init_workstream`, `list_workstreams`, `rebind_workstream`, `preflight` |
+| Project and workstream | `init`, `list_projects`, `list_workstreams`, `workstream_status`; compatibility: `init_project`, `attach_checkout`, `init_workstream`, `rebind_workstream`, `preflight` |
 | Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `reorder_tasks`, `get_next_task` |
 | Specification and gates | `create_task`, `update_task`, `accept_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |

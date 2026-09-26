@@ -1,26 +1,36 @@
 ---
 name: task-mcp-init
-description: Explicitly initialize or attach a Task MCP project and workstream.
+description: Discover or resume an explicit Task MCP checkout and workstream.
 ---
 
 # Init
 
-Inspect the checkout's canonical path and Git branch. Show the user the project
-path, proposed branch or explicit workstream name, and initial scope before
-calling any operation with `confirmed=true`. An unknown project offers three
-choices: initialize it, attach this checkout to an existing project, or create a
-new workstream in an already attached checkout. Use `list_projects` and
-`list_workstreams` to distinguish them. Detached HEAD or non-Git work requires
-the user to choose a workstream name.
+At the start of every task-using session, call `init` with the absolute path of
+the repository actually being worked on and its branch. Session cwd is only a
+possible path default; a session in a parent directory may name any child repo.
+For detached HEAD or non-Git work, supply an explicit `workstream_name`. Retain
+the returned project and workstream IDs for subsequent task calls. A session may
+retain several returned contexts at once; do not treat `list_projects` as a
+current-project selector.
 
-For a new project, call `init_project`. For another checkout, call
-`attach_checkout`; then call `init_workstream` if its branch needs a separate
-scope. For a new branch in an attached checkout, call `init_workstream` with an
-explicit set expression. `none` is an empty scope; a workstream name/ID copies
-its current scope once; `+task-id` and `-task-id` change that snapshot. A group
-reference is a live relation for future members. An explicit `-task-id`
-exclusion persists even when the task is a member of a scoped group;
-`+task-id` clears that exclusion. After changing explicit scope, re-read the
-workstream revision before another scope edit. Do not infer scope from a
-branch name or Git history. Call `preflight` before unattended work, and stop on
-a mismatched binding until the user chooses `rebind_workstream` or a new one.
+An exact binding returns `ready`, its scope revision and compact scoped queue.
+Resume it directly, with no confirmation or separate preflight. `new_branch`
+lists registered workstreams in that project. Choose a new scope or an explicit
+rebind; neither branch names nor Git history imply scope. `unregistered_checkout`
+lists candidates and offers `create_project`, `attach_workstream`, or
+`rebind_workstream`. A mismatch requires resolving the named conflicting binding.
+Show the target path, branch/name, chosen project/workstream and scope to the
+user before calling `init` again with the chosen `action` and `confirmed=true`.
+Rebind also requires the selected `workstream_id` and its last read
+`expected_revision`. Repeat calls for an already exact binding return `ready`
+without another mutation.
+
+`none` begins a new workstream with an empty scope. A workstream ID/name as the
+first scope expression term snapshots its current scope; pass that source's
+last read `expected_revision`. `+task-id` and
+`-task-id` adjust it. Group inclusion remains live for future members, while
+explicit exclusions persist. Use `list_workstreams` for global or project
+filtered candidates and `workstream_status` to inspect a scoped queue without
+binding the current session to it. Those calls report registered bindings and
+task state, never whether an agent is running. The older setup and `preflight`
+primitives remain available to existing clients.

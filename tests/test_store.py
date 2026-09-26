@@ -38,6 +38,177 @@ def complete(store, task_id, workstream_id, revision):
     return store.signoff_task(task_id, revision + 1, "approve", "User approved", result["id"])
 
 
+def test_session_init_discovery_repeat_and_three_repo_contexts(store, tmp_path):
+    paths = [str(tmp_path / name) for name in ("alpha", "beta", "gamma")]
+    assert store.init(paths[0], branch="main")["state"] == "unregistered_checkout"
+    assert (
+        store.init(paths[0], branch="main", action="create_project")["state"]
+        == "unregistered_checkout"
+    )
+    contexts = []
+    for path, branch in zip(paths, ("main", "feature", "release"), strict=True):
+        result = store.init(path, branch=branch, action="create_project", confirmed=True)
+        contexts.append(result)
+        assert result["state"] == "ready"
+        task(store, result["project"]["id"], result["workstream"]["id"], Path(path).name)
+    for path, branch, original in zip(paths, ("main", "feature", "release"), contexts, strict=True):
+        resumed = store.init(path, branch=branch)
+        assert resumed["project"]["id"] == original["project"]["id"]
+        assert resumed["workstream"]["id"] == original["workstream"]["id"]
+        assert len(resumed["queue"]) == 1
+        assert resumed["queue"][0]["title"] == Path(path).name
+        assert resumed["scope_revision"] >= original["scope_revision"]
+    assert len(store.list_projects()["items"]) == 3
+    assert len(store.list_workstreams()["items"]) == 3
+    first_page = store.list_workstreams(limit=2)
+    assert len(first_page["items"]) == 2 and first_page["next_offset"] == 2
+    second_page = store.list_workstreams(limit=2, offset=2)
+    assert len(second_page["items"]) == 1 and second_page["next_offset"] is None
+    for context in contexts:
+        assert len(store.list_workstreams(context["project"]["id"])["items"]) == 1
+
+
+def test_session_init_new_branch_attach_rebind_and_rollback(store, tmp_path):
+    original = store.init(
+        str(tmp_path / "repo"), branch="main", action="create_project", confirmed=True
+    )
+    project = original["project"]["id"]
+    main = original["workstream"]["id"]
+    work = task(store, project, main, "Keep history")
+    branch = store.init(str(tmp_path / "repo"), branch="feature")
+    assert branch["state"] == "new_branch"
+    assert branch["candidates"][0]["id"] == main
+    main_revision = branch["candidates"][0]["revision"]
+    with pytest.raises(TaskError, match="revision_conflict"):
+        store.init(
+            str(tmp_path / "repo"),
+            branch="feature",
+            action="new_workstream",
+            scope_expression=main,
+            expected_revision=0,
+            confirmed=True,
+        )
+    feature = store.init(
+        str(tmp_path / "repo"),
+        branch="feature",
+        action="new_workstream",
+        scope_expression=main,
+        expected_revision=main_revision,
+        confirmed=True,
+    )
+    assert feature["queue"][0]["id"] == work["id"]
+    checkout = str(tmp_path / "another-checkout")
+    unknown = store.init(checkout, branch="release")
+    assert unknown["state"] == "unregistered_checkout"
+    assert {"create_project", "attach_workstream", "rebind_workstream"} == set(unknown["choices"])
+    assert unknown["workstream_candidates"]
+    with pytest.raises(TaskError, match="unknown_scope_base"):
+        store.init(
+            checkout,
+            branch="release",
+            action="attach_workstream",
+            project=project,
+            scope_expression="missing",
+            confirmed=True,
+        )
+    assert store.init(checkout, branch="release")["state"] == "unregistered_checkout"
+    attached = store.init(
+        checkout,
+        branch="release",
+        action="attach_workstream",
+        project=project,
+        scope_expression=main,
+        expected_revision=main_revision,
+        confirmed=True,
+    )
+    assert attached["project"]["id"] == project
+    assert attached["queue"][0]["id"] == work["id"]
+    assert (
+        store.init(
+            checkout, branch="release", action="attach_workstream", project=project, confirmed=True
+        )["workstream"]["id"]
+        == attached["workstream"]["id"]
+    )
+    move_path = str(tmp_path / "moved")
+    assert store.init(move_path, branch="main")["state"] == "unregistered_checkout"
+    current_revision = store.list_workstreams(project)["items"][0]["revision"]
+    with pytest.raises(TaskError, match="revision_conflict"):
+        store.init(
+            move_path,
+            branch="main",
+            action="rebind_workstream",
+            workstream_id=main,
+            expected_revision=0,
+            confirmed=True,
+        )
+    conflict_path = str(tmp_path / "conflicting-move")
+    conflict = store.init(
+        conflict_path,
+        branch="feature",
+        action="rebind_workstream",
+        workstream_id=main,
+        expected_revision=current_revision,
+        confirmed=True,
+    )
+    assert conflict["state"] == "mismatch"
+    assert store.init(conflict_path, branch="feature")["state"] == "unregistered_checkout"
+    assert (
+        store.init(
+            move_path,
+            branch="main",
+            action="rebind_workstream",
+            workstream_id=main,
+            expected_revision=current_revision,
+            confirmed=True,
+        )["workstream"]["id"]
+        == main
+    )
+    assert (
+        store.init(
+            move_path,
+            branch="main",
+            action="rebind_workstream",
+            workstream_id=main,
+            expected_revision=current_revision,
+            confirmed=True,
+        )["state"]
+        == "ready"
+    )
+    assert store.init(str(tmp_path / "repo"), branch="main")["state"] == "mismatch"
+    assert store.init(move_path, branch="main")["queue"][0]["id"] == work["id"]
+
+
+def test_session_init_named_and_status_pagination(store, tmp_path):
+    path = str(tmp_path / "non-git")
+    with pytest.raises(TaskError, match="workstream_name_required"):
+        store.init(path)
+    named = store.init(path, workstream_name="detached", action="create_project", confirmed=True)
+    project = named["project"]["id"]
+    ws = named["workstream"]["id"]
+    assert store.init(path, workstream_name="detached")["workstream"]["id"] == ws
+    ready = task(store, project, ws, "Ready")
+    pending = task(store, project, ws, "Pending", source="agent")
+    assert ready["id"] != pending["id"]
+    status = store.workstream_status(ws, limit=1)
+    assert status["status"]["counts"]["ready"] == 1
+    assert status["status"]["counts"]["pending_acceptance"] == 1
+    assert status["status"]["scoped_count"] == 2
+    assert status["status"]["agent_liveness"] == "unknown"
+    assert status["next_offset"] == 1
+    assert store.workstream_status(ws, limit=1, offset=1)["items"][0]["id"] == pending["id"]
+    assert store.list_workstreams(limit=1)["items"][0]["id"] == ws
+    assert store.list_workstreams(project=project)["items"][0]["project_name"] == "non-git"
+    result = store.record_result(ready["id"], ws, 1, "implementer", "Done", "Verified")
+    assert store.workstream_status(ws)["status"]["counts"]["review"] == 1
+    store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
+    assert store.workstream_status(ws)["status"]["counts"]["signoff"] == 1
+    store.signoff_task(ready["id"], 2, "approve", "Approved", result["id"])
+    summary = store.workstream_status(ws)["status"]
+    assert summary["counts"]["done"] == 1
+    assert summary["counts"]["pending_acceptance"] == 1
+    assert sum(summary["counts"].values()) == summary["scoped_count"]
+
+
 def test_explicit_init_and_attachment_do_not_write_checkouts(store, tmp_path):
     path = tmp_path / "checkout"
     path.mkdir()

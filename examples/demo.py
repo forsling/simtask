@@ -18,8 +18,9 @@ async def exercise(database: Path):
     )
     async with Client(server, read_timeout_seconds=15) as client:
         tools = (await client.list_tools()).tools
-        assert len(tools) >= 30
+        assert len(tools) == 32
         assert "dismiss_gate_proposal" in {tool.name for tool in tools}
+        assert {"init", "workstream_status"} <= {tool.name for tool in tools}
         print(f"Connected over stdio; discovered {len(tools)} tools.")
 
         async def call(name, **arguments):
@@ -28,7 +29,11 @@ async def exercise(database: Path):
             return result.structured_content
 
         project_path = "/tmp/task-mcp-demo-project"
-        setup = await call("init_project", path=project_path, branch="main", confirmed=True)
+        discovered = await call("init", path=project_path, branch="main")
+        assert discovered["state"] == "unregistered_checkout"
+        setup = await call(
+            "init", path=project_path, branch="main", action="create_project", confirmed=True
+        )
         project_id = setup["project"]["id"]
         workstream_id = setup["workstream"]["id"]
         task = await call(
@@ -43,6 +48,12 @@ async def exercise(database: Path):
             scope="workstream",
         )
         task_id = task["id"]
+        resumed = await call("init", path=project_path, branch="main")
+        assert resumed["state"] == "ready" and resumed["queue"][0]["id"] == task_id
+        overview = await call("list_workstreams")
+        assert overview["items"][0]["id"] == workstream_id
+        status = await call("workstream_status", workstream_id=workstream_id)
+        assert status["items"][0]["id"] == task_id
         selected = await call("get_next_task", workstream_id=workstream_id)
         assert selected["task"]["id"] == task_id
         stale = await client.call_tool(

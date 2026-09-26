@@ -10,9 +10,24 @@ usable.
 
 Projects are initialized explicitly at a canonical path. A project may attach
 other checkout paths. Each workstream has a durable ID and a mutable branch or
-explicit name binding. Autonomous workflows preflight the checkout and binding
-before selecting work. A new workstream chooses its scope explicitly; branch
-names and Git history do not imply scope.
+explicit name binding. Each session calls `init` with its explicit target path
+and branch/name; an exact binding returns its scoped queue idempotently.
+Discovery returns `new_branch`, `unregistered_checkout`, or `mismatch` when
+setup needs a choice. Confirmed create, attach and rebind actions are atomic;
+rebind checks the workstream revision and preserves its scope and history. The
+old preflight and setup primitives remain available to existing clients. A new
+workstream chooses its scope explicitly; branch names and Git history do not
+imply scope. There is no cwd fallback to the sole project.
+
+A session can retain multiple returned workstream IDs, one per repository or
+branch as needed. Separate repositories keep independent task specifications,
+attempts, reviews and sign-off. No global current-project state or persisted
+session object is needed. Global `list_workstreams` can be project-filtered and
+paged; `workstream_status` drills into one scoped queue without binding the
+caller. Workstream summaries expose registered identity/binding/revision and
+disjoint task view counts, plus explicitly overlapping gate diagnostics. They
+make no claim about agent liveness or integrated feature completion. Page
+offsets browse current state; stable IDs support durable resumption.
 
 Tasks are canonical project objects. A workstream's explicit scope consists of
 included tasks, included groups, and excluded task IDs. A group inclusion is
