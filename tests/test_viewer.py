@@ -325,6 +325,13 @@ def test_control_requests_never_follow_redirects(tmp_path, control_endpoint):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_attempt_actions_and_details_select_eligible_results():
+    script = Path(__file__).with_name("viewer_attempt.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
 def test_pending_dialog_submission_cannot_be_abandoned():
     script = Path(__file__).with_name("viewer_dialog.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)

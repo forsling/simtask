@@ -599,12 +599,18 @@ function renderDetail(t) {
   );
   d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, view), ...body(t)));
 }
-function currentAttempt(t) {
-  return [...t.attempts].reverse().find((a) => a.spec_revision === t.spec_revision) || null;
+function currentAttempt(t, requiredStates = null) {
+  if (!requiredStates && t.status === "done" && t.selected_attempt_id)
+    return t.attempts.find((a) => a.id === t.selected_attempt_id) || null;
+  return [...t.attempts].reverse().find((a) =>
+    a.spec_revision === t.spec_revision &&
+    (!state.stream || a.workstream_id === state.stream) &&
+    (!requiredStates || requiredStates.includes(a.state))
+  ) || null;
 }
 // The one thing the human can do next, stated plainly with its buttons.
 function nextStep(t, view) {
-  const a = currentAttempt(t);
+  const a = currentAttempt(t, view === "signoff" ? ["passed", "human_review"] : ["review"]);
   let title, text, buttons = [];
   if (t.status === "done") {
     title = "Signed off";
@@ -684,11 +690,13 @@ function body(t) {
     const note = el("details", "fold", node("summary", t.accepted ? "Acceptance note" : "Previous acceptance note (spec changed since)"), markdown(t.acceptance_note));
     out.push(note);
   }
-  const a = currentAttempt(t);
+  const view = state.rows.find((r) => r.id === t.id)?.view;
+  const requiredStates = view === "signoff" ? ["passed", "human_review"] : view === "review" ? ["review"] : null;
+  const a = currentAttempt(t, t.status === "done" ? null : requiredStates);
   const earlier = t.attempts.filter((x) => x !== a).reverse();
   if (a) out.push(section("Result", attemptCard(a, t)));
   if (earlier.length) {
-    const fold = el("details", "fold", node("summary", `Earlier results (${earlier.length})`));
+    const fold = el("details", "fold", node("summary", `Other results (${earlier.length})`));
     earlier.forEach((x) => fold.append(attemptCard(x, t)));
     out.push(fold);
   }
