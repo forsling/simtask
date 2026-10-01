@@ -72,6 +72,9 @@ its discoverable groups, including shared groups and empty groups included in
 that project's scope. **Shared task groups** shows only groups with task members in
 more than one project. Both show whole-group progress and project counts;
 **Project group**, **Shared group** and **Empty group** labels distinguish them.
+Group details list workstreams that explicitly include the group, with
+project/branch links to their scoped queues. Independently scoped member tasks
+do not imply that the whole group is included in a workstream.
 Dedicated dialogs
 record creation, edits, acceptance, questions, defer/resume/drop, human review
 and sign-off. Concurrent changes retain your draft and offer reconciliation.

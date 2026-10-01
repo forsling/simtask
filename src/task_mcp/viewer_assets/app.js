@@ -451,6 +451,7 @@ async function reload({ quiet = false } = {}) {
       await selectTask(first.id);
     } else {
       state.selected = null;
+      $("detail").classList.remove("loading");
       $("detail").replaceChildren(
         state.groups
           ? emptyState(groups === "shared" ? "No shared task groups" : "No task groups", groups === "shared" ? "Task groups with members in more than one project appear here." : "Task groups belonging to or included in this project appear here.")
@@ -459,6 +460,7 @@ async function reload({ quiet = false } = {}) {
     }
   } catch (e) {
     if (generation !== state.generation) return;
+    $("detail").classList.remove("loading");
     toast(e.message, true);
     $("list").replaceChildren(emptyState("Couldn't load tasks", "Refresh to try again."));
   }
@@ -555,6 +557,7 @@ function emptyState(title, text, action) {
 /* ---------- detail ---------- */
 
 async function selectTask(id, { open = false, quiet = false } = {}) {
+  const generation = ++state.generation;
   state.selected = id;
   document.querySelectorAll(".row").forEach((r) => {
     const on = r.dataset.id === id;
@@ -566,15 +569,19 @@ async function selectTask(id, { open = false, quiet = false } = {}) {
   if (!quiet) $("detail").classList.add("loading");
   try {
     const t = (await api("details", { ids: [id] })).items[0];
-    if (state.selected !== id) return;
+    if (state.selected !== id || generation !== state.generation) return;
+    if (t.object_type === "group") {
+      t.included_workstreams = (await pages("workstreams")).filter((w) => w.groups.includes(t.id));
+      if (state.selected !== id || generation !== state.generation) return;
+    }
     state.task = t;
     const scroll = $("detail").scrollTop;
     renderDetail(t);
     $("detail").scrollTop = quiet ? scroll : 0;
   } catch (e) {
-    toast(e.message, true);
+    if (generation === state.generation) toast(e.message, true);
   } finally {
-    $("detail").classList.remove("loading");
+    if (generation === state.generation) $("detail").classList.remove("loading");
   }
 }
 function section(title, content, extra) {
@@ -767,6 +774,20 @@ function renderGroup(t) {
     members.append(b);
   });
   if (!t.member_details.length) members.append(node("p", "No members yet. An empty group is not complete.", "empty-text"));
+  const workstreams = el("div", "links");
+  t.included_workstreams.forEach((w) => {
+    const b = button("", () => navigateWorkstream(w), "link-row");
+    b.append(
+      icon("branch", 14),
+      node("span", w.project_name, "muted"),
+      branchLabel(w.branch || w.name),
+      icon("link", 14),
+    );
+    b.title = `${w.project_name} · ${w.branch || w.name} · ${w.checkout_path}`;
+    workstreams.append(b);
+  });
+  if (!t.included_workstreams.length)
+    workstreams.append(node("p", "Not included as a group in any workstream. Member tasks may be scoped individually.", "empty-text"));
   d.replaceChildren(
     topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], []),
     el(
@@ -781,11 +802,27 @@ function renderGroup(t) {
       ),
       section("Context", markdown(t.body)),
       section("Done when", markdown(t.acceptance_criteria, { checklist: true })),
+      section("Included in workstreams", workstreams),
       section("Members", members),
       node("p", "Group progress counts members in every project. It doesn't mean one workstream delivered them all.", "footnote"),
       activity(t),
     ),
   );
+}
+async function navigateWorkstream(w) {
+  closeDrawer();
+  const generation = ++state.generation;
+  const streams = await pages("workstreams", { project: w.project_id });
+  if (generation !== state.generation) return;
+  state.project = w.project_id;
+  state.streams = streams;
+  state.stream = w.id;
+  state.groups = false;
+  state.linkedGroup = null;
+  state.selected = null;
+  state.task = null;
+  renderNav();
+  await reload();
 }
 async function navigateMember(m) {
   state.selected = m.id;
