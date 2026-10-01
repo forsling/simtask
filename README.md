@@ -173,12 +173,19 @@ concrete tasks owned by that workstream's project; `scoped_count` equals their
 sum. `groups` and `referenced_groups` identify explicitly included groups and
 their whole-group progress separately, even when this project has no members.
 The separate
-`overlapping_gate_diagnostics` counts can overlap for tasks with several gates.
+`overlapping_gate_diagnostics` counts active gates on open/rework tasks and can overlap
+for tasks with several gates. Queue `gate_diagnostics` uses the same active-gate
+meaning: done, dropped and deferred tasks have an empty list. Deferred tasks'
+gates become active again when resumed. Full `get_tasks` details and audit events
+retain unresolved items, prerequisite links and attempt/review history; retained
+history does not create actionable gates on inactive tasks.
 The single `view` shown in `list_tasks` and status drill-down prioritizes
 terminal disposition, then review/sign-off, then acceptance/unresolved/
 prerequisite gates; use diagnostics to see every simultaneous gate.
 `recorded_state=registered` means only that the binding exists;
-`agent_liveness=unknown` explicitly makes no running-agent claim. IDs support
+`agent_liveness=not_tracked` means the service intentionally does not observe
+agents, run heartbeats or maintain leases; it is not a failed observation. Recorded
+task views and active gates describe durable workflow state, not running agents. IDs support
 durable resume; offset pages are for browsing current state, not a snapshot of a
 changing board. Completed tasks in different repositories remain separate;
 these views do not claim an integrated feature is complete.

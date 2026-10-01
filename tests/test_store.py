@@ -193,7 +193,7 @@ def test_session_init_named_and_status_pagination(store, tmp_path):
     assert status["status"]["counts"]["ready"] == 1
     assert status["status"]["counts"]["pending_acceptance"] == 1
     assert status["status"]["scoped_count"] == 2
-    assert status["status"]["agent_liveness"] == "unknown"
+    assert status["status"]["agent_liveness"] == "not_tracked"
     assert status["next_offset"] == 1
     assert store.workstream_status(ws, limit=1, offset=1)["items"][0]["id"] == pending["id"]
     assert store.list_workstreams(limit=1)["items"][0]["id"] == ws
@@ -207,6 +207,108 @@ def test_session_init_named_and_status_pagination(store, tmp_path):
     assert summary["counts"]["done"] == 1
     assert summary["counts"]["pending_acceptance"] == 1
     assert sum(summary["counts"].values()) == summary["scoped_count"]
+
+
+def test_status_active_gates_suspend_and_resume(store, tmp_path):
+    project, ws, path = setup(store, tmp_path)
+    pending = task(store, project, ws, "Pending design", source="agent")
+    blocker = store.create_task(project, "Prerequisite")
+    gated = store.add_unresolved(pending["id"], pending["revision"], "Design needed")
+    gated = store.add_prerequisite(gated["id"], gated["revision"], blocker["id"])
+    active = ["pending_acceptance", "unresolved_items", "prerequisites"]
+
+    def check_status(view, gates):
+        status = store.workstream_status(ws)
+        assert status["items"][0]["view"] == view
+        assert status["items"][0]["gate_diagnostics"] == gates
+        summary = status["status"]
+        assert summary["recorded_state"] == "registered"
+        assert summary["agent_liveness"] == "not_tracked"
+        assert summary["counts"][view] == 1
+        assert sum(summary["counts"].values()) == summary["scoped_count"] == 1
+        assert summary["overlapping_gate_diagnostics"] == {
+            reason: int(reason in gates)
+            for reason in (
+                "pending_acceptance",
+                "unresolved_items",
+                "prerequisites",
+                "review",
+                "signoff",
+            )
+        }
+        assert store.init(path, branch="main")["status"] == summary
+        assert store.init(path, branch="main")["queue"] == status["items"]
+        assert store.list_workstreams(project)["items"][0]["status"] == summary
+        return summary
+
+    check_status("pending_acceptance", active)
+    deferred = store.set_disposition(gated["id"], gated["revision"], "deferred", "Later")
+    check_status("deferred", [])
+    details = store.get_tasks([gated["id"]])["items"][0]
+    assert details["unresolved_items"] == gated["unresolved_items"]
+    assert details["blocked_by"] == [blocker["id"]]
+    resumed = store.set_disposition(deferred["id"], deferred["revision"], "open", "Resume")
+    check_status("pending_acceptance", active)
+    store.set_disposition(resumed["id"], resumed["revision"], "dropped", "No longer needed")
+    check_status("dropped", [])
+    diagnostics = store.get_next_task(ws)["diagnostics"]
+    assert diagnostics["closed_or_group"] == 1
+    assert all(diagnostics[gate] == 0 for gate in active)
+
+
+@pytest.mark.parametrize("disposition", ["done", "deferred", "dropped"])
+def test_inactive_attempts_are_history_not_status_gates(store, tmp_path, disposition):
+    project, ws, path = setup(store, tmp_path)
+    work = task(store, project, ws)
+    other = store.init_workstream(
+        project, path, branch="alternative", scope_expression=ws, confirmed=True
+    )["workstream"]["id"]
+    reviewed = store.record_result(work["id"], ws, work["revision"], "worker", "Done", "Tests")
+    store.record_review(reviewed["id"], 1, "reviewer", "pass", "Checked")
+    awaiting_review = store.record_result(work["id"], other, 2, "worker", "Alternative", "Tests")
+    status = store.workstream_status(ws)
+    assert status["items"][0]["gate_diagnostics"] == ["signoff"]
+    assert status["status"]["overlapping_gate_diagnostics"]["signoff"] == 1
+    assert store.workstream_status(other)["items"][0]["gate_diagnostics"] == ["review"]
+    if disposition == "done":
+        store.signoff_task(work["id"], 3, "approve", "User approved", reviewed["id"])
+    else:
+        store.set_disposition(work["id"], 3, disposition, "User decision")
+    status = store.workstream_status(ws)
+    assert status["items"][0]["view"] == disposition
+    assert status["items"][0]["gate_diagnostics"] == []
+    assert status["status"]["counts"][disposition] == 1
+    assert not any(status["status"]["overlapping_gate_diagnostics"].values())
+    assert store.workstream_status(other)["items"][0]["gate_diagnostics"] == []
+    assert not any(
+        store.workstream_status(other)["status"]["overlapping_gate_diagnostics"].values()
+    )
+    next_task = store.get_next_task(ws)
+    assert next_task["task"] is None
+    assert next_task["diagnostics"]["closed_or_group"] == 1
+    assert next_task["diagnostics"]["review"] == next_task["diagnostics"]["signoff"] == 0
+    history = store.get_tasks([work["id"]])["items"][0]
+    assert {attempt["id"] for attempt in history["attempts"]} == {
+        reviewed["id"],
+        awaiting_review["id"],
+    }
+    assert {attempt["state"] for attempt in history["attempts"]} == {"passed", "review"}
+
+
+@pytest.mark.parametrize("disposition", ["deferred", "dropped"])
+def test_inactive_status_does_not_hide_prerequisite_from_signoff(store, tmp_path, disposition):
+    project, ws, _ = setup(store, tmp_path)
+    work = task(store, project, ws)
+    result = store.record_result(work["id"], ws, 1, "worker", "Done", "Tests")
+    store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
+    blocker = task(store, project, ws, "Still needed")
+    gated = store.add_prerequisite(work["id"], 2, blocker["id"])
+    inactive = store.set_disposition(work["id"], gated["revision"], disposition, "Later")
+    assert store.workstream_status(ws)["items"][0]["gate_diagnostics"] == []
+    with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
+        store.signoff_task(
+            work["id"], inactive["revision"], "approve", "User approved", result["id"]
+        )
 
 
 def test_explicit_init_and_attachment_do_not_write_checkouts(store, tmp_path):

@@ -458,7 +458,7 @@ class Store:
                     "view": view,
                     "accepted": task["accepted"] if task["object_type"] == "task" else None,
                     "object_type": task["object_type"],
-                    "gate_diagnostics": reasons,
+                    "gate_diagnostics": [r for r in reasons if r != "closed_or_group"],
                 }
             )
         return queue
@@ -534,7 +534,7 @@ class Store:
             )
         return {
             "recorded_state": "registered",
-            "agent_liveness": "unknown",
+            "agent_liveness": "not_tracked",
             "scoped_count": len(ids),
             "counts": counts,
             "overlapping_gate_diagnostics": overlapping,
@@ -1863,11 +1863,10 @@ class Store:
 
     @staticmethod
     def _gate_reasons(db, task, workstream_id=None):
-        if task["object_type"] == "group":
+        # Retained gates and attempts on inactive tasks are history, not active work.
+        if task["object_type"] == "group" or task["status"] in {"done", "dropped", "deferred"}:
             return ["closed_or_group"]
         reasons = []
-        if task["status"] in {"done", "dropped", "deferred"}:
-            reasons.append("closed_or_group")
         if not task["accepted"]:
             reasons.append("pending_acceptance")
         if task["unresolved_items"]:
@@ -2095,7 +2094,7 @@ class Store:
                 if (
                     not before["accepted"]
                     or before["unresolved_items"]
-                    or "prerequisites" in self._gate_reasons(db, before)
+                    or self._unsatisfied_prerequisite(db, before["id"])
                 ):
                     raise TaskError("task_not_ready_for_signoff")
                 after["status"] = "done"

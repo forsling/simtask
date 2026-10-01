@@ -25,8 +25,13 @@ attempts, reviews and sign-off. No global current-project state or persisted
 session object is needed. Global `list_workstreams` can be project-filtered and
 paged; `workstream_status` drills into one scoped queue without binding the
 caller. Workstream summaries expose registered identity/binding/revision and
-disjoint task view counts, plus explicitly overlapping gate diagnostics. They
-make no claim about agent liveness or integrated feature completion. Page
+disjoint task view counts, plus explicitly overlapping active gate diagnostics.
+Only open/rework tasks contribute active gates; done, dropped and deferred tasks retain
+their context and attempt/review history without presenting it as actionable.
+Resuming a deferred task restores its applicable gates. The registered binding
+and derived task views describe recorded state. `agent_liveness=not_tracked`
+states that agent activity is intentionally unobserved; there are no heartbeats
+or leases. These summaries make no claim about integrated feature completion. Page
 offsets browse current state; stable IDs support durable resumption.
 
 Concrete tasks are canonical project objects. One global group model holds
