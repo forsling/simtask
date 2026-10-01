@@ -12,6 +12,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
 
 from task_mcp.reference import default_skills
+from task_mcp.runtime import RUNTIME_IDENTITY
 from task_mcp.store import Store, TaskError, default_database
 
 
@@ -36,7 +37,7 @@ def domain_errors(function):
 def create_server(store: Store) -> MCPServer:
     server = MCPServer(
         "task-mcp",
-        version="1.0.0",
+        version=RUNTIME_IDENTITY["package_version"],
         instructions=(
             "Task MCP v1 is opt-in. Call init with an explicit target checkout and branch "
             "or named workstream for each task-using session. Exact bindings resume without "
@@ -71,6 +72,18 @@ def create_server(store: Store) -> MCPServer:
     catalog = ToolAnnotations(
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     )
+
+    @server.tool(annotations=catalog, structured_output=True)
+    def runtime_info() -> dict[str, Any]:
+        """Read startup-frozen runtime identity and the current database schema revision.
+
+        No task state or audit event is written. Compare this identity after
+        reconnecting to distinguish an old server process from a stale tool catalog.
+        """
+        return {
+            **RUNTIME_IDENTITY,
+            "database_schema_revision": store.database_schema_revision(),
+        }
 
     @server.tool(
         annotations=ToolAnnotations(
@@ -115,7 +128,7 @@ def create_server(store: Store) -> MCPServer:
         confirmed: bool = False,
     ) -> dict[str, Any]:
         """Discover or resume a checkout binding; confirmed actions change setup atomically."""
-        return store.init(
+        result = store.init(
             path,
             branch,
             workstream_name,
@@ -126,6 +139,7 @@ def create_server(store: Store) -> MCPServer:
             expected_revision,
             confirmed,
         )
+        return {**result, "runtime": runtime_info()}
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors

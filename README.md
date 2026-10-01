@@ -30,6 +30,22 @@ descriptive attribution label if useful. The default database is
 No network listener is needed for stdio. Connect this command in each client's own MCP
 configuration; Task MCP does not install its connection.
 
+## Runtime identity and reconnecting
+
+`runtime_info()` is a read-only diagnostic that writes no task state or audit
+event. Every successful `init` response also includes the same identity under
+`runtime`. It reports package version, a startup-frozen SHA-256 source identifier,
+Task MCP protocol/schema revision, process startup timestamp and PID, interpreter
+and package paths, and the database's persisted schema revision. Use it after a
+server update to verify which runtime the client actually reached.
+
+An editable install updates files on disk; an existing Python process retains
+its imported code. A client can also retain an old tool catalog after a new
+process starts. These require different checks and both can happen together.
+See [runtime fields and the reconnect procedure](docs/runtime.md). Reinstalling,
+toggling a connection, or passing a fresh subprocess demo alone does not prove
+that the existing client has refreshed its process and discovered tools.
+
 ## Local browser workspace
 
 An optional browser viewer/editor works without an agent or model:
@@ -91,9 +107,9 @@ Tool annotations describe actual behavior, not a performance preference.
 Creation, additive membership/gates and new result attempts are non-destructive
 writes. Overwrites, removals, lifecycle decisions and `init` (which can rebind an
 existing workstream) retain destructive annotations. Audited reads are still
-declared writes because they append events; only the static skill catalog is
-read-only. Revision checks, workflow gates and audit history apply regardless
-of the client's approval decisions.
+declared writes because they append events; the static skill catalog and runtime
+diagnostic are read-only. Revision checks, workflow gates and audit history apply
+regardless of the client's approval decisions.
 
 In dogfooding, local mutations took milliseconds while the host's synchronous
 approval review added seconds before execution. Accurate additive annotations
@@ -306,7 +322,7 @@ those rare workflows are deferred.
 | Groups | `create_group`, `list_groups`, `add_group_member`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `accept_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
-| Inspection | `list_events`, `export_workstream`, `get_default_skills` |
+| Inspection | `list_events`, `export_workstream`, `get_default_skills`, `runtime_info` |
 | Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
 
 Mutations that change a task or workstream require the last revision read.
@@ -315,8 +331,8 @@ Mutations that change a task or workstream require the last revision read.
 Concurrent writes to one revision permit one winner and return
 `revision_conflict` to the other. Task creation is not deduplicated: inspect the
 board before retrying an uncertain response. Every handler call except the
-static skill catalog appends a local audit event, including reads and domain
-errors. Task mutations retain before/after snapshots. The configured actor label
+static skill catalog and runtime diagnostic appends a local audit event, including
+reads and domain errors. Task mutations retain before/after snapshots. The configured actor label
 is not authenticated. `list_events` supports a stable pagination ceiling.
 
 ## Text exports

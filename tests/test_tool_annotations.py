@@ -50,7 +50,7 @@ DESTRUCTIVE = {
     "signoff_task",
 }
 
-CATALOG = {"get_default_skills"}
+CATALOG = {"get_default_skills", "runtime_info"}
 LAUNCHER = {"open_task_viewer"}
 
 

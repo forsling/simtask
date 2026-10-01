@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
+DATABASE_SCHEMA_REVISION = 1
+
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, canonical_path TEXT NOT NULL UNIQUE,
@@ -106,6 +108,8 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA foreign_keys=OFF")
             db.execute("BEGIN IMMEDIATE")
+            if db.execute("PRAGMA user_version").fetchone()[0] > DATABASE_SCHEMA_REVISION:
+                raise RuntimeError("task database schema is newer than this server supports")
             for statement in SCHEMA:
                 db.execute(statement)
             columns = {row["name"]: row for row in db.execute("PRAGMA table_info(tasks)")}
@@ -121,8 +125,16 @@ class Store:
                 db.execute(SCHEMA[3])
             if db.execute("PRAGMA foreign_key_check").fetchone():
                 raise RuntimeError("task database has invalid foreign keys")
+            # Revision 0 is the legacy, unnumbered schema. Stamp only after its
+            # existing migrations and integrity checks succeed in this transaction.
+            db.execute(f"PRAGMA user_version={DATABASE_SCHEMA_REVISION}")
             db.commit()
             db.execute("PRAGMA foreign_keys=ON")
+
+    def database_schema_revision(self) -> int:
+        """Read the actual persisted revision without an audit or any database write."""
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            return db.execute("PRAGMA user_version").fetchone()[0]
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)

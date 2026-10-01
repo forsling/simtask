@@ -27,6 +27,8 @@ disposable local benchmark with real client timings. Fast local execution and
 a delay before the task audit event point toward the client; check its approval
 logs before changing database settings. After server updates, refresh the
 client's discovered tool descriptors as well.
+Use [runtime identity and reconnect checks](runtime.md) to verify both the
+serving process and its discovered capabilities in the affected client.
 
 Task MCP's tools operate on its own task database, not repository files or
 external services. That is a useful boundary for deciding to trust this server,

@@ -22,7 +22,8 @@ async def exercise(database: Path):
         for entrypoint in ("get_default_skills", "feature-capture", "feature-design"):
             assert entrypoint in client.instructions
         tools = (await client.list_tools()).tools
-        assert len(tools) == 36
+        assert len(tools) == 37
+        assert "runtime_info" in {tool.name for tool in tools}
         assert "open_task_viewer" in {tool.name for tool in tools}
         assert "dismiss_gate_proposal" in {tool.name for tool in tools}
         assert {"init", "workstream_status", "create_group", "list_groups", "add_group_member"} <= {
