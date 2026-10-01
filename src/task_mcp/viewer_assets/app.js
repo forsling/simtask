@@ -38,6 +38,7 @@ const state = {
   project: null,
   stream: null,
   groups: false,
+  linkedGroup: null,
   task: null,
   selected: null,
   generation: 0,
@@ -345,6 +346,7 @@ async function chooseProject(id, { keepSelection = false } = {}) {
   const generation = ++state.generation;
   state.project = id;
   state.groups = false;
+  state.linkedGroup = null;
   if (!keepSelection) {
     state.selected = null;
     state.task = null;
@@ -373,6 +375,9 @@ function renderNav() {
     const all = button("", () => changeScope(null), "nav-item" + (active && !state.stream ? " active" : ""));
     all.append(node("span", "All tasks", "grow"));
     sub.append(all);
+    const groups = button("", () => chooseGroups("project"), "nav-item" + (state.groups === "project" ? " active" : ""));
+    groups.append(icon("layers", 14), node("span", "Task groups", "grow"));
+    sub.append(groups);
     state.streams.forEach((s) => {
       const b = button("", () => changeScope(s.id), "nav-item" + (active && state.stream === s.id ? " active" : ""));
       b.append(icon("branch", 14), branchLabel(s.branch || s.name));
@@ -385,19 +390,31 @@ function renderNav() {
     nav.append(sub);
   });
   nav.append(node("div", "Across projects", "nav-label"));
-  const g = button("", () => {
-    closeDrawer();
-    state.groups = true;
-    state.selected = null;
-    renderNav();
-    reload();
-  }, "nav-item" + (state.groups ? " active" : ""));
-  g.append(icon("layers"), node("span", "Shared groups", "grow"));
+  const g = button("", () => chooseGroups("shared"), "nav-item" + (state.groups === "shared" ? " active" : ""));
+  g.append(icon("layers"), node("span", "Shared task groups", "grow"));
   nav.append(g);
+}
+async function chooseGroups(mode) {
+  closeDrawer();
+  state.groups = mode;
+  state.linkedGroup = null;
+  state.stream = null;
+  state.selected = null;
+  state.task = null;
+  renderNav();
+  await reload();
+}
+function groupProjectCount(group) {
+  return Object.keys(group.progress?.by_project || {}).length;
+}
+function groupKind(group) {
+  const projects = groupProjectCount(group);
+  return projects > 1 ? "Shared group" : projects === 1 ? "Project group" : "Empty group";
 }
 async function changeScope(id) {
   closeDrawer();
   state.groups = false;
+  state.linkedGroup = null;
   state.stream = id;
   state.selected = null;
   state.task = null;
@@ -407,26 +424,28 @@ async function changeScope(id) {
 async function reload({ quiet = false } = {}) {
   const generation = ++state.generation;
   const project = state.project;
+  const groups = state.groups;
   if (!quiet) $("list").replaceChildren(skeleton());
   $("heading").replaceChildren(
-    state.groups ? "Shared groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
+    groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
   );
   $("new").hidden = state.groups;
   try {
-    const rows = state.groups
-      ? await pages("groups")
+    const loaded = groups
+      ? await pages("groups", groups === "project" ? { project } : {})
       : await pages("tasks", { project: state.project, workstream_id: state.stream });
+    const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
     const streams = state.groups ? state.streams : await pages("workstreams", { project });
     if (generation !== state.generation) return;
     state.rows = rows;
     state.streams = streams;
     state.loadedAt = Date.now();
-    $("subheading").textContent = state.groups
-      ? `${rows.length} group${rows.length === 1 ? "" : "s"} · progress across all projects`
+    $("subheading").textContent = groups
+      ? `${groups === "project" ? projectName(project) : "Across projects"} · ${rows.length} group${rows.length === 1 ? "" : "s"}`
       : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}`;
     renderNav();
     renderList();
-    if (state.selected && rows.some((r) => r.id === state.selected)) await selectTask(state.selected, { quiet });
+    if (state.selected && (rows.some((r) => r.id === state.selected) || (groups && state.linkedGroup === state.selected))) await selectTask(state.selected, { quiet });
     else if (rows.length) {
       const first = orderedRows()[0] || rows[0];
       await selectTask(first.id);
@@ -434,7 +453,7 @@ async function reload({ quiet = false } = {}) {
       state.selected = null;
       $("detail").replaceChildren(
         state.groups
-          ? emptyState("No shared groups", "Groups created through Task MCP show their cross-project progress here.")
+          ? emptyState(groups === "shared" ? "No shared task groups" : "No task groups", groups === "shared" ? "Task groups with members in more than one project appear here." : "Task groups belonging to or included in this project appear here.")
           : emptyState("Nothing here yet", "Create a task, or pick another workstream.", button("New task", createTask, "btn primary")),
       );
     }
@@ -468,7 +487,7 @@ function row(r) {
       done = r.progress?.done || 0;
     b.append(
       node("span", "", "dot tone-" + (r.complete ? "done" : "info")),
-      el("span", "row-main", node("span", r.title, "row-title"), progressBar(done, total)),
+      el("span", "row-main", node("span", r.title, "row-title"), node("span", `${groupKind(r)} · ${groupProjectCount(r)} project${groupProjectCount(r) === 1 ? "" : "s"}`, "muted"), progressBar(done, total)),
       node("span", `${done}/${total}`, "row-meta"),
     );
   } else {
@@ -749,7 +768,7 @@ function renderGroup(t) {
   });
   if (!t.member_details.length) members.append(node("p", "No members yet. An empty group is not complete.", "empty-text"));
   d.replaceChildren(
-    topBar([node("span", "Shared group")], []),
+    topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], []),
     el(
       "div",
       "content",
@@ -773,7 +792,19 @@ async function navigateMember(m) {
   await chooseProject(m.project_id, { keepSelection: true });
 }
 async function openGroup(id) {
-  state.groups = true;
+  const generation = ++state.generation;
+  const t = (await api("details", { ids: [id] })).items[0];
+  if (generation !== state.generation) return;
+  const projects = Object.keys(t.progress.by_project);
+  if (projects.length === 1 && projects[0] !== state.project) {
+    const streams = await pages("workstreams", { project: projects[0] });
+    if (generation !== state.generation) return;
+    state.project = projects[0];
+    state.streams = streams;
+  }
+  state.groups = projects.length > 1 ? "shared" : "project";
+  state.linkedGroup = id;
+  state.stream = null;
   state.selected = id;
   renderNav();
   await reload();

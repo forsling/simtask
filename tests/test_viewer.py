@@ -196,6 +196,17 @@ def test_scope_and_global_group_progress_remain_distinct(viewer, tmp_path):
     assert set(details["members"]) == {local["id"], other["id"]}
     assert details["progress"]["total"] == 2
     assert request(server, "/api/groups")[1]["items"][0]["progress"]["total"] == 2
+    local_group = store.create_group(context["workstream"]["id"], "Local")
+    empty_remote = store.create_group(remote["workstream"]["id"], "Remote empty")
+    project_groups = request(server, "/api/groups", {"project": context["project"]["id"]})[1][
+        "items"
+    ]
+    assert {g["id"] for g in project_groups} == {group["id"], local_group["id"]}
+    assert empty_remote["id"] not in {g["id"] for g in project_groups}
+    assert (
+        len(next(g for g in project_groups if g["id"] == group["id"])["progress"]["by_project"])
+        == 2
+    )
 
 
 @pytest.mark.parametrize(
@@ -322,6 +333,13 @@ def test_control_requests_never_follow_redirects(tmp_path, control_endpoint):
     with pytest.raises(urllib.error.HTTPError, match="Viewer redirect refused"):
         stop_viewer(database)
     assert [path for path, _ in hits] == ["/api/ping", "/api/ping", "/api/stop"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_project_and_shared_group_navigation():
+    script = Path(__file__).with_name("viewer_groups.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")

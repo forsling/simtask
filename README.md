@@ -66,8 +66,13 @@ session ends, until **Stop viewer**, `ui --stop`, or the process/machine stops.
 There is no automatic startup or installed OS service. The current launcher
 uses POSIX file locking (Linux/macOS).
 
-Browse projects and workstreams, search/filter task titles, inspect global
-groups, and read specifications, evidence and audit history. Dedicated dialogs
+Browse projects and workstreams, search/filter task titles, and read
+specifications, evidence and audit history. Each project's **Task groups** page shows
+its discoverable groups, including shared groups and empty groups included in
+that project's scope. **Shared task groups** shows only groups with task members in
+more than one project. Both show whole-group progress and project counts;
+**Project group**, **Shared group** and **Empty group** labels distinguish them.
+Dedicated dialogs
 record creation, edits, acceptance, questions, defer/resume/drop, human review
 and sign-off. Concurrent changes retain your draft and offer reconciliation.
 The app uses the existing Store and database; it has no synchronized copy.
