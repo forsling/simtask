@@ -30,8 +30,11 @@ client's discovered tool descriptors as well.
 Use [runtime identity and reconnect checks](runtime.md) to verify both the
 serving process and its discovered capabilities in the affected client.
 
-Task MCP's tools operate on its own task database, not repository files or
-external services. That is a useful boundary for deciding to trust this server,
+Task MCP's workflow tools operate on its own task database, not repository files
+or external services. Its explicit `open_task_viewer` tool also starts or reuses
+a local browser companion that exposes that database to a token-holding browser
+on the same computer. See [the viewer's access and lifecycle](viewer.md).
+That is a useful boundary for deciding to trust this server,
 but its task data still matters: an edit or verdict can overwrite state. There
 is no "owns its data, therefore read-only" exemption. Keep annotations accurate;
 configure trust in the client, never by hiding effects in the server.
@@ -66,8 +69,10 @@ default_tools_approval_mode = "approve"
 `tasks` is the configured server name, not a required name; substitute yours.
 Merge existing tables rather than declaring a TOML table twice. Per-tool policy
 overrides the server default. The whole-server option covers current and future
-tools, including edits, removals, review and sign-off calls; reconsider it if
-the server gains capabilities outside its current database-only boundary.
+tools, including edits, removals, review and sign-off calls, plus explicit launch
+of the local browser companion. Pre-approval does not launch the viewer
+automatically. Reconsider this setting if the server gains capabilities beyond
+its private task data and local viewer boundary.
 Neither option changes other servers or the global approval policy. Plugin
 installations use a different configuration namespace; see the official guide.
 
