@@ -351,6 +351,94 @@ async def exercise(database: Path):
         second_export = await call("export_workstream", workstream_id=second["workstream"]["id"])
         assert members[1]["id"] in second_export["content"]
         assert members[2]["id"] not in second_export["content"]
+        # Direct remote blockers do not need shared-group membership.
+        remote_blocker = await call(
+            "create_task",
+            project=second["project"]["id"],
+            title="Independent remote blocker",
+            body="Remote full requirements",
+            approval={"basis": "specific", "note": "Demo request"},
+            workstream_id=second["workstream"]["id"],
+            scope="workstream",
+        )
+        dependent = await call(
+            "create_task",
+            project=project_id,
+            title="Wait for remote completion",
+            approval={"basis": "specific", "note": "Demo request"},
+            workstream_id=workstream_id,
+            scope="workstream",
+        )
+        linked = await call(
+            "add_prerequisite",
+            task_id=dependent["id"],
+            expected_revision=1,
+            blocked_by_id=remote_blocker["id"],
+        )
+        reference = linked["prerequisites"][0]
+        assert reference["project_id"] == second["project"]["id"] and reference["blocking"]
+        assert reference["project_name"] == second["project"]["name"]
+        assert linked["accepted"] and linked["spec_revision"] == 1 and linked["revision"] == 2
+        assert linked["attempts"] == [] and "Remote full requirements" not in str(linked)
+        proposal = await call(
+            "add_prerequisite",
+            task_id=dependent["id"],
+            expected_revision=2,
+            blocked_by_id=members[2]["id"],
+            handling="observer",
+        )
+        accepted_gate = await call(
+            "accept_gate_proposal",
+            proposal_id=proposal["id"],
+            expected_revision=2,
+        )
+        assert accepted_gate["revision"] == 3 and len(accepted_gate["prerequisites"]) == 2
+        cycle = await client.call_tool(
+            "add_prerequisite",
+            {
+                "task_id": remote_blocker["id"],
+                "expected_revision": 1,
+                "blocked_by_id": dependent["id"],
+            },
+        )
+        assert cycle.is_error and "prerequisite_cycle" in str(cycle.content)
+        remote_attempt = await call(
+            "record_result",
+            task_id=remote_blocker["id"],
+            expected_revision=1,
+            workstream_id=second["workstream"]["id"],
+            implementer="demo remote builder",
+            summary="Remote result",
+            evidence="Remote evidence deliberately retrieved only",
+        )
+        await call(
+            "record_review",
+            attempt_id=remote_attempt["id"],
+            expected_revision=1,
+            reviewer="demo independent reviewer",
+            verdict="pass",
+            note="Synthetic review",
+        )
+        pending = (await call("get_tasks", ids=[dependent["id"]]))["items"][0]
+        assert next(p for p in pending["prerequisites"] if p["id"] == remote_blocker["id"])[
+            "blocking"
+        ]
+        await call(
+            "signoff_task",
+            task_id=remote_blocker["id"],
+            expected_revision=2,
+            decision="approve",
+            user_note="Synthetic informed human verdict",
+            attempt_id=remote_attempt["id"],
+            expected_attempt_revision=2,
+        )
+        queue = await call("list_tasks", project=project_id, workstream_id=workstream_id)
+        dependent_row = next(row for row in queue["items"] if row["id"] == dependent["id"])
+        completed_ref = next(
+            p for p in dependent_row["prerequisites"] if p["id"] == remote_blocker["id"]
+        )
+        assert completed_ref["complete"] and not completed_ref["blocking"]
+        assert remote_blocker["id"] not in {row["id"] for row in queue["items"]}
         exported = await call("export_workstream", workstream_id=workstream_id)
         assert exported["format"] == "task-mcp/v2" and task_id in exported["content"]
         assert "- Workflow: Done (done)" in exported["content"]
@@ -366,7 +454,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.7.0"
+        assert catalog["version"] == "1.8.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

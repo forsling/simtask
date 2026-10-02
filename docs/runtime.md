@@ -18,7 +18,7 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`4` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for an incompatible contract change. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`5` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Candidate 5 adds global concrete prerequisites and compact blocker references; the database stays at schema 3. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |

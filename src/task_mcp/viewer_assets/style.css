@@ -841,6 +841,15 @@ kbd {
   font-size: 12.5px;
   white-space: nowrap;
 }
+.prerequisite-ref {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.prerequisite-ref .muted {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 .attempt {
   padding: 18px 20px;

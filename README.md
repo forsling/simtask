@@ -266,9 +266,16 @@ changes are atomic. Existing members keep their independent acceptance,
 implementation, review and sign-off. A group becomes complete only when it has
 at least one member and every member is signed off; pending, deferred or dropped
 members keep it incomplete. Completed groups cannot gain members or be edited.
-A concrete task may depend on a group in another project, and that gate clears
-only on whole-group completion; concrete task-to-task prerequisites remain within
-one project. Resolve unresolved items and proposed gates before decomposition;
+A concrete task may depend on a canonical task or group in any project, without
+shared-group membership. Concrete blockers clear only when human-signed-off
+done; a group clears only when every member is done. Review alone, deferred and
+dropped work do not satisfy completion. This is ledger completion, not proof
+that another branch's code was integrated. Links never expand workstream scope
+or transfer attempts, reviews or code. Self-edges and cycles through prerequisites
+and implicit group-to-member completion edges fail atomically, including during
+observer-proposal acceptance and membership changes. Linking changes the
+dependent task revision, leaving both specifications and their acceptance intact.
+Resolve unresolved items and proposed gates before decomposition;
 existing prerequisites move to the concrete members. Use related
 pending proposals for optional work. A session actively handling a task may add
 an unresolved item or prerequisite. An observer can submit a nonblocking gate
@@ -276,6 +283,18 @@ proposal for an active session or the user to accept. `propose_prerequisite`
 atomically creates and links a pending prerequisite in the current scope or
 project inbox. The service records the asserted handling role but does not
 authenticate agent identity.
+
+Full task reads, scoped queues and project lists include compact `prerequisites`
+references with ID, title, project ID/name, canonical `state`, `complete` and
+`blocking` facts. A global group's project identity is null and its state is
+complete/incomplete. These references do not expand remote specifications,
+attempts, evidence, history or queues; use explicit task reads to inspect them.
+The viewer renders these references directly and opens remote details only on
+deliberate navigation. Verify actual IDs and meaning before replacing a known
+prose gate: add the real links first, then resolve the old unresolved item.
+There is no automatic prose parsing. Evaluate the retained human-sign-off
+milestone after rollout through existing usage/audit evidence, without routine
+reporting calls or a new completion milestone.
 
 An active-session coordinator can accept a gate proposal, or dismiss it with a
 decision note when the proposal is stale or unwanted. Dismissal removes the
@@ -449,8 +468,11 @@ Completed tasks remain immutable.
 
 Database schema revision 2 separates origin from approval. Schema revision 3
 adds `projects.order_revision` for shared-order concurrency, with a default of 0
-on existing projects. Candidate protocol revision 4 replaces whole-order
-replacement with the atomic move contract; protocol 3's purpose/result signoff
+on existing projects. Protocol revision 4 replaces whole-order
+replacement with the atomic move contract. Current candidate protocol 5 adds
+global concrete prerequisites and compact prerequisite references; this uses the
+existing global foreign keys and requires no new schema migration.
+Protocol 3's purpose/result signoff
 judgments continue to use existing immutable audit records.
 Migration preserves all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
 and unclassified approval are `unknown`; old audit text is never parsed to infer

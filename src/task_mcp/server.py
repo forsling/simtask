@@ -377,7 +377,11 @@ def create_server(store: Store) -> MCPServer:
         blocked_by_id: str,
         handling: Literal["active", "observer", "user"] = "active",
     ) -> dict[str, Any]:
-        """Link an existing task prerequisite, or submit an observer gate proposal."""
+        """Link a canonical task/group in any project, or propose a nonblocking observer gate.
+
+        Completion requires human-signed-off done (all members for a group).
+        The link changes only the dependent gate, never workstream scope or remote proof.
+        """
         return store.add_prerequisite(task_id, expected_revision, blocked_by_id, handling)
 
     @server.tool(annotations=additive, structured_output=True)
@@ -398,7 +402,7 @@ def create_server(store: Store) -> MCPServer:
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def accept_gate_proposal(proposal_id: str, expected_revision: int) -> dict[str, Any]:
-        """Activate an observer's proposed unresolved or prerequisite gate."""
+        """Activate an observer gate, checking global task/group cycles for prerequisites."""
         return store.accept_gate_proposal(proposal_id, expected_revision)
 
     @server.tool(annotations=editing, structured_output=True)

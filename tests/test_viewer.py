@@ -219,6 +219,59 @@ def test_scope_and_global_group_progress_remain_distinct(viewer, tmp_path):
     )
 
 
+def test_remote_prerequisites_transport_is_compact_and_completion_is_signed_off(viewer, tmp_path):
+    server, store, context = viewer
+    other = store.init_project(str(tmp_path / "remote"), branch="main", confirmed=True)
+    dependent = create(server, context, title="Dependent")
+    blocker = create(server, other, title="Remote", body="Full remote requirements")
+    attempt = store.record_result(
+        blocker["id"],
+        other["workstream"]["id"],
+        1,
+        "builder",
+        "Built remote",
+        "Remote evidence stays remote",
+    )
+    store.add_prerequisite(dependent["id"], 1, blocker["id"])
+    status, details = request(server, "/api/details", {"ids": [dependent["id"]]})
+    assert status == 200
+    ref = details["items"][0]["prerequisites"][0]
+    assert ref["project_id"] == other["project"]["id"] and ref["project_name"] == "remote"
+    assert ref["state"] == "open" and ref["blocking"] and not ref["complete"]
+    assert "Full remote requirements" not in str(details)
+    assert "Remote evidence stays remote" not in str(details)
+    store.record_review(attempt["id"], 1, "reviewer", "pass", "Checked")
+    query = {"project": context["project"]["id"], "workstream_id": context["workstream"]["id"]}
+    status, queue = request(server, "/api/tasks", query)
+    assert status == 200 and [row["id"] for row in queue["items"]] == [dependent["id"]]
+    assert queue["items"][0]["prerequisites"] == [ref]
+    status, signed_off = request(
+        server,
+        "/api/signoff",
+        {
+            "task_id": blocker["id"],
+            "expected_revision": 2,
+            "expected_attempt_revision": 2,
+            "attempt_id": attempt["id"],
+            "decision": "approve",
+            "user_note": "Synthetic informed approval",
+        },
+    )
+    assert status == 200 and signed_off["status"] == "done"
+    ref = request(server, "/api/details", {"ids": [dependent["id"]]})[1]["items"][0][
+        "prerequisites"
+    ][0]
+    assert ref["state"] == "done" and ref["complete"] and not ref["blocking"]
+    assert request(server, "/api/tasks", query)[1]["items"][0]["view"] == "ready"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_prerequisite_rows_use_compact_facts_and_fetch_details_only_on_navigation():
+    script = Path(__file__).with_name("viewer_prerequisites.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize(
     "headers,expected",
     [

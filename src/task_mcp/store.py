@@ -522,6 +522,7 @@ class Store:
                     "accepted": task["accepted"] if task["object_type"] == "task" else None,
                     "object_type": task["object_type"],
                     "gate_diagnostics": [r for r in reasons if r != "closed_or_group"],
+                    "prerequisites": self._prerequisite_references(db, task["id"]),
                 }
             )
         return queue
@@ -1240,6 +1241,7 @@ class Store:
                 (task["id"],),
             )
         ]
+        task["prerequisites"] = Store._prerequisite_references(db, task["id"])
         task["attempts"] = [
             dict(r)
             for r in db.execute(
@@ -1598,11 +1600,7 @@ class Store:
                 user_request,
             )
             if group_id:
-                db.execute(
-                    "INSERT INTO prerequisites SELECT ?,blocked_by_id "
-                    "FROM prerequisites WHERE task_id=?",
-                    (task_id, group_id),
-                )
+                self._copy_prerequisites(db, task_id, group_id)
                 updated_group = {
                     **group,
                     "revision": group["revision"] + 1,
@@ -1908,10 +1906,7 @@ class Store:
             self._revision(before, expected_revision)
             self._require_mutable(db, before)
             dependency = self._task(db, blocked_by_id, {})
-            if (
-                dependency["object_type"] != "group"
-                and before["project_id"] != dependency["project_id"]
-            ) or task_id == blocked_by_id:
+            if task_id == blocked_by_id:
                 raise TaskError("invalid_prerequisite")
             if dependency["status"] == "dropped":
                 raise TaskError("invalid_prerequisite: dropped work cannot satisfy a dependency")
@@ -1963,10 +1958,7 @@ class Store:
                 }
             else:
                 dependency = self._task(db, row["detail"], {})
-                if (
-                    dependency["object_type"] != "group"
-                    and dependency["project_id"] != before["project_id"]
-                ) or dependency["status"] == "dropped":
+                if dependency["status"] == "dropped":
                     raise TaskError("invalid_prerequisite")
                 if self._would_cycle(db, row["task_id"], row["detail"]):
                     raise TaskError("prerequisite_cycle")
@@ -2033,6 +2025,17 @@ class Store:
             )
         return False
 
+    @staticmethod
+    def _copy_prerequisites(db, task_id, source_id):
+        # Fresh members inherit the parent's edges inside the same transaction.
+        # Check the effective graph, including membership already inserted above.
+        for row in db.execute(
+            "SELECT blocked_by_id FROM prerequisites WHERE task_id=?", (source_id,)
+        ).fetchall():
+            if Store._would_cycle(db, task_id, row["blocked_by_id"]):
+                raise TaskError("prerequisite_cycle")
+            db.execute("INSERT INTO prerequisites VALUES (?, ?)", (task_id, row["blocked_by_id"]))
+
     def decompose_task(self, task_id, expected_revision, members):
         request = dict(task_id=task_id, expected_revision=expected_revision, members=members)
 
@@ -2084,11 +2087,7 @@ class Store:
                     None,
                     task_id,
                 )
-                db.execute(
-                    "INSERT INTO prerequisites SELECT ?,blocked_by_id "
-                    "FROM prerequisites WHERE task_id=?",
-                    (child_id, task_id),
-                )
+                self._copy_prerequisites(db, child_id, task_id)
                 children.append(child_id)
             db.execute("DELETE FROM prerequisites WHERE task_id=?", (task_id,))
             scope.update(before=before, after={"group": after, "members": children})
@@ -2173,6 +2172,34 @@ class Store:
             return ack
 
         return self._run("tasks.reordered", request, operation)
+
+    @staticmethod
+    def _prerequisite_references(db, task_id):
+        """Canonical completion facts, without remote attempts, evidence or scope."""
+        references = []
+        for row in db.execute(
+            "SELECT dependency.id,dependency.title,dependency.object_type,dependency.status,"
+            "dependency.project_id,project.name AS project_name "
+            "FROM prerequisites p JOIN tasks dependency ON dependency.id=p.blocked_by_id "
+            "LEFT JOIN projects project ON project.id=dependency.project_id "
+            "WHERE p.task_id=? ORDER BY dependency.id",
+            (task_id,),
+        ):
+            group = row["object_type"] == "group"
+            complete = Store._group_complete(db, row["id"]) if group else row["status"] == "done"
+            references.append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "object_type": row["object_type"],
+                    "project_id": None if group else row["project_id"],
+                    "project_name": None if group else row["project_name"],
+                    "state": ("complete" if complete else "incomplete") if group else row["status"],
+                    "complete": complete,
+                    "blocking": not complete,
+                }
+            )
+        return references
 
     @staticmethod
     def _unsatisfied_prerequisite(db, task_id):
@@ -2589,6 +2616,7 @@ class Store:
                         "view": view,
                         "accepted": task["accepted"] if task["object_type"] == "task" else None,
                         "object_type": task["object_type"],
+                        "prerequisites": self._prerequisite_references(db, task["id"]),
                     }
                 )
             return {
@@ -2613,25 +2641,9 @@ class Store:
             task["view"] = self._status_view(task, self._gate_reasons(db, task, ws["id"]))
             if task["parent_group_id"]:
                 references.setdefault(task["parent_group_id"], set()).add("task membership")
-            task["prerequisites"] = []
-            for identity in task["blocked_by"]:
-                dependency = self._task(db, identity, {})
+            for dependency in task["prerequisites"]:
                 if dependency["object_type"] == "group":
-                    complete = self._group_complete(db, identity)
-                    state = "complete" if complete else "incomplete"
-                    references.setdefault(identity, set()).add("prerequisite")
-                else:
-                    complete = dependency["status"] == "done"
-                    state = self._status_view(dependency, self._gate_reasons(db, dependency))
-                task["prerequisites"].append(
-                    {
-                        "id": identity,
-                        "title": dependency["title"],
-                        "object_type": dependency["object_type"],
-                        "complete": complete,
-                        "state": state,
-                    }
-                )
+                    references.setdefault(dependency["id"], set()).add("prerequisite")
             tasks.append(task)
         groups = []
         scoped = set(ids)

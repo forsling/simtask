@@ -39,6 +39,17 @@ Identify the decisions that materially affect scope, user experience or cost.
 Present plausible approaches with concrete tradeoffs, and recommend a path with
 reasons. Do not manufacture alternatives for a settled or obvious detail.
 
+Prerequisites use canonical task/group IDs across any projects; shared membership
+is not required. Links do not add remote work to local scope or share attempts,
+reviews or code. Human-signed-off done clears a concrete blocker; every member
+must be done for a group. Review alone, dropped and deferred work still block.
+Use compact prerequisite references to inspect identity/completion, and explicit
+full task reads for requirements or proof. Verify IDs and meaning before
+replacing a known prose gate: add real links first, then resolve the old item.
+Never infer dependencies by parsing prose or claim another branch is integrated.
+Evaluate the retained milestone after rollout through existing audit/workflow
+evidence, without routine progress calls.
+
 Discuss one decision at a time, starting with the one that constrains the rest.
 Answer questions and adapt the recommendation to the user's priorities. Resolve
 ordinary reversible details through research and judgment. Record meaningful

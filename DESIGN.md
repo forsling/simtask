@@ -69,7 +69,7 @@ delegated approval requires actual authority to select work within a stated
 goal. Explicit pending/design-first requests take precedence. Queueing starts
 no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
-state. Database schema revision 2 introduced this data; candidate protocol 4
+state. Database schema revision 2 introduced this data; candidate protocol 5
 includes the purpose/result signoff contract described below.
 
 Acceptance binds to the current specification. `update_task` atomically saves
@@ -118,11 +118,21 @@ scope and completion rules.
 An empty group remains incomplete and mutable. A nonempty group completes only
 when every member is signed off; completed groups are immutable. Each member
 keeps its own accepted specification, attempt, review and sign-off. A concrete
-task may depend on whole-group completion, including a group with members in
-other projects; direct concrete task prerequisites remain project-local. Cycle
-checks include prerequisite links and implicit group-to-member completion
-edges. SQLite write serialization and revision checks protect a race between
-membership changes and last-member sign-off.
+task may depend on any canonical task or whole-group completion in any project,
+without requiring shared membership. Concrete blockers require human-signed-off
+done; reviewed, dropped or deferred work remains unsatisfied. The link changes
+only the dependent gate revision, never specification acceptance, local scope,
+attempts, reviews or code integration. Compact prerequisite references expose
+ID, title, project identity and canonical blocking/completion facts in full
+details and queues, without fetching remote proof/history. Cycle checks include
+prerequisite links and implicit group-to-member completion edges for additions,
+observer acceptance and membership/decomposition changes. SQLite write
+serialization and revision checks protect a race between membership changes and
+last-member sign-off. Global foreign keys already support these links; protocol
+5 changes no schema or migration. Evaluate the human-sign-off milestone after
+rollout using existing audit/workflow evidence, without routine progress calls.
+Replace known prose gates only after verifying actual IDs/meaning and adding
+real links before resolving the old item; no automatic parsing or state repair.
 
 ## Delivery and authority
 
@@ -204,13 +214,13 @@ explicit compatibility option; neither export is an import or database backup.
 
 Deferred: TASKS.md import, nested groups, per-workstream ordering, persistent
 dynamic filters, claims or leases, native client installers, automatic client
-configuration, editable export synchronization, peer group links, arbitrary
-cross-project concrete task prerequisites, joint attempts, synchronized lifecycle, and full
+configuration, editable export synchronization, peer group links, cross-project scheduling,
+joint attempts, synchronized lifecycle, and full
 rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
 
-Candidate purpose/result signoff (introduced in protocol 3; current protocol 4,
+Candidate purpose/result signoff (introduced in protocol 3; current protocol 5,
 schema 3) uses one human
 `approve`/`rework`/`revise`/`drop`/`defer` decision. Specific current-scope purpose
 approval references its actual classified audit decision; delegated/unknown

@@ -141,10 +141,15 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
             for item in task["unresolved_items"]:
                 _section(lines, f"Unresolved question `{item['id']}`", item["text"], level=5)
             for dependency in task["prerequisites"]:
+                project_ref = (
+                    f"{_inline(dependency['project_name'])} / {dependency['project_id']}"
+                    if dependency["project_id"]
+                    else "global group"
+                )
                 lines.append(
                     f"- {'Satisfied' if dependency['complete'] else 'Not satisfied'}: "
                     f"{_inline(dependency['title'])} (`{dependency['id']}`; "
-                    f"{dependency['object_type']}; {_inline(dependency['state'])})"
+                    f"{dependency['object_type']}; {project_ref}; {_inline(dependency['state'])})"
                 )
             if task["prerequisites"]:
                 lines.append("")

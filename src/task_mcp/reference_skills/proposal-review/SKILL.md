@@ -44,6 +44,17 @@ attaching a member, including a member in another project. Groups hold context
 and whole-group completion only; put execution blockers on concrete members.
 Preserve deferred context and audit history.
 
+Prerequisites use canonical task/group IDs across any projects; shared membership
+is not required. Links do not add remote work to local scope or share attempts,
+reviews or code. Human-signed-off done clears a concrete blocker; every member
+must be done for a group. Review alone, dropped and deferred work still block.
+Use compact prerequisite references to inspect identity/completion, and explicit
+full task reads for requirements or proof. Verify IDs and meaning before
+replacing a known prose gate: add real links first, then resolve the old item.
+Never infer dependencies by parsing prose or claim another branch is integrated.
+Evaluate the retained milestone after rollout through existing audit/workflow
+evidence, without routine progress calls.
+
 Origin (`source`) and `user_request` describe where a task came from, including
 pending tasks; they never accept it. Use delegated approval only when the user's
 actual instruction grants authority to select that scope within a stated goal,

@@ -706,19 +706,18 @@ function body(t) {
   }
   if (t.blocked_by.length) {
     const list = el("div", "links");
-    t.blocked_by.forEach((id) => {
-      const b = button("Loading…", async () => {
-        const p = (await api("details", { ids: [id] })).items[0];
-        if (p.object_type === "group") await openGroup(id);
+    t.prerequisites.forEach((p) => {
+      const b = button("", async () => {
+        if (p.object_type === "group") await openGroup(p.id);
         else await navigateMember(p);
       }, "link-row");
+      const project = p.object_type === "group" ? "Global group" : `${p.project_name} · ${p.project_id}`;
+      b.append(
+        el("span", "grow prerequisite-ref", node("span", p.title), node("small", `${p.id} · ${project}`, "muted")),
+        pill(p.complete ? "done" : "open", p.complete ? "Complete" : `Blocking · ${p.state}`),
+        icon("link", 14),
+      );
       list.append(b);
-      api("details", { ids: [id] })
-        .then((r) => {
-          const p = r.items[0];
-          b.replaceChildren(node("span", p.title, "grow"), pill(p.status === "done" ? "done" : "open", p.status === "done" ? "Done" : p.object_type === "group" ? "Group" : "Not done"), icon("link", 14));
-        })
-        .catch(() => (b.textContent = "Prerequisite unavailable"));
     });
     out.push(section("Prerequisites", list));
   }
