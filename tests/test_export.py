@@ -40,7 +40,15 @@ def current(store, task):
 def result(context, task):
     store, _, ws = context
     return store.record_result(
-        task["id"], ws, current(store, task)["revision"], "worker", "Implemented", "Tests pass"
+        task["id"],
+        ws,
+        current(store, task)["revision"],
+        "worker",
+        "Implemented",
+        "Tests pass",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_export.py"}],
+        verification="Tests pass",
+        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
     )
 
 

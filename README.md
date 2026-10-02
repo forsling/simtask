@@ -219,8 +219,14 @@ workstream revision. A task proposed from a
 workstream may enter that scope or the project inbox. It cannot be delegated to
 another workstream by creating it. Project order is shared across workstreams;
 each filters it by explicit scope and branch-local eligibility. Preconditions
-remain hard gates. `get_next_task` returns the first full eligible task without
-claiming it, or compact reasons why the scope has no eligible work.
+remain hard gates for autonomous implementation and review. `get_next_action`
+returns `action: implement|review`, one full current task/spec/revisions/read token,
+and exactly one complete current-spec local attempt for review or relevant rework.
+It follows shared order across action kinds. Pending local review precedes another
+implementation of that task; passed/human_review waits for the user. Newest pending
+local proof wins, then attempt ID ascending. Other-workstream and superseded proof
+stay accessible through deliberate full `get_tasks` reads. `action:null` returns
+bounded reason counts, including sign-off, without claiming or changing order.
 
 ## Task lifecycle
 
@@ -313,8 +319,21 @@ after a proposed prerequisite target is dropped. A completed task is immutable,
 including its pending proposals.
 
 Reading or selecting a task does not create an attempt. The implementer calls
-`record_result` only on leaving a durable result and evidence. This creates an
-attempt for that workstream. Other workstreams can produce independent attempts
+`record_result` only on leaving or recovering an actual durable result. Read the
+full current spec, check the actual checkout/artifacts, and send the last-read
+`expected_revision` and `specification_etag`, actual `implementer`, `summary`,
+context `evidence`, concrete `artifacts=[{kind: "commit"|"artifact", reference: ...}]`
+and `verification` describing actual checks/outcomes and limits. It records a local
+unreviewed attempt even when acceptance, unresolved or prerequisite gates remain,
+or the task is deferred/dropped. This factual record never grants approval,
+resumes work, clears a gate or satisfies prerequisites. Groups and completed tasks
+are protected. The concise ACK includes attempt `id`/`revision`, `task_revision`,
+unchanged `accepted`/`status` and gate diagnostics; retrieve full proof deliberately.
+The server stores declarations; callers verify artifacts and reviewer provenance.
+New proof uses a structured envelope in the existing evidence TEXT column, with
+legacy text proof unchanged and no schema migration. Dispatch review actions to a
+fresh independent reviewer and implementation actions to an implementer. Other
+workstreams can produce independent attempts
 on the same task. An independent reviewer named differently from the implementer
 returns a verdict; the coordinator records it with `record_review`. A recorded
 `human_review` can satisfy the review gate when the user actually reviews the
@@ -394,7 +413,7 @@ those rare workflows are deferred.
 | Area | Tools |
 | --- | --- |
 | Project and workstream | `init`, `list_projects`, `list_workstreams`, `workstream_status`; compatibility: `init_project`, `attach_checkout`, `init_workstream`, `rebind_workstream`, `preflight` |
-| Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `reorder_tasks`, `get_next_task` |
+| Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `reorder_tasks`, `get_next_action` |
 | Groups | `create_group`, `list_groups`, `add_group_member`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `accept_task`, `withdraw_acceptance`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
@@ -403,7 +422,7 @@ those rare workflows are deferred.
 
 Mutations that change a task or workstream require the last revision read.
 Board/queue responses (`list_tasks`, `workstream_status`, successful `init`,
-`get_next_task`) expose `project_order_revision`. Move one task immediately before
+`get_next_action`) expose `project_order_revision`. Move one task immediately before
 or after a concrete task in the same project:
 
 ```text
@@ -470,17 +489,21 @@ Fetch `get_tasks` for full specification and proof. Approval does not clear
 unresolved/prerequisite/disposition/scope gates or begin implementation. Correct
 mistaken acceptance with `withdraw_acceptance(task_id, expected_revision, note)`:
 the reason is audited, the specification and its revision remain unchanged,
-and prior decisions, attempts and reviews survive. Withdrawal gates both result
-recording and sign-off. Reapproving the same spec may reuse an applicable review;
+and prior decisions, attempts and reviews survive. Withdrawal gates autonomous
+actions and sign-off; factual recording preserves it. Reapproving the same spec
+may reuse an applicable review;
 a real spec change leaves prior attempts tied to their original revision.
 Completed tasks remain immutable.
 
 Database schema revision 2 separates origin from approval. Schema revision 3
 adds `projects.order_revision` for shared-order concurrency, with a default of 0
 on existing projects. Protocol revision 4 replaces whole-order
-replacement with the atomic move contract. Current candidate protocol 5 adds
-global concrete prerequisites and compact prerequisite references; this uses the
-existing global foreign keys and requires no new schema migration.
+replacement with the atomic move contract. Protocol 5 adds global concrete
+prerequisites and compact prerequisite references.
+Current candidate protocol 6 replaces the selector with `get_next_action` and
+requires full-spec-bound structured durable references/verification for factual
+result recording, with concise ACKs. There is no old selector alias or extra tool.
+Both changes use the existing schema 3 and require no new schema migration.
 Protocol 3's purpose/result signoff
 judgments continue to use existing immutable audit records.
 Migration preserves all existing rows, IDs, notes, acceptance/completion and history. Legacy origin

@@ -63,7 +63,17 @@ def business_rows(store):
 def test_moves_shift_completed_positions_without_mutating_requirements_or_proof(context):
     store, project, ws, _ = context
     done = create(context, "Done")
-    attempt = store.record_result(done["id"], ws, 1, "builder", "Actual result", "Exact proof")
+    attempt = store.record_result(
+        done["id"],
+        ws,
+        1,
+        "builder",
+        "Actual result",
+        "Exact proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_ordering.py"}],
+        verification="Exact proof",
+        specification_etag=store.get_tasks([done["id"]])["items"][0]["specification_etag"],
+    )
     store.record_review(attempt["id"], 1, "independent reviewer", "pass", "Reviewed proof")
     store.signoff_task(done["id"], 2, "approve", "Synthetic human approval", attempt["id"], 2)
     first = create(context, "Older remaining work")
@@ -85,7 +95,7 @@ def test_moves_shift_completed_positions_without_mutating_requirements_or_proof(
         {k: v for k, v in item.items() if k != "order_key"} for item in before
     ]
     assert after[0]["order_key"] == 2
-    assert store.get_next_task(ws)["task"]["id"] == prioritized["id"]
+    assert store.get_next_action(ws)["task"]["id"] == prioritized["id"]
     later_events = store.list_events(project, task_id=done["id"], include_details=True)["items"]
     assert later_events[: len(events)] == events
     event = next(
@@ -115,7 +125,7 @@ def test_noop_and_reads_never_normalize_or_advance_order(context):
     assert board(context)["project_order_revision"] == revision
     assert store.workstream_status(ws)["project_order_revision"] == revision
     assert store.init(str(tmp_path / "repo"), branch="main")["project_order_revision"] == revision
-    assert store.get_next_task(ws)["project_order_revision"] == revision
+    assert store.get_next_action(ws)["project_order_revision"] == revision
     store.export_workstream(ws)
     assert business_rows(store) == before
     assert Store(store.path).list_tasks(context[1])["project_order_revision"] == revision
@@ -220,19 +230,30 @@ def test_scope_filtering_and_branch_local_gates_follow_shared_order(context):
         third["id"],
         first["id"],
     ]
-    store.record_result(third["id"], ws, 1, "main builder", "Durable", "Proof")
-    assert store.get_next_task(ws)["task"]["id"] == first["id"]
-    assert store.get_next_task(other_ws)["task"]["id"] == third["id"]
+    store.record_result(
+        third["id"],
+        ws,
+        1,
+        "main builder",
+        "Durable",
+        "Proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_ordering.py"}],
+        verification="Proof",
+        specification_etag=store.get_tasks([third["id"]])["items"][0]["specification_etag"],
+    )
+    local = store.get_next_action(ws)
+    assert local["action"] == "review" and local["task"]["id"] == third["id"]
+    assert store.get_next_action(other_ws)["task"]["id"] == third["id"]
     third = store.get_tasks([third["id"]])["items"][0]
     store.add_unresolved(third["id"], third["revision"], "Actual unresolved question")
-    assert store.get_next_task(other_ws)["task"]["id"] == second["id"]
+    assert store.get_next_action(other_ws)["task"]["id"] == second["id"]
     second = store.get_tasks([second["id"]])["items"][0]
     store.add_prerequisite(second["id"], second["revision"], first["id"])
-    assert store.get_next_task(other_ws)["task"] is None
+    assert store.get_next_action(other_ws)["task"] is None
     # Unaccepted tasks remain excluded even when first in the shared order.
     pending = store.create_task(project, "Pending", workstream_id=ws, scope="workstream")
     move(context, pending, third)
-    assert store.get_next_task(ws)["task"]["id"] == first["id"]
+    assert store.get_next_action(ws)["task"]["id"] == first["id"]
 
 
 def test_audit_failure_rolls_back_order_keys_and_revision(context, monkeypatch):

@@ -144,7 +144,15 @@ def test_review_and_signoff_use_separate_revisions_and_store_gates(viewer):
     server, store, context = viewer
     task = create(server, context)
     attempt = store.record_result(
-        task["id"], context["workstream"]["id"], 1, "builder", "Result", "Evidence"
+        task["id"],
+        context["workstream"]["id"],
+        1,
+        "builder",
+        "Result",
+        "Evidence",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_viewer.py"}],
+        verification="Evidence",
+        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
     )
     signoff = {
         "task_id": task["id"],
@@ -231,6 +239,9 @@ def test_remote_prerequisites_transport_is_compact_and_completion_is_signed_off(
         "builder",
         "Built remote",
         "Remote evidence stays remote",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_viewer.py"}],
+        verification="Remote evidence stays remote",
+        specification_etag=store.get_tasks([blocker["id"]])["items"][0]["specification_etag"],
     )
     store.add_prerequisite(dependent["id"], 1, blocker["id"])
     status, details = request(server, "/api/details", {"ids": [dependent["id"]]})
@@ -535,7 +546,15 @@ def test_purpose_result_decisions_over_real_viewer_transport(viewer, decision, d
         server, context, approval={"basis": "delegated", "note": "Actual delegated authority"}
     )
     attempt = store.record_result(
-        task["id"], context["workstream"]["id"], 1, "worker", "Result", "Actual evidence"
+        task["id"],
+        context["workstream"]["id"],
+        1,
+        "worker",
+        "Result",
+        "Actual evidence",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_viewer.py"}],
+        verification="Actual evidence",
+        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
     )
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Independent review")
     data = {
@@ -575,7 +594,17 @@ def test_atomic_moves_over_real_viewer_transport(viewer):
     first = create(server, context, title="Done anchor")
     second = create(server, context, title="Prioritize")
     ws, project = context["workstream"]["id"], context["project"]["id"]
-    attempt = store.record_result(first["id"], ws, 1, "builder", "Delivered", "Proof")
+    attempt = store.record_result(
+        first["id"],
+        ws,
+        1,
+        "builder",
+        "Delivered",
+        "Proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_viewer.py"}],
+        verification="Proof",
+        specification_etag=store.get_tasks([first["id"]])["items"][0]["specification_etag"],
+    )
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Reviewed")
     store.signoff_task(first["id"], 2, "approve", "Synthetic human verdict", attempt["id"], 2)
     done = request(server, "/api/details", {"ids": [first["id"]]})[1]["items"][0]

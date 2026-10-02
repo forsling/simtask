@@ -81,6 +81,11 @@ async def exercise(call, samples, project, workstream):
             implementer="synthetic-benchmark",
             summary="Synthetic benchmark result",
             evidence="Synthetic benchmark evidence",
+            artifacts=[{"kind": "artifact", "reference": "examples/benchmark.py"}],
+            verification="Synthetic demonstration checks",
+            specification_etag=(await timed("get_tasks", ids=[task["id"]]))["items"][0][
+                "specification_etag"
+            ],
         )
     return summarize(timings)
 

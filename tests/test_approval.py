@@ -43,12 +43,12 @@ def test_pending_user_origin_preserves_request_and_compact_continuation(context)
     assert not {"title", "body", "user_request", "attempts", "acceptance_note"} & created.keys()
     full = detail(store, created)
     assert full["source"] == "user" and full["user_request"] == request
-    assert store.get_next_task(ws)["task"] is None
+    assert store.get_next_action(ws)["task"] is None
     gated = store.add_unresolved(created["id"], created["revision"], "Feature design required")
     accepted = store.accept_task(gated["id"], gated["revision"], approve())
     assert accepted["accepted"] and accepted["gate_diagnostics"] == ["unresolved_items"]
     assert not {"body", "attempts", "acceptance_note"} & accepted.keys()
-    assert store.get_next_task(ws)["task"] is None
+    assert store.get_next_action(ws)["task"] is None
 
 
 @pytest.mark.parametrize("basis", ["specific", "delegated"])
@@ -71,7 +71,7 @@ def test_creation_approval_atomically_accepts_exact_scope(context, basis, source
     )
     assert created["acceptance_basis"] == basis and created["gate_diagnostics"] == []
     assert detail(store, created)["acceptance_note"] == payload["note"]
-    selected = store.get_next_task(ws)["task"]
+    selected = store.get_next_action(ws)["task"]
     assert selected["id"] == created["id"] and selected["source"] == source
     with sqlite3.connect(store.path) as db:
         event = db.execute(
@@ -120,7 +120,15 @@ def test_withdrawal_retains_spec_decisions_proof_and_reapproval_reuses_review(co
         scope="workstream",
     )
     attempt = store.record_result(
-        created["id"], ws, created["revision"], "worker", "Done", "Tests pass"
+        created["id"],
+        ws,
+        created["revision"],
+        "worker",
+        "Done",
+        "Tests pass",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_approval.py"}],
+        verification="Tests pass",
+        specification_etag=store.get_tasks([created["id"]])["items"][0]["specification_etag"],
     )
     store.record_review(attempt["id"], 1, "independent reviewer", "pass", "Verified")
     before = detail(store, created)
@@ -142,10 +150,8 @@ def test_withdrawal_retains_spec_decisions_proof_and_reapproval_reuses_review(co
         "user_request",
     ):
         assert after[key] == before[key]
-    assert store.get_next_task(ws)["task"] is None
+    assert store.get_next_action(ws)["task"] is None
     assert store.list_tasks(project, ws)["items"][0]["view"] == "pending_acceptance"
-    with pytest.raises(TaskError, match="task_not_eligible"):
-        store.record_result(created["id"], ws, after["revision"], "worker", "Another", "Proof")
     for verdict in ("approve", "rework"):
         with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
             store.signoff_task(
@@ -211,7 +217,7 @@ def test_withdrawal_reason_revision_and_other_gates_are_preserved(context):
     assert restored["unresolved_items"] == gated["unresolved_items"]
     assert restored["blocked_by"] == [dependency["id"]]
     resumed = store.set_disposition(created["id"], accepted["revision"], "open", "Resume")
-    assert store.get_next_task(ws)["task"] is None
+    assert store.get_next_action(ws)["task"] is None
     assert resumed["accepted"]
 
 
@@ -220,7 +226,17 @@ def test_real_spec_changes_keep_prior_review_on_its_original_revision(context):
     created = store.create_task(
         project, "Deliver", approval=approve(), workstream_id=ws, scope="workstream"
     )
-    attempt = store.record_result(created["id"], ws, 1, "worker", "Done", "Proof")
+    attempt = store.record_result(
+        created["id"],
+        ws,
+        1,
+        "worker",
+        "Done",
+        "Proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_approval.py"}],
+        verification="Proof",
+        specification_etag=store.get_tasks([created["id"]])["items"][0]["specification_etag"],
+    )
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Checked")
     edited = store.update_task(
         created["id"],

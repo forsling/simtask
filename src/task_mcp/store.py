@@ -1221,7 +1221,7 @@ class Store:
         return None
 
     @staticmethod
-    def _details(db, task):
+    def _details(db, task, history=True):
         task = dict(task)
         task["accepted"] = (
             task["accepted_spec_revision"] == task["spec_revision"]
@@ -1242,12 +1242,13 @@ class Store:
             )
         ]
         task["prerequisites"] = Store._prerequisite_references(db, task["id"])
-        task["attempts"] = [
-            dict(r)
-            for r in db.execute(
-                "SELECT * FROM attempts WHERE task_id=? ORDER BY created_at,id", (task["id"],)
-            )
-        ]
+        if history:
+            task["attempts"] = [
+                Store._attempt_details(r)
+                for r in db.execute(
+                    "SELECT * FROM attempts WHERE task_id=? ORDER BY created_at,id", (task["id"],)
+                )
+            ]
         task["gate_proposals"] = [
             dict(r)
             for r in db.execute(
@@ -1284,23 +1285,50 @@ class Store:
             }
             task["complete"] = bool(members) and task["progress"]["remaining"] == 0
         task["approval_decision"] = Store._approval_decision(db, task)
-        task["signoff_decisions"] = []
+        if history:
+            task["signoff_decisions"] = Store._signoff_decisions(db, task["id"])
+        task["specification_etag"] = Store._specification_etag(task)
+        return task
+
+    @staticmethod
+    def _signoff_decisions(db, task_id):
+        decisions = []
         for row in db.execute(
             "SELECT sequence,timestamp,after_json FROM events WHERE task_id=? "
             "AND action='task.signoff' AND outcome='ok' ORDER BY sequence",
-            (task["id"],),
+            (task_id,),
         ):
             after = json.loads(row["after_json"] or "null") or {}
             if judgment := after.get("signoff_decision"):
-                task["signoff_decisions"].append(
+                decisions.append(
                     {
                         "decision_ref": row["sequence"],
                         "timestamp": row["timestamp"],
                         **judgment,
                     }
                 )
-        task["specification_etag"] = Store._specification_etag(task)
-        return task
+        return decisions
+
+    @staticmethod
+    def _attempt_details(row):
+        """Decode new structured proof without rewriting historical text evidence."""
+        attempt = dict(row)
+        try:
+            proof = json.loads(attempt["evidence"])
+        except (ValueError, TypeError):
+            return attempt
+        if (
+            isinstance(proof, dict)
+            and proof.get("format") == "durable-result-v1"
+            and {"evidence", "artifacts", "verification", "specification_etag"} <= proof.keys()
+        ):
+            attempt.update(
+                {
+                    key: proof[key]
+                    for key in ("evidence", "artifacts", "verification", "specification_etag")
+                }
+            )
+        return attempt
 
     def get_tasks(self, ids):
         def operation(db, scope):
@@ -2243,56 +2271,78 @@ class Store:
             reasons.append("signoff")
         return reasons
 
-    def get_next_task(self, workstream_id):
+    def get_next_action(self, workstream_id):
+        """One autonomous action in shared order; selected proof is local/current only."""
+
         def operation(db, scope):
             ws = self._workstream(db, workstream_id)
             scope["project_id"] = ws["project_id"]
-            order_revision = self._order_revision(db, ws["project_id"])
             ids = self._scope_ids(db, workstream_id)
-            if not ids:
-                return {
-                    "project_order_revision": order_revision,
-                    "task": None,
-                    "diagnostics": {"scope_empty": True, "scoped": 0},
-                }
-            marks = ",".join("?" for _ in ids)
-            tasks = [
-                self._task(db, r["id"], {})
-                for r in db.execute(
-                    f"SELECT id FROM tasks WHERE id IN ({marks}) ORDER BY order_key,id", ids
-                )
-            ]
-            counts = {
-                key: 0
-                for key in (
+            result = {
+                "action": None,
+                "task": None,
+                "attempt": None,
+                "project_order_revision": self._order_revision(db, ws["project_id"]),
+                "diagnostics": {"scope_empty": not ids, "scoped": len(ids)},
+            }
+            counts = dict.fromkeys(
+                (
                     "pending_acceptance",
                     "unresolved_items",
                     "prerequisites",
                     "review",
                     "signoff",
                     "closed_or_group",
-                )
-            }
-            for task in tasks:
+                ),
+                0,
+            )
+            if not ids:
+                return result | {"diagnostics": result["diagnostics"] | counts}
+            marks = ",".join("?" for _ in ids)
+            for row in db.execute(
+                f"SELECT id FROM tasks WHERE id IN ({marks}) ORDER BY order_key,id", ids
+            ):
+                task = self._task(db, row["id"], {})
                 reasons = self._gate_reasons(db, task, workstream_id)
-                if not reasons:
-                    return {
-                        "task": self._details(db, task),
-                        "project_order_revision": order_revision,
-                        "diagnostics": {"scope_empty": False, "scoped": len(ids)},
-                    }
+                # Review is an action, but never bypasses autonomous authority gates.
+                blockers = [r for r in reasons if r not in {"review", "signoff"}]
+                if not blockers:
+                    pending = self._local_attempt(db, task, workstream_id, "review")
+                    if pending or "signoff" not in reasons:
+                        selected = self._details(db, task, history=False)
+                        selected["gate_diagnostics"] = reasons
+                        return result | {
+                            "action": "review" if pending else "implement",
+                            "task": selected,
+                            "attempt": pending
+                            or self._local_attempt(db, task, workstream_id, "rework"),
+                        }
                 for reason in reasons:
                     counts[reason] += 1
-            return {
-                "task": None,
-                "project_order_revision": order_revision,
-                "diagnostics": {"scope_empty": False, "scoped": len(ids), **counts},
-            }
+            return result | {"diagnostics": result["diagnostics"] | counts}
 
-        return self._run("task.next_read", {"workstream_id": workstream_id}, operation)
+        return self._run("task.next_action_read", {"workstream_id": workstream_id}, operation)
+
+    @staticmethod
+    def _local_attempt(db, task, workstream_id, state):
+        row = db.execute(
+            "SELECT * FROM attempts WHERE task_id=? AND workstream_id=? AND spec_revision=? "
+            "AND state=? ORDER BY created_at DESC,id ASC LIMIT 1",
+            (task["id"], workstream_id, task["spec_revision"], state),
+        ).fetchone()
+        return Store._attempt_details(row) if row else None
 
     def record_result(
-        self, task_id, workstream_id, expected_revision, implementer, summary, evidence
+        self,
+        task_id,
+        workstream_id,
+        expected_revision,
+        implementer,
+        summary,
+        evidence,
+        artifacts,
+        verification,
+        specification_etag,
     ):
         request = dict(
             task_id=task_id,
@@ -2301,20 +2351,43 @@ class Store:
             implementer=implementer,
             summary=summary,
             evidence=evidence,
+            artifacts=artifacts,
+            verification=verification,
+            specification_etag=specification_etag,
         )
 
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
-            if before["object_type"] != "task":
-                raise TaskError("group_not_executable: groups have no implementation attempts")
+            self._require_mutable(db, before)
             self._workstream(db, workstream_id, before["project_id"])
             if task_id not in self._scope_ids(db, workstream_id):
                 raise TaskError("task_out_of_scope")
-            if self._gate_reasons(db, before, workstream_id):
-                raise TaskError("task_not_eligible: clear gates before recording a result")
-            if not all(isinstance(x, str) and x.strip() for x in (implementer, summary, evidence)):
-                raise TaskError("result_required: implementer, summary and evidence")
+            if specification_etag != self._specification_etag(before):
+                raise TaskError(
+                    "full_specification_required: read the current full task and use its etag"
+                )
+            if not all(
+                isinstance(x, str) and x.strip()
+                for x in (implementer, summary, evidence, verification)
+            ):
+                raise TaskError(
+                    "result_required: implementer, summary, evidence and actual verification"
+                )
+            if (
+                not isinstance(artifacts, list)
+                or not artifacts
+                or any(
+                    not isinstance(ref, dict)
+                    or set(ref) != {"kind", "reference"}
+                    or not isinstance(ref["kind"], str)
+                    or ref["kind"] not in {"artifact", "commit"}
+                    or not isinstance(ref["reference"], str)
+                    or not ref["reference"].strip()
+                    for ref in artifacts
+                )
+            ):
+                raise TaskError("durable_artifacts_required: concrete artifact/commit references")
             now = timestamp()
             attempt = dict(
                 id=_id("att_"),
@@ -2322,7 +2395,15 @@ class Store:
                 workstream_id=workstream_id,
                 implementer=implementer,
                 summary=summary,
-                evidence=evidence,
+                evidence=_json(
+                    {
+                        "format": "durable-result-v1",
+                        "evidence": evidence,
+                        "artifacts": artifacts,
+                        "verification": verification,
+                        "specification_etag": specification_etag,
+                    }
+                ),
                 spec_revision=before["spec_revision"],
                 state="review",
                 reviewer=None,
@@ -2341,7 +2422,21 @@ class Store:
             after = {**before, "revision": before["revision"] + 1, "updated_at": now}
             self._save_task(db, after)
             scope.update(before=before, after={"task": after, "attempt": attempt})
-            return attempt
+            return {
+                "id": attempt["id"],
+                "revision": attempt["revision"],
+                "task_id": task_id,
+                "task_revision": after["revision"],
+                "spec_revision": after["spec_revision"],
+                "state": attempt["state"],
+                "accepted": after["accepted"],
+                "status": after["status"],
+                "gate_diagnostics": [
+                    r
+                    for r in self._gate_reasons(db, after, workstream_id)
+                    if r != "closed_or_group"
+                ],
+            }
 
         return self._run("attempt.recorded", request, operation)
 
@@ -2384,7 +2479,7 @@ class Store:
                 after,
             )
             scope.update(before=before, after=after)
-            return after
+            return self._attempt_details(after)
 
         return self._run("attempt.reviewed", request, operation)
 
@@ -2419,7 +2514,7 @@ class Store:
                 after,
             )
             scope.update(before=before, after=after)
-            return after
+            return self._attempt_details(after)
 
         return self._run("attempt.human_reviewed", request, operation)
 

@@ -69,8 +69,8 @@ delegated approval requires actual authority to select work within a stated
 goal. Explicit pending/design-first requests take precedence. Queueing starts
 no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
-state. Database schema revision 2 introduced this data; candidate protocol 5
-includes the purpose/result signoff contract described below.
+state. Database schema revision 2 introduced this data; candidate protocol 6
+retains the purpose/result signoff contract described below.
 
 Acceptance binds to the current specification. `update_task` atomically saves
 title/body/criteria amendments and optional exact-scope specific/delegated
@@ -156,8 +156,32 @@ workstream, actual source/target commits and target verification, followed by
 fresh independent review. Origin reviews are never inherited. Completed tasks
 retain selected human-approved proof; later integration is a new task. No
 adoption API, shared working state, schema expansion or routine checkpoints are
-needed. See [the focused workflow](docs/continuation.md); compact projections
-and interrupted-session action selection remain separate work.
+needed. See [the focused workflow](docs/continuation.md); compact default task reads
+remain separately deferred.
+
+Protocol 6 treats `record_result` as factual recording for any mutable scoped
+concrete task, including pending, unresolved, prerequisite-blocked, deferred and
+dropped tasks. Revision and full `specification_etag` bind the checked current
+requirements. Structured artifact/commit references and actual verification are
+required alongside implementer/context proof; the new proof envelope lives in
+the existing evidence TEXT column, with old text evidence/history preserved.
+Recording changes only the attempt and task record revision, never authority,
+disposition, gates or completion. ACKs omit proof and expose attempt/task revisions
+plus unchanged acceptance/disposition and active gate diagnostics.
+
+`get_next_action` replaces the old implementation-only selector with no alias or
+extra tool. It follows shared order across eligible implementation and review,
+requiring current approval, active disposition and clear unresolved/prerequisite
+gates. Within a task, pending current-spec local review precedes implementation;
+newest first then ID ascending is deterministic. Passed/human_review waits for
+human sign-off; rework implementation carries its attempt/findings. One selected
+full spec includes the read token, pending proposals and local gates; review
+includes exactly one complete local proof and review provenance, without history.
+Null selection gives bounded counts/waiting reasons. Reads keep existing audit
+semantics and do not claim, reorder or write progress. Explicit manual reviews
+retain their existing authority and cannot clear remaining gates. Workflow clients
+check the actual checkout/artifacts and send reviews to fresh independent reviewers.
+No working/start/lease/checkpoint lifecycle or routine extra repository scan exists.
 
 An active handler may add a task gate directly. An observer proposes a gate for
 review; the proposal is nonblocking until accepted. A coordinator may dismiss
@@ -234,7 +258,7 @@ rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
 
-Candidate purpose/result signoff (introduced in protocol 3; current protocol 5,
+Candidate purpose/result signoff (introduced in protocol 3; current protocol 6,
 schema 3) uses one human
 `approve`/`rework`/`revise`/`drop`/`defer` decision. Specific current-scope purpose
 approval references its actual classified audit decision; delegated/unknown

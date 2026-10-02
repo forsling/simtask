@@ -79,8 +79,9 @@ async def exercise(database: Path):
         assert overview["items"][0]["id"] == workstream_id
         status = await call("workstream_status", workstream_id=workstream_id)
         assert status["items"][0]["id"] == task_id
-        selected = await call("get_next_task", workstream_id=workstream_id)
-        assert selected["task"]["id"] == task_id
+        selected = await call("get_next_action", workstream_id=workstream_id)
+        assert selected["action"] == "implement" and selected["task"]["id"] == task_id
+        assert "attempts" not in selected["task"]
         stale = await client.call_tool(
             "update_task",
             {
@@ -113,7 +114,21 @@ async def exercise(database: Path):
             implementer="demo-implementer",
             summary="Demo delivered",
             evidence="Synthetic demonstration passed.",
+            artifacts=[{"kind": "artifact", "reference": "examples/demo.py"}],
+            verification="Synthetic demonstration checks",
+            specification_etag=(await call("get_tasks", ids=[task_id]))["items"][0][
+                "specification_etag"
+            ],
         )
+        assert not {"evidence", "summary", "artifacts", "verification"} & result.keys()
+        resumed_action = await call("get_next_action", workstream_id=workstream_id)
+        assert resumed_action["action"] == "review"
+        assert resumed_action["attempt"]["id"] == result["id"]
+        assert resumed_action["attempt"]["artifacts"] == [
+            {"kind": "artifact", "reference": "examples/demo.py"}
+        ]
+        assert resumed_action["attempt"]["verification"] == "Synthetic demonstration checks"
+        assert "attempts" not in resumed_action["task"]
         reviewed = await call(
             "record_review",
             attempt_id=result["id"],
@@ -123,6 +138,8 @@ async def exercise(database: Path):
             note="Independent demo review passed.",
         )
         assert reviewed["state"] == "passed"
+        waiting = await call("get_next_action", workstream_id=workstream_id)
+        assert waiting["action"] is None and waiting["diagnostics"]["signoff"] == 1
         current = (await call("get_tasks", ids=[task_id]))["items"][0]
         signed = await call(
             "signoff_task",
@@ -159,7 +176,7 @@ async def exercise(database: Path):
         assert stale_move.is_error and "revision_conflict" in str(stale_move.content)
         move_args["expected_order_revision"] = moved["project_order_revision"]
         assert not (await call("reorder_tasks", **move_args))["changed"]
-        selected = await call("get_next_task", workstream_id=workstream_id)
+        selected = await call("get_next_action", workstream_id=workstream_id)
         assert selected["task"]["id"] == prioritized["id"]
         done_after = (await call("get_tasks", ids=[task_id]))["items"][0]
         assert {k: v for k, v in signed_full.items() if k != "order_key"} == {
@@ -183,6 +200,11 @@ async def exercise(database: Path):
                 implementer="builder",
                 summary="Synthetic result",
                 evidence="Synthetic proof",
+                artifacts=[{"kind": "artifact", "reference": "examples/demo.py"}],
+                verification="Synthetic demonstration checks",
+                specification_etag=(await call("get_tasks", ids=[item["id"]]))["items"][0][
+                    "specification_etag"
+                ],
             )
             await call(
                 "record_review",
@@ -410,6 +432,11 @@ async def exercise(database: Path):
             implementer="demo remote builder",
             summary="Remote result",
             evidence="Remote evidence deliberately retrieved only",
+            artifacts=[{"kind": "artifact", "reference": "examples/demo.py"}],
+            verification="Synthetic demonstration checks",
+            specification_etag=(await call("get_tasks", ids=[remote_blocker["id"]]))["items"][0][
+                "specification_etag"
+            ],
         )
         await call(
             "record_review",
@@ -454,7 +481,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.9.0"
+        assert catalog["version"] == "1.10.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

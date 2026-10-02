@@ -53,6 +53,9 @@ def seed(path):
         "demo-builder",
         "A focused canvas with automatic draft recovery.",
         "Synthetic evidence: keyboard flow and draft recovery checked.",
+        artifacts=[{"kind": "artifact", "reference": "examples/viewer_demo.py"}],
+        verification="Synthetic viewer fixture",
+        specification_etag=store.get_tasks([tasks[0]["id"]])["items"][0]["specification_etag"],
     )
     store.record_review(attempt["id"], 1, "demo-reviewer", "pass", "Synthetic independent review.")
     store.add_unresolved(tasks[2]["id"], 1, "Should Markdown or plain text be the default?")

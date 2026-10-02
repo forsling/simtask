@@ -55,7 +55,7 @@ def create_server(store: Store) -> MCPServer:
             "Use list_groups/get_tasks for whole-group progress and supply group revisions "
             "when creating or attaching members. "
             "Tasks have current user acceptance, unresolved items, prerequisites and scoped "
-            "attempts. get_next_task selects without claiming. A reviewer other than the "
+            "attempts. get_next_action selects without claiming. A reviewer other than the "
             "implementer records ordinary review; human_review requires an actual user "
             "instruction. signoff_task requires the user's informed verdict. Actor labels and "
             "human assertions are not authenticated. Reads append local audit events. "
@@ -442,9 +442,15 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def get_next_task(workstream_id: str) -> dict[str, Any]:
-        """Select first eligible task with full context, without creating an attempt."""
-        return store.get_next_task(workstream_id)
+    def get_next_action(workstream_id: str) -> dict[str, Any]:
+        """Read one implement/review action in shared order, without claiming or reordering.
+
+        Full current spec/token and exactly one applicable local proof for review
+        (or rework) are included. Autonomous actions require acceptance and clear
+        gates; passed/human_review waits for the user. Null gives bounded counts.
+        Verify the actual checkout/artifacts before trusting recorded proof.
+        """
+        return store.get_next_action(workstream_id)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -455,10 +461,27 @@ def create_server(store: Store) -> MCPServer:
         implementer: str,
         summary: str,
         evidence: str,
+        artifacts: list[dict[str, str]],
+        verification: str,
+        specification_etag: str,
     ) -> dict[str, Any]:
-        """Implementer atomically records a durable result and creates an attempt for review."""
+        """Record factual durable proof, even with gates; this grants no execution authority.
+
+        First check the actual checkout/artifacts and current full specification.
+        Supply its etag, concrete artifacts ({kind: artifact|commit, reference: ...}),
+        actual verification and context evidence. Acceptance, disposition and blockers
+        stay unchanged. The ACK omits proof; retrieve it deliberately with get_tasks.
+        """
         return store.record_result(
-            task_id, workstream_id, expected_revision, implementer, summary, evidence
+            task_id,
+            workstream_id,
+            expected_revision,
+            implementer,
+            summary,
+            evidence,
+            artifacts,
+            verification,
+            specification_etag,
         )
 
     @server.tool(annotations=editing, structured_output=True)

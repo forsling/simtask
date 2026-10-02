@@ -31,7 +31,15 @@ def local_task(store, context, title, group_id=None, group_revision=None):
 
 def finish(store, item, workstream_id):
     result = store.record_result(
-        item["id"], workstream_id, item["revision"], "implementer", "Done", "Verified"
+        item["id"],
+        workstream_id,
+        item["revision"],
+        "implementer",
+        "Done",
+        "Verified",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_shared_groups.py"}],
+        verification="Verified",
+        specification_etag=store.get_tasks([item["id"]])["items"][0]["specification_etag"],
     )
     store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
     store.signoff_task(
@@ -80,10 +88,22 @@ def test_shared_group_three_projects_scope_and_independent_completion(tmp_path):
         assert sum(status["status"]["counts"].values()) == 1
         assert status["items"][0]["id"] == member["id"]
         assert status["status"]["referenced_groups"][0]["global_progress"]["total"] == 3
-        assert store.get_next_task(ws)["task"]["id"] == member["id"]
+        assert store.get_next_action(ws)["task"]["id"] == member["id"]
         assert store.list_groups(context["project"]["id"])["items"][0]["id"] == group_id
     with pytest.raises(TaskError, match="unknown_workstream"):
-        store.record_result(members[1]["id"], a["workstream"]["id"], 1, "wrong", "Wrong", "Wrong")
+        store.record_result(
+            members[1]["id"],
+            a["workstream"]["id"],
+            1,
+            "wrong",
+            "Wrong",
+            "Wrong",
+            artifacts=[{"kind": "artifact", "reference": "tests/test_shared_groups.py"}],
+            verification="Wrong",
+            specification_etag=store.get_tasks([members[1]["id"]])["items"][0][
+                "specification_etag"
+            ],
+        )
     dependent = local_task(store, a, "Wait for whole group")
     blocked = store.add_prerequisite(dependent["id"], 1, group_id)
     assert blocked["blocked_by"] == [group_id]
@@ -91,7 +111,7 @@ def test_shared_group_three_projects_scope_and_independent_completion(tmp_path):
     store.set_scope(
         a["workstream"]["id"], current_ws_revision, f"none +{group_id} +{dependent['id']}"
     )
-    assert store.get_next_task(a["workstream"]["id"])["task"]["id"] == members[0]["id"]
+    assert store.get_next_action(a["workstream"]["id"])["task"]["id"] == members[0]["id"]
     for context, member in zip((a, b), members[:2], strict=True):
         finish(store, member, context["workstream"]["id"])
     assert store.get_tasks([group_id])["items"][0]["progress"]["done"] == 2
@@ -103,7 +123,7 @@ def test_shared_group_three_projects_scope_and_independent_completion(tmp_path):
         local_task(store, b, "Too late", group_id, complete["revision"])
     with pytest.raises(TaskError, match="completed_task_immutable"):
         store.update_task(group_id, complete["revision"], {"body": "Changed"})
-    assert store.get_next_task(a["workstream"]["id"])["task"]["id"] == dependent["id"]
+    assert store.get_next_action(a["workstream"]["id"])["task"]["id"] == dependent["id"]
 
 
 def test_shared_group_live_exclusion_membership_revision_and_cycle(tmp_path):
@@ -116,7 +136,7 @@ def test_shared_group_live_exclusion_membership_revision_and_cycle(tmp_path):
     existing = local_task(store, b, "Existing")
     added = store.add_group_member(group_id, group["revision"], existing["id"], 1)
     assert added["member"]["parent_group_id"] == group_id
-    assert store.get_next_task(ws_b)["task"]["id"] == existing["id"]
+    assert store.get_next_action(ws_b)["task"]["id"] == existing["id"]
     other = local_task(store, b, "Other")
     with pytest.raises(TaskError, match="revision_conflict"):
         store.add_group_member(group_id, group["revision"], other["id"], 1)
@@ -154,7 +174,7 @@ def test_empty_group_blocks_prerequisite_and_remains_mutable(tmp_path):
     store.set_scope(
         a["workstream"]["id"], current_ws_revision, f"none +{group['id']} +{task['id']}"
     )
-    assert store.get_next_task(a["workstream"]["id"])["diagnostics"]["prerequisites"] == 1
+    assert store.get_next_action(a["workstream"]["id"])["diagnostics"]["prerequisites"] == 1
     changed = store.update_task(
         group["id"], 1, {"body": "Still open"}, specification_etag=group["specification_etag"]
     )
@@ -169,7 +189,15 @@ def test_group_membership_and_last_signoff_are_serialized(tmp_path):
     first = local_task(store, a, "First", group["id"], group["revision"])
     candidate = local_task(store, b, "Candidate")
     result = store.record_result(
-        first["id"], a["workstream"]["id"], 1, "implementer", "Done", "Verified"
+        first["id"],
+        a["workstream"]["id"],
+        1,
+        "implementer",
+        "Done",
+        "Verified",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_shared_groups.py"}],
+        verification="Verified",
+        specification_etag=store.get_tasks([first["id"]])["items"][0]["specification_etag"],
     )
     store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
     group_revision = store.get_tasks([group["id"]])["items"][0]["revision"]

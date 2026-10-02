@@ -18,7 +18,7 @@ vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const attempt = (id, workstream_id, state, spec_revision = 2) => ({
   id, workstream_id, state, spec_revision, revision: 7, implementer: id,
 });
-context.task = {id: "task", spec_revision: 2, revision: 12, status: "open", attempts: [
+context.task = {id: "task", spec_revision: 2, revision: 12, status: "open", accepted: true, prerequisites: [], attempts: [
   attempt("main-passed", "main", "passed"),
   attempt("alt-review", "alt", "review"),
   attempt("alt-rework", "alt", "rework"),
@@ -51,6 +51,33 @@ click("review", "Record my review", "alt-review");
 // A human-reviewed result also qualifies, even when followed by a rework result.
 context.task.attempts[0].state = "human_review";
 click("signoff", "Approve & sign off", "main-passed");
+// Factual proof coexists with gates; no autonomous review or sign-off is implied.
+run('state.stream = "alt";');
+context.task.unresolved_items = [{id: "question", text: "Unsettled requirement"}];
+let panel = descendants(run('nextStep(task, "review")'));
+assert.ok(panel.some(n => n.textContent === "One question needs an answer"));
+assert.ok(panel.some(n => /A factual result is saved below/.test(n.textContent)));
+assert.ok(!panel.some(n => n.textContent === "Next agent action: review"));
+assert.ok(panel.some(n => n.textContent === "Record my review"), "Explicit human review remains available");
+context.task.unresolved_items = [];
+context.task.prerequisites = [{blocking: true}];
+run('state.stream = "main";');
+panel = descendants(run('nextStep(task, "signoff")'));
+assert.ok(panel.some(n => n.textContent === "Waiting on prerequisites"));
+assert.ok(!panel.some(n => n.textContent === "Approve & sign off"));
+context.task.prerequisites = [];
+// Deterministic newest-first / ID tie breaking, scoped and current-spec only.
+context.task.attempts.push({...attempt("a-pending", "alt", "review"), created_at: "2030-01-01"},
+  {...attempt("b-pending", "alt", "review"), created_at: "2030-01-01"});
+run('state.stream = "alt";');
+assert.equal(run('currentAttempt(task, ["review"]).id'), "a-pending");
+context.task.attempts.splice(-2);
+run('markdown = (text) => node("p", text);');
+context.proof = {...attempt("proof", "alt", "review"), summary: "Built", evidence: "Full context",
+  artifacts: [{kind: "commit", reference: "abcdef0123456789"}], verification: "Actual check passed"};
+panel = descendants(run('attemptCard(proof, task)'));
+assert.ok(panel.some(n => n.textContent === "commit: abcdef0123456789"));
+assert.ok(panel.some(n => n.textContent === "Actual check passed"));
 // Check the actual detail body uses the same action candidate. Isolate unrelated
 // Markdown/activity rendering so the DOM double need not implement a browser.
 run('markdown = (text) => node("p", text); activity = () => null; attemptCard = (a) => node("article", a.id);');

@@ -46,7 +46,7 @@ def test_amendment_saves_and_accepts_exact_result_in_one_revision(context, basis
     assert not {"body", "title", "attempts", "acceptance_note", "specification_etag"} & ack.keys()
     after = full(store, ack)
     assert all(after[key] == value for key, value in changes.items())
-    assert store.get_next_task(ws)["task"]["specification_etag"] == after["specification_etag"]
+    assert store.get_next_action(ws)["task"]["specification_etag"] == after["specification_etag"]
     assert after["acceptance_note"] == approval(basis)["note"]
     assert after["attempts"] == []
     with sqlite3.connect(store.path) as db:
@@ -156,9 +156,19 @@ def test_non_spec_gate_revision_keeps_token_but_requires_current_revision(contex
     assert after["blocked_by"] == gated["blocked_by"]
     assert after["gate_proposals"] == gated["gate_proposals"]
     assert after["gate_proposals"][0]["id"] == proposal["id"]
-    assert store.get_next_task(ws)["task"] is None
+    assert store.get_next_action(ws)["task"] is None
     with pytest.raises(TaskError, match="task_not_eligible|task_out_of_scope"):
-        store.record_result(task["id"], ws, ack["revision"], "worker", "Done", "Proof")
+        store.record_result(
+            task["id"],
+            ws,
+            ack["revision"],
+            "worker",
+            "Done",
+            "Proof",
+            artifacts=[{"kind": "artifact", "reference": "tests/test_amendments.py"}],
+            verification="Proof",
+            specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
+        )
     deferred = store.set_disposition(task["id"], ack["revision"], "deferred", "Later")
     accepted = store.update_task(
         task["id"], deferred["revision"], {"title": "Deferred scope"}, approval()

@@ -9,13 +9,20 @@ Run `init` for the explicit target checkout and branch/name. Resume its `ready`
 context; settle `new_branch`, `unregistered_checkout` or `mismatch` through the
 init workflow before work. Retain that returned workstream ID, even when the
 session is handling other repositories. Use
-`get_next_task(workstream_id)` to select one full eligible task without claiming
-it. An empty scope or only gated tasks is a useful stop; report its diagnostics.
+`get_next_action(workstream_id)` to select one explicit `implement` or `review`
+action without claiming it. It includes one full current task/specification with
+revisions/read token. `review` includes exactly one complete applicable local
+attempt and its evidence/review provenance; no second history read is needed.
+`action:null` is a useful stop; report its bounded waiting counts, including human
+sign-off. Follow shared project order across both action kinds. Pending local
+review precedes another implementation of the same task. Passed/human-reviewed
+results wait for the user. Rework returns the attempt and relevant findings.
 Do not accept feature briefs or clear design gates to drain the queue. When the
 user requests a design discussion, fetch `get_default_skills` and follow
 `feature-design`; save exploratory feature ideas through `feature-capture`.
-Project ordering is advisory, but scope, acceptance, unresolved items, and
-prerequisites are hard gates. Never invent an accepted task or move work into
+Shared project order determines the next eligible action. Scope, current acceptance,
+active disposition, unresolved items and prerequisites gate both autonomous
+implementation and review. Never invent an accepted task or move work into
 another workstream. Agent-suggested new work is a pending proposal in this scope
 or the inbox. Concrete user-requested additions retain authorization for their
 exact scope without another approval; respect explicit unaccepted requests.
@@ -41,22 +48,48 @@ whose evidence cites the origin attempt/workstream, actual integrated source
 and target commits, target verification and material limits. Then send that new
 attempt and target checkout to a fresh independent reviewer. Never copy the
 origin review or infer integration from a title, branch name, deployment report
-or prose. Recording uses the normal gates and grants no approval/completion.
+or prose. Recording checks mutability, scope, concurrency and the full-spec token;
+it grants no approval/completion and never clears the execution gates.
 Completed tasks keep their selected human-approved proof; a later integration
 requirement is a new task. No adoption API or shared working state is needed.
 
-Assign the selected task to a fresh implementer. The implementer changes code,
-verifies it, and calls `record_result` with concrete evidence and its identity.
-This is the first durable attempt record; no start or claim call is required.
-Use a fresh reviewer who did not implement it. The reviewer returns findings to
-the coordinator, which calls `record_review` with the reviewer's identity and
-verdict. If rework is requested, repeat implementation and independent review;
+Dispatch a `review` action directly to a **fresh independent reviewer** who did
+not implement the selected attempt. Give that reviewer the returned full task,
+selected complete attempt and actual checkout/artifact references. Verify their
+applicability before relying on proof, including after restart/rebind. Never
+reimplement merely because a previous session ended. The reviewer returns
+findings; the coordinator calls `record_review` with the actual reviewer identity
+and verdict. Keep explicit/manual review authority rules unchanged; selection
+never authorizes blocked work.
+
+Dispatch an `implement` action to a **fresh implementer**, supplying any returned
+rework attempt/findings. The implementer inspects the normal checkout/diff and
+relevant history, reuses applicable work, changes code and verifies it. On a
+finished durable attempt call `record_result` once with the last-read task
+revision, `specification_etag`, actual implementer/summary/context `evidence`,
+`artifacts=[{"kind": "commit", "reference": <actual hash>} ]` (or kind
+`artifact` with the actual path/URL)
+and a `verification` string with the actual checks/outcomes and limits. The ACK
+returns attempt `id`/`revision`, `task_revision`, unchanged `accepted`/`status`
+and active gate diagnostics; it does not echo evidence. Then select again and
+send the `review` action to a fresh reviewer. No start/claim/checkpoint is needed.
+
+If interrupted work is durably implemented but unrecorded, read the current full
+spec and inspect the actual checkout/commits before factual recording. This rare
+recovery may record proof while unaccepted, unresolved, prerequisite-blocked,
+deferred or dropped; it never accepts, resumes, clears gates, completes a
+prerequisite or manufactures review. Do not use factual recording as permission
+to start autonomous implementation. Existing Git files/history are ordinary
+continuation evidence; add no routine extra scan, partial-progress log or
+external historical-example repair.
+
+If rework is requested, repeat eligible implementation and independent review;
 after the workflow's bounded retry cap add a concrete unresolved item explaining
 failed rounds and recovery options. `human_review` is reserved for an actual
 user review or an explicit user direction to skip further review. Do not
-self-issue it. Review passed makes the result ready for human sign-off; it does
-not complete the task. Multiple workstreams may record alternatives, which the
-user can compare at sign-off.
+self-issue it. Review passed makes the result ready for human sign-off only when
+all completion gates permit it; it does not complete the task. Multiple
+workstreams may record alternatives, which the user can compare at sign-off.
 
 Task origin/request metadata never grants acceptance. Creation, amendment and standalone
 `accept_task` use the same `approval={"basis": "specific" | "delegated", "note":

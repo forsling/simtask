@@ -74,10 +74,20 @@ def assert_view(store, context, task_id, view):
     assert next(r for r in resumed["queue"] if r["id"] == task_id)["view"] == view
 
 
-def record(store, work, context, implementer, evidence):
-    return store.record_result(
-        work["id"], context["workstream"]["id"], work["revision"], implementer, "Built", evidence
+def record(store, work, context, implementer, evidence, artifacts=None, verification=None):
+    ack = store.record_result(
+        work["id"],
+        context["workstream"]["id"],
+        work["revision"],
+        implementer,
+        "Built",
+        evidence,
+        artifacts=artifacts or [{"kind": "artifact", "reference": __file__}],
+        verification=verification or evidence,
+        specification_etag=store.get_tasks([work["id"]])["items"][0]["specification_etag"],
     )
+
+    return next(a for a in detail(store, work["id"])["attempts"] if a["id"] == ack["id"])
 
 
 def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selection(tmp_path):
@@ -96,7 +106,7 @@ def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selecti
     source = record(store, work, origin, "origin builder", "Origin artifact and verification")
     assert_view(store, origin, work["id"], "review")
     assert_view(store, target, work["id"], "ready")
-    assert store.get_next_task(target["workstream"]["id"])["task"]["id"] == work["id"]
+    assert store.get_next_action(target["workstream"]["id"])["task"]["id"] == work["id"]
     store.record_review(source["id"], 1, "origin reviewer", "pass", "Synthetic source check")
     assert_view(store, origin, work["id"], "signoff")
     alternative = record(
@@ -104,8 +114,12 @@ def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selecti
     )
     assert alternative["state"] == "review" and alternative["reviewer"] is None
     assert_view(store, target, work["id"], "review")
-    assert store.get_next_task(origin["workstream"]["id"])["task"] is None
-    assert store.get_next_task(target["workstream"]["id"])["task"] is None
+    assert store.get_next_action(origin["workstream"]["id"])["task"] is None
+    resumed_review = store.get_next_action(target["workstream"]["id"])
+    assert (
+        resumed_review["action"] == "review"
+        and resumed_review["attempt"]["id"] == alternative["id"]
+    )
 
     current = detail(store, work["id"])
     store.update_task(
@@ -116,9 +130,12 @@ def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selecti
     )
     for context in (origin, target):
         assert_view(store, context, work["id"], "ready")
-        selected = store.get_next_task(context["workstream"]["id"])["task"]
+        selected = store.get_next_action(context["workstream"]["id"])["task"]
         assert selected["spec_revision"] == 2
-        assert {(a["workstream_id"], a["spec_revision"]) for a in selected["attempts"]} == {
+        assert "attempts" not in selected
+        assert {
+            (a["workstream_id"], a["spec_revision"]) for a in detail(store, work["id"])["attempts"]
+        } == {
             (origin["workstream"]["id"], 1),
             (target["workstream"]["id"], 1),
         }
@@ -244,7 +261,18 @@ def test_deliberate_cherry_pick_records_target_provenance_and_requires_fresh_rev
         f"target checkout {target_path}, current spec {current['spec_revision']}; "
         f"target verification python -B -c {verification!r}: {verified.stdout.strip()}"
     )
-    integrated = record(store, current, target, "target integrator", evidence)
+    integrated = record(
+        store,
+        current,
+        target,
+        "target integrator",
+        evidence,
+        artifacts=[
+            {"kind": "commit", "reference": source_commit},
+            {"kind": "commit", "reference": target_commit},
+        ],
+        verification=f"python -B -c {verification!r}: {verified.stdout.strip()}",
+    )
     assert integrated["workstream_id"] == target["workstream"]["id"]
     assert integrated["evidence"] == evidence and integrated["spec_revision"] == 1
     assert integrated["state"] == "review"
@@ -273,7 +301,7 @@ def test_deliberate_cherry_pick_records_target_provenance_and_requires_fresh_rev
     )
     completed = detail(store, work["id"])
     assert completed["selected_attempt_id"] == integrated["id"] and completed["status"] == "done"
-    with pytest.raises(TaskError, match="task_not_eligible"):
+    with pytest.raises(TaskError, match="completed_task_immutable"):
         record(store, completed, origin, "later integrator", "Would rewrite completed proof")
     with pytest.raises(TaskError, match="completed_task_immutable"):
         store.update_task(work["id"], completed["revision"], {"title": "Later integration"})

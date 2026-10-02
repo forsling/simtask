@@ -28,6 +28,7 @@ def dispatch(store, action, data):
         "groups": store.list_groups,
         "tasks": store.list_tasks,
         "details": store.get_tasks,
+        "next-action": store.get_next_action,
         "events": store.list_events,
         "create": store.create_task,
         "edit": store.update_task,

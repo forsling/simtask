@@ -19,7 +19,7 @@ def context(tmp_path):
 
 
 def assert_no_implementation(store, workstream):
-    assert store.get_next_task(workstream)["task"] is None
+    assert store.get_next_action(workstream)["task"] is None
 
 
 def test_capture_is_pending_before_and_after_adding_design_gate(context):
@@ -89,7 +89,7 @@ def test_project_design_discovery_includes_captured_inbox_ideas(context):
     assert_no_implementation(store, workstream)
     current = store.workstream_status(workstream)["workstream"]
     store.set_scope(workstream, current["revision"], f"{workstream} +{brief['id']}")
-    assert store.get_next_task(workstream)["task"]["id"] == brief["id"]
+    assert store.get_next_action(workstream)["task"]["id"] == brief["id"]
 
 
 def test_design_preserves_other_gates_and_requires_current_spec_acceptance(context):
@@ -132,7 +132,7 @@ def test_design_preserves_other_gates_and_requires_current_spec_acceptance(conte
         resolved["revision"],
         {"basis": "specific", "note": "Synthetic approval of the exact final specification"},
     )
-    assert store.get_next_task(workstream)["task"]["id"] == accepted["id"]
+    assert store.get_next_action(workstream)["task"]["id"] == accepted["id"]
     assert store.get_tasks([accepted["id"]])["items"][0]["attempts"] == []
 
 
@@ -190,6 +190,6 @@ def test_decomposition_keeps_parent_and_children_ineligible_until_ready(context)
         persistence["revision"],
         {"basis": "specific", "note": "Synthetic approval of persistence member"},
     )
-    assert store.get_next_task(workstream)["task"]["id"] == persistence["id"]
+    assert store.get_next_action(workstream)["task"]["id"] == persistence["id"]
     states = {item["id"]: item["view"] for item in store.list_tasks(project, workstream)["items"]}
     assert states == {persistence["id"]: "ready", reset["id"]: "prerequisites"}

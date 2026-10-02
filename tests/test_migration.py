@@ -51,7 +51,17 @@ def legacy_database(database, version):
         workstream_id=ws,
         scope="workstream",
     )
-    attempt = store.record_result(done["id"], ws, 1, "worker", "Delivered", "Exact proof")
+    attempt = store.record_result(
+        done["id"],
+        ws,
+        1,
+        "worker",
+        "Delivered",
+        "Exact proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_migration.py"}],
+        verification="Exact proof",
+        specification_etag=store.get_tasks([done["id"]])["items"][0]["specification_etag"],
+    )
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Checked")
     store.signoff_task(
         done["id"], 2, "approve", "Legacy human verdict", attempt["id"], expected_attempt_revision=2
@@ -154,7 +164,17 @@ def test_legacy_disposition_restore_does_not_reactivate_dropped_acceptance(
         scope="workstream",
         workstream_id=ws,
     )
-    attempt = store.record_result(task["id"], ws, 1, "worker", "Earlier result", "Durable proof")
+    attempt = store.record_result(
+        task["id"],
+        ws,
+        1,
+        "worker",
+        "Earlier result",
+        "Durable proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_migration.py"}],
+        verification="Durable proof",
+        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
+    )
     store.record_review(attempt["id"], 1, "independent reviewer", "rework", "Repair needed")
     # Schema 1 disposition changes retained accepted_spec_revision, including
     # when dropping a task. Reproduce those persisted rows before migration.
@@ -184,11 +204,11 @@ def test_legacy_disposition_restore_does_not_reactivate_dropped_acceptance(
     assert restored["accepted"] == (not is_dropped)
     assert restored["accepted_spec_revision"] == (None if is_dropped else 1)
     if restored_disposition == "deferred":
-        assert store.get_next_task(ws)["task"] is None
+        assert store.get_next_action(ws)["task"] is None
         restored = store.set_disposition(task["id"], restored["revision"], "open", "Resume")
     if is_dropped:
         assert restored["gate_diagnostics"] == ["pending_acceptance"]
-        assert store.get_next_task(ws)["task"] is None
+        assert store.get_next_action(ws)["task"] is None
         retained = store.get_tasks([task["id"]])["items"][0]
         assert retained["acceptance_note"] == "Historical approval"
         assert retained["acceptance_basis"] == "unknown" and retained["approval_decision"] is None
@@ -198,7 +218,7 @@ def test_legacy_disposition_restore_does_not_reactivate_dropped_acceptance(
             {"basis": "specific", "note": "Actual approval of the exact restored requirements"},
         )
         assert restored["accepted"]
-    assert store.get_next_task(ws)["task"]["id"] == task["id"]
+    assert store.get_next_action(ws)["task"]["id"] == task["id"]
     saved = Store(database).get_tasks([task["id"]])["items"][0]
     assert saved["body"] == migrated["body"] and saved["spec_revision"] == 1
     assert saved["attempts"] == migrated["attempts"] and saved["signoff_decisions"] == []

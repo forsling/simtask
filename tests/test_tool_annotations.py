@@ -25,7 +25,7 @@ ADDITIVE = {
     "add_unresolved",
     "add_prerequisite",
     "propose_prerequisite",
-    "get_next_task",
+    "get_next_action",
     "record_result",
     "list_events",
     "export_workstream",
@@ -172,6 +172,9 @@ def test_append_only_tools_preserve_existing_payload_and_audit_history(tmp_path)
         "worker",
         "Delivered",
         "Verified",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_tool_annotations.py"}],
+        verification="Verified",
+        specification_etag=store.get_tasks([delivered["id"]])["items"][0]["specification_etag"],
     )
     assert attempt["task_id"] == delivered["id"]
     assert _business_payload(database, delivered["id"]) == delivered_payload

@@ -37,7 +37,17 @@ def delivered(context, basis="specific", human=False, grouped=False):
         group_id=group["id"] if group else None,
         group_expected_revision=group["revision"] if group else None,
     )
-    attempt = store.record_result(task["id"], ws, 1, "worker", "Delivered", "Actual proof")
+    attempt = store.record_result(
+        task["id"],
+        ws,
+        1,
+        "worker",
+        "Delivered",
+        "Actual proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_signoff.py"}],
+        verification="Actual proof",
+        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
+    )
     if human:
         store.human_review(attempt["id"], 1, "Synthetic actual human review")
     else:
@@ -141,7 +151,7 @@ def test_direction_decision_preserves_sound_result_without_inventing_quality(
     assert judgment["disposition"] == status
     assert judgment["resulting_task_revision"] == ack["revision"]
     assert judgment["resulting_attempt_revision"] == ack["attempt_revision"] == 2
-    assert store.get_next_task(ws)["task"] is None
+    assert store.get_next_action(ws)["task"] is None
     assert "prerequisites" in store.workstream_status(ws)["items"][-1]["gate_diagnostics"]
     if decision == "revise":
         assert ack["unresolved_id"] == saved["unresolved_items"][-1]["id"]
@@ -212,10 +222,20 @@ def test_rework_retains_approved_spec_requires_new_result_and_fresh_review(conte
         judgment["purpose_judgment"] == "approved" and judgment["purpose_source"] == "user_verdict"
     )
     assert judgment["result_judgment"] == "rework"
-    assert store.get_next_task(ws)["task"]["id"] == task["id"]
+    assert store.get_next_action(ws)["task"]["id"] == task["id"]
     with pytest.raises(TaskError, match="review_required"):
         decide(store, saved, attempt, "approve")
-    retry = store.record_result(task["id"], ws, ack["revision"], "worker", "Fixed", "Fresh proof")
+    retry = store.record_result(
+        task["id"],
+        ws,
+        ack["revision"],
+        "worker",
+        "Fixed",
+        "Fresh proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_signoff.py"}],
+        verification="Fresh proof",
+        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
+    )
     with pytest.raises(TaskError, match="review_required"):
         store.signoff_task(task["id"], ack["revision"] + 1, "approve", "Approve", retry["id"], 1)
     reviewed = store.record_review(retry["id"], 1, "reviewer", "pass", "Fresh independent proof")
@@ -251,14 +271,14 @@ def test_ordinary_drop_defer_and_authorized_revival_need_no_review(context):
     revived = store.set_disposition(
         task["id"], 3, "open", "Restore", authorization="Synthetic actual user requested revival"
     )
-    assert not revived["accepted"] and store.get_next_task(ws)["task"] is None
+    assert not revived["accepted"] and store.get_next_action(ws)["task"] is None
     full_task = full(store, task)
     assert full_task["body"] == "Scope" and full_task["acceptance_note"] == "Initial approval"
     assert not full_task["approval_decision"]["active"] and full_task["signoff_decisions"] == []
     approved = store.accept_task(
         task["id"], revived["revision"], {"basis": "specific", "note": "Actual reapproval"}
     )
-    assert approved["accepted"] and store.get_next_task(ws)["task"]["id"] == task["id"]
+    assert approved["accepted"] and store.get_next_action(ws)["task"]["id"] == task["id"]
 
 
 def test_signoff_checks_exact_attempt_concurrency_and_both_completion_gates(context):

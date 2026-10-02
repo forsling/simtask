@@ -457,6 +457,15 @@ async function reload({ quiet = false } = {}) {
     $("subheading").textContent = groups
       ? `${groups === "project" ? projectName(project) : "Across projects"} · ${rows.length} group${rows.length === 1 ? "" : "s"}`
       : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}`;
+    if (!groups && state.stream) $("subheading").append(" · ", button("Next agent action", async () => {
+      try {
+        const selected = await api("next-action", {workstream_id: state.stream});
+        if (selected.action) {
+          await selectTask(selected.task.id);
+          toast(selected.action === "review" ? "Next: fresh independent reviewer. Verify the actual checkout and saved proof." : "Next: implementer. Use the current checkout and relevant existing work.");
+        } else toast(`No autonomous action. ${selected.diagnostics.signoff || 0} task(s) await human sign-off; other gates remain on the board.`);
+      } catch (e) { toast(e.message, true); }
+    }, "btn small"));
     renderNav();
     renderList();
     if (state.selected && (rows.some((r) => r.id === state.selected) || (groups && state.linkedGroup === state.selected))) await selectTask(state.selected, { quiet });
@@ -642,7 +651,9 @@ function renderDetail(t) {
 function currentAttempt(t, requiredStates = null) {
   if (!requiredStates && t.status === "done" && t.selected_attempt_id)
     return t.attempts.find((a) => a.id === t.selected_attempt_id) || null;
-  return [...t.attempts].reverse().find((a) =>
+  return [...t.attempts].sort((a, b) =>
+    (b.created_at || "").localeCompare(a.created_at || "") || a.id.localeCompare(b.id)
+  ).find((a) =>
     a.spec_revision === t.spec_revision &&
     (!state.stream || a.workstream_id === state.stream) &&
     (!requiredStates || requiredStates.includes(a.state))
@@ -664,14 +675,21 @@ function nextStep(t, view) {
     text = "Agents won't implement it until you accept this exact specification.";
     buttons.push(button("Accept spec", () => accept(t), "btn primary"));
     buttons.push(button("Edit first", () => editTask(t)));
+  } else if (t.unresolved_items.length) {
+    const n = t.unresolved_items.length;
+    title = n === 1 ? "One question needs an answer" : `${n} questions need answers`;
+    text = "Autonomous implementation and review wait until each question is resolved.";
+  } else if (t.prerequisites?.some((p) => p.blocking) || view === "prerequisites") {
+    title = "Waiting on prerequisites";
+    text = "Autonomous implementation and review wait for human sign-off of the prerequisites below.";
   } else if (view === "signoff" && a) {
     title = "Ready for your sign-off";
     text = `${a.implementer}'s result has been reviewed. Judge the task purpose and the result below; one informed decision can cover both.`;
     buttons.push(button("Approve & sign off", () => signoff(t, a), "btn primary"));
     buttons.push(button("Request changes", () => requestChanges(t, a)));
   } else if (view === "review" && a) {
-    title = "Result waiting for review";
-    text = `${a.implementer} recorded a result. An independent reviewer usually handles this, or you can review it yourself.`;
+    title = "Next agent action: review";
+    text = `${a.implementer} recorded a durable result. Send it to a fresh independent reviewer, or review it yourself. Check the actual checkout and proof first.`;
     buttons.push(button("Record my review", () => humanReview(a)));
   } else if (view === "unresolved_items") {
     const n = t.unresolved_items.length;
@@ -681,9 +699,15 @@ function nextStep(t, view) {
     title = "Waiting on prerequisites";
     text = "It becomes ready once the tasks below are done.";
   } else if (view === "ready") {
-    title = "Ready for an agent";
-    text = "Accepted and unblocked. An agent can pick this up.";
+    title = "Next agent action: implement";
+    text = "Accepted and unblocked. An implementer can use the current checkout and relevant existing work.";
   } else return null;
+  const blocked = !t.accepted || t.unresolved_items.length || t.prerequisites?.some((p) => p.blocking) || ["deferred", "dropped"].includes(t.status);
+  if (blocked && t.attempts.some((a) => a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))) {
+    text += " A factual result is saved below; it grants no acceptance, resumption or completion.";
+    const pending = currentAttempt(t, ["review"]);
+    if (pending) buttons.push(button("Record my review", () => humanReview(pending)));
+  }
   const tone = (VIEWS[view] || VIEWS.open).tone;
   return el(
     "div",
@@ -777,6 +801,9 @@ function attemptCard(a, t) {
   );
   if (superseded) card.append(node("p", `Built against spec v${a.spec_revision}; the spec has changed since.`, "warn-text"));
   card.append(el("div", "sub", node("h4", "Evidence"), markdown(a.evidence)));
+  if (a.artifacts) card.append(el("div", "sub", node("h4", "Durable artifacts"),
+    ...a.artifacts.map((ref) => node("p", `${ref.kind}: ${ref.reference}`))));
+  if (a.verification) card.append(el("div", "sub", node("h4", "Actual verification"), markdown(a.verification)));
   if (a.review_note) card.append(el("div", "sub", node("h4", "Review by " + (a.reviewer || "reviewer")), markdown(a.review_note)));
   if (a.human_review_note) card.append(el("div", "sub", node("h4", "Your review"), markdown(a.human_review_note)));
   return card;

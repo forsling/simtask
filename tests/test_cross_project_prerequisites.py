@@ -35,7 +35,15 @@ def detail(store, identity):
 
 def signoff(store, task, context):
     attempt = store.record_result(
-        task["id"], context["workstream"]["id"], task["revision"], "builder", "Built", "Proof"
+        task["id"],
+        context["workstream"]["id"],
+        task["revision"],
+        "builder",
+        "Built",
+        "Proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_cross_project_prerequisites.py"}],
+        verification="Proof",
+        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
     )
     store.record_review(attempt["id"], 1, "independent reviewer", "pass", "Verified")
     store.signoff_task(
@@ -63,6 +71,9 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
         "remote builder",
         "Delivery",
         "Remote evidence stays remote",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_cross_project_prerequisites.py"}],
+        verification="Remote evidence stays remote",
+        specification_etag=store.get_tasks([blocker["id"]])["items"][0]["specification_etag"],
     )
     linked = store.add_prerequisite(dependent["id"], 1, blocker["id"])
     ref = linked["prerequisites"][0]
@@ -84,7 +95,11 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
     queue = store.list_tasks(a["project"]["id"], ws)["items"]
     row = next(row for row in queue if row["id"] == dependent["id"])
     assert row["prerequisites"] == [ref] and row["view"] == "prerequisites"
-    assert store.get_next_task(ws)["task"] is None
+    selected = store.get_next_action(ws)
+    if remote:
+        assert selected["action"] is None
+    else:
+        assert selected["action"] == "review" and selected["task"]["id"] == blocker["id"]
     scoped = next(
         row
         for row in store.init(str(a["workstream"]["checkout_path"]), branch="main")["queue"]
@@ -95,7 +110,7 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
     assert "Remote evidence stays remote" not in str(linked)
     store.record_review(attempt["id"], 1, "fresh reviewer", "pass", "Checked remote artifact")
     assert detail(store, dependent["id"])["prerequisites"] == [ref]
-    assert store.get_next_task(ws)["task"] is None
+    assert store.get_next_action(ws)["task"] is None
     store.signoff_task(
         blocker["id"],
         2,
@@ -107,7 +122,7 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
     now = detail(store, dependent["id"])
     assert now["revision"] == 2 and now["accepted"]
     assert now["prerequisites"] == [{**ref, "state": "done", "complete": True, "blocking": False}]
-    assert store.get_next_task(ws)["task"]["id"] == dependent["id"]
+    assert store.get_next_action(ws)["task"]["id"] == dependent["id"]
     assert now["attempts"] == []
     if remote:
         assert [row["id"] for row in queue] == [dependent["id"]]
@@ -131,7 +146,7 @@ def test_remote_noncompletion_gates_remain_blocking(context, gate):
     ref = detail(store, dependent["id"])["prerequisites"][0]
     assert ref["state"] == (gate if gate in {"deferred", "dropped"} else "open")
     assert ref["blocking"] and not ref["complete"]
-    assert store.get_next_task(a["workstream"]["id"])["task"] is None
+    assert store.get_next_action(a["workstream"]["id"])["task"] is None
 
 
 def test_observer_proposal_remote_acceptance_authority_revisions_and_audit(context):
@@ -141,7 +156,7 @@ def test_observer_proposal_remote_acceptance_authority_revisions_and_audit(conte
     proposal = store.add_prerequisite(dependent["id"], 1, blocker["id"], handling="observer")
     pending = detail(store, dependent["id"])
     assert pending["revision"] == 1 and pending["prerequisites"] == []
-    assert store.get_next_task(a["workstream"]["id"])["task"]["id"] == dependent["id"]
+    assert store.get_next_action(a["workstream"]["id"])["task"]["id"] == dependent["id"]
     store.add_unresolved(dependent["id"], 1, "Settled separately")
     with pytest.raises(TaskError, match="revision_conflict"):
         store.accept_gate_proposal(proposal["id"], 1)
