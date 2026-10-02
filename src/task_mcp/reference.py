@@ -3,7 +3,7 @@
 import hashlib
 from importlib.resources import files
 
-REFERENCE_VERSION = "1.1.0"
+REFERENCE_VERSION = "1.2.0"
 SKILLS = ("init", "feature-capture", "feature-design", "proposal-review", "superdevloop", "signoff")
 
 

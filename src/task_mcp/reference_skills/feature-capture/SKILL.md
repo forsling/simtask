@@ -28,6 +28,12 @@ architecture, authorization or costly choices; leave routine reversible details
 to the eventual implementer. Ask now only when ambiguity prevents a useful
 capture, and otherwise save the question for design.
 
+Boards and compact results show only the title, so name the observable outcome
+in about 70 characters with one main fact, not internal slugs or file names.
+Keep the body to the specification and its open questions. Progress, commits
+and evidence belong in attempts; acceptance criteria belong only in their own
+field.
+
 ## Save without making implementation ready
 
 Create a normal task with `source="agent"`, even for a user-requested feature,

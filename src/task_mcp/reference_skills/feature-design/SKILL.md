@@ -41,13 +41,17 @@ Discuss one decision at a time, starting with the one that constrains the rest.
 Answer questions and adapt the recommendation to the user's priorities. Resolve
 ordinary reversible details through research and judgment. Record meaningful
 decisions, reasons and remaining questions as the discussion progresses so a
-new session can resume; label assumptions and recommendations as such.
+new session can resume; label assumptions and recommendations as such. Fold
+each decision into the relevant part of the brief and replace superseded text
+instead of appending dated discussion notes; audit events keep prior revisions.
 
 ## Prepare the agreed work
 
 Save the resulting goal, boundaries, chosen behavior, relevant implementation
 direction, acceptance criteria and rationale with `update_task`. Editing these
-fields invalidates prior acceptance. Preserve unresolved questions and unrelated
+fields invalidates prior acceptance. Follow feature-capture's title and body
+rules for the final specification and any members; retitle only while already
+revising, since a title edit also invalidates acceptance. Preserve unresolved questions and unrelated
 gates; call `resolve_unresolved` only for settled items, with an accurate decision
 note. Keep the design gate until the requested discussion and material decisions
 are complete. If the session ends early, leave the gate and save where to resume.

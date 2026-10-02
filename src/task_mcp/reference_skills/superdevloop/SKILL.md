@@ -17,6 +17,7 @@ user requests a design discussion, fetch `get_default_skills` and follow
 Project ordering is advisory, but scope, acceptance, unresolved items, and
 prerequisites are hard gates. Never invent an accepted task or move work into
 another workstream. New work is a pending proposal in this scope or the inbox.
+Title tasks by observable outcome; keep progress and evidence out of task bodies.
 Group references are context, not executable tasks. A shared group expands only
 to concrete members owned by this workstream's project; inspect whole-group
 progress separately with `get_tasks(group_id)` or `workstream_status`.
