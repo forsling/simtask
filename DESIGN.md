@@ -49,7 +49,11 @@ an empty local slice does not imply global completion.
 ## Tasks and groups
 
 An agent-created task begins pending. A user-requested task can be created
-accepted when the request is recorded. Acceptance binds to the current task
+accepted when the request is recorded and covers its concrete specification.
+An ordinary "add a task" request can supply that authorization without a
+separate acceptance keyword; recording it does not start implementation.
+Exploratory ideas, agent-invented scope and explicit unaccepted requests remain
+pending. Acceptance binds to the current task
 specification. Editing the title, description, or acceptance criteria
 invalidates it; clearing an unresolved item or recording evidence does not.
 Readiness is derived from acceptance, unresolved items, prerequisites, scope,

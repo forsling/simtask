@@ -290,7 +290,13 @@ For a feature whose design is still open, use the two-phase path:
 init → feature-capture → feature-design → accepted implementation → review → human sign-off
 ```
 
-Say **"add a design task for X"** or **"capture this feature for later"** to use
+An ordinary **"add a task to do X"** request can authorize a concrete specification
+without a separate acceptance keyword or another approval. Record that scope
+accepted when it faithfully reflects your request; queueing it does not start
+implementation. Explicit requests to leave work unaccepted take precedence.
+Agent-suggested additions and ideas with material unresolved scope stay pending.
+
+Say **"add a design task for X"** or ask to save an exploratory idea to use
 `feature-capture`. The agent does bounded preliminary research and saves the
 desired outcome, motivation, current context, tentative scope, assumptions,
 possible directions and material open questions. You do not need to answer all

@@ -1,14 +1,34 @@
 ---
 name: task-mcp-feature-capture
-description: Capture a future feature with preliminary research and open design questions. Use for "add a design task for X" or an idea to design later; use feature-design for the interactive design discussion.
+description: Prepare an exploratory feature brief with research and open design questions. Use for "add a design task" or an idea needing design, not routine creation of a concrete task; use feature-design for the discussion.
 ---
 
 # Feature capture
 
-Turn the user's idea into a useful brief for a later design session. Capturing
-or discussing an idea authorizes this preparation, not an invented implementation.
-Use the context and decisions already supplied; do not demand answers to every
-question now or expand a clear implementation request into a design exercise.
+Turn an exploratory idea into a useful brief for a later design session. Choose
+the workflow from the user's intent and the requested scope, not whether they
+said "add", "capture" or "accept". An ordinary "add a task" request does not
+automatically ask for feature design.
+
+## Preserve concrete task authorization
+
+After `init` and checking the board and relevant specifications, when the user
+wants to queue concrete work with settled scope, record its faithful specification
+accepted with `create_task(source="user", user_request=...)`. Explicit requests
+to design first or leave work unaccepted take precedence.
+For an existing task, use `accept_task` when the request covers its exact current
+specification. No separate acceptance keyword or repeated approval is needed.
+For example, "add a task to reject blank names" can authorize that behavior.
+Queueing accepted work does not start implementation; retain the requested scope
+and execution timing. If blockers must be added in separate calls, create pending,
+add them, then record the already-given authorization with `accept_task`.
+Use ordinary task creation for this path and stop here; do not add a design gate.
+
+Keep agent-suggested additions, exploratory scope and explicit requests to leave
+work unaccepted pending. Use the design-brief path below when material decisions
+remain open or the user asks to design before implementation. Routine reversible
+implementation choices do not require a design gate. Preserve earlier decisions
+and authorization; do not infer approval of scope invented by the agent.
 
 ## Ground the brief
 
@@ -36,8 +56,9 @@ field.
 
 ## Save without making implementation ready
 
-Create a normal task with `source="agent"`, even for a user-requested feature,
-so the brief starts pending. Preserve the user's actual request in its body.
+For an exploratory design brief, create a normal task with `source="agent"`,
+even when the idea came from the user, so it starts pending. Preserve the user's
+actual request in its body.
 Use the requested scope, or the project inbox when no workstream placement was
 requested. Do not create it accepted with `source="user"`: creation and adding a
 gate are separate calls, leaving an implementation eligibility window.
@@ -54,7 +75,9 @@ design gate before revising the brief. Observer proposals are nonblocking, so
 do not use `handling="observer"` when actively capturing the requested feature.
 Completed work needs a new task; preserve deferred disposition and other gates.
 
-Do not call `accept_task` merely because the user asked to capture the feature.
+Leave an exploratory brief pending until the user's decisions cover its current
+specification. Reuse authorization already given when it covers that scope;
+a request to record an idea does not approve unresolved or agent-invented scope.
 Use the latest returned revision for each mutation. On a conflict, re-read and
 reconcile; after an uncertain create, inspect the board before retrying. If
 adding the gate fails, report the incomplete capture and leave the task pending.

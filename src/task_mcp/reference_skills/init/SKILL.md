@@ -37,7 +37,12 @@ binding the current session to it. Those calls report registered bindings and
 task state, never whether an agent is running. The older setup and `preflight`
 primitives remain available to existing clients.
 
-For "add a design task" or a feature idea to save for later, fetch
+An ordinary "add a task" request does not automatically require feature design.
+Record concrete user-authorized scope accepted without asking again; preserve
+explicit unaccepted requests and leave agent-invented scope pending. Queueing
+work does not start implementation.
+
+For "add a design task" or an exploratory feature idea to save for later, fetch
 `get_default_skills` and read/follow its `feature-capture` entry. For "let's
 design X", "review design tasks" or `designrev`, use `feature-design`.
 These are ordinary tasks with unresolved design gates; no client installation

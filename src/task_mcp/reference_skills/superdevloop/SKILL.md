@@ -13,10 +13,12 @@ session is handling other repositories. Use
 it. An empty scope or only gated tasks is a useful stop; report its diagnostics.
 Do not accept feature briefs or clear design gates to drain the queue. When the
 user requests a design discussion, fetch `get_default_skills` and follow
-`feature-design`; save newly suggested future features through `feature-capture`.
+`feature-design`; save exploratory feature ideas through `feature-capture`.
 Project ordering is advisory, but scope, acceptance, unresolved items, and
 prerequisites are hard gates. Never invent an accepted task or move work into
-another workstream. New work is a pending proposal in this scope or the inbox.
+another workstream. Agent-suggested new work is a pending proposal in this scope
+or the inbox. Concrete user-requested additions retain authorization for their
+exact scope without another approval; respect explicit unaccepted requests.
 Title tasks by observable outcome; keep progress and evidence out of task bodies.
 Group references are context, not executable tasks. A shared group expands only
 to concrete members owned by this workstream's project; inspect whole-group

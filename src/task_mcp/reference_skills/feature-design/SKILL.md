@@ -8,7 +8,9 @@ description: Research and interactively design captured features with alternativ
 Turn a captured feature into an informed, agreed specification. The user may
 approve choices during the conversation; retain that authorization instead of
 asking them to repeat it. Choosing an approach does not by itself authorize
-unmentioned scope or implementation.
+unmentioned scope or implementation. A concrete "add a task" request does not
+require this workflow when its scope is already settled; preserve authorization
+for that exact specification without a separate acceptance keyword.
 
 ## Find and resume the design
 

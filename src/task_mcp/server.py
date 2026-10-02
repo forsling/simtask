@@ -51,12 +51,12 @@ def create_server(store: Store) -> MCPServer:
             "implementer records ordinary review; human_review requires an actual user "
             "instruction. signoff_task requires the user's informed verdict. Actor labels and "
             "human assertions are not authenticated. Reads append local audit events. "
-            "For 'add a design task' or capturing a future feature, fetch get_default_skills "
+            "Concrete 'add a task' requests retain authorization; queueing does not start work. "
+            "For 'add a design task' or an exploratory feature idea, fetch get_default_skills "
             "and follow feature-capture. For 'let's design X', 'review design tasks', or "
             "designrev, fetch it and follow feature-design (not implementation review). "
-            "These workflows use pending tasks and unresolved design gates, not a separate "
-            "task type. get_default_skills returns canonical skill content to read and follow; "
-            "no client skill installation is required."
+            "Exploratory briefs use pending tasks and unresolved design gates. "
+            "Catalog skills need no client installation."
         ),
     )
     # Audited reads and append-only writes both change local state. A revision or
@@ -250,7 +250,10 @@ def create_server(store: Store) -> MCPServer:
         group_id: str | None = None,
         group_expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        """Create a local task; group membership also requires the group's read revision."""
+        """source=user accepts the recorded specification; source=agent stays pending.
+
+        Group membership also requires the group's read revision.
+        """
         return store.create_task(
             project,
             title,
@@ -467,7 +470,8 @@ def create_server(store: Store) -> MCPServer:
     def get_default_skills() -> dict[str, Any]:
         """Return canonical skill content with version/hash; read the matching entry to use it.
 
-        Follow feature-capture for 'add a design task' or saving a feature idea;
+        Concrete 'add a task' requests retain authorization without another approval.
+        Follow feature-capture for 'add a design task' or an exploratory feature idea;
         feature-design for 'let's design X', 'review design tasks' or designrev.
         Proposal review, implementation review and sign-off are separate workflows.
         No client installation is needed.
