@@ -185,6 +185,71 @@ def test_attempt_history_does_not_misrepresent_current_workstream_or_spec(contex
     assert "- State: rework" in text and "> Fix the edge case" in text
 
 
+@pytest.mark.parametrize("format", ["markdown", "legacy"])
+def test_export_retains_structured_proof_and_historical_text(context, tmp_path, format):
+    store, _, ws = context
+    task = create(context, "Recoverable proof")
+    historical = result(context, task)
+    legacy_notes = "Historical plain evidence\nRecorded before structured proof."
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE attempts SET evidence=? WHERE id=?", (legacy_notes, historical["id"]))
+
+    artifact = tmp_path / "durable-proof.txt"
+    artifact.write_text("Verified fixture output\n")
+    assert artifact.read_text() == "Verified fixture output\n"
+    references = [
+        {"kind": "commit", "reference": "1234567890abcdef1234567890abcdef12345678"},
+        {"kind": "artifact", "reference": str(artifact)},
+    ]
+    verification = "Read durable-proof.txt: expected fixture output matched.\nLimit: fixture only."
+    evidence = "Context notes without the artifact references or verification."
+    checked = current(store, task)
+    recorded = store.record_result(
+        task["id"],
+        ws,
+        checked["revision"],
+        "proof worker",
+        "Durable fixture result",
+        evidence,
+        artifacts=references,
+        verification=verification,
+        specification_etag=checked["specification_etag"],
+    )
+    assert verification not in evidence
+    assert all(item["reference"] not in evidence for item in references)
+    expected_attempts = current(store, task)["attempts"]
+    before = business_state(store)
+    exported = (
+        store.export_workstream(ws)
+        if format == "markdown"
+        else store.export_workstream(ws, format="legacy")
+    )
+    text = exported["content"]
+    if format == "markdown":
+        section = text.split(f"##### Attempt `{recorded['id']}`\n", 1)[1].split(
+            "\n##### Attempt ", 1
+        )[0]
+        assert f"> {evidence}" in section
+        for item in references:
+            assert f"> {item['kind']}: {item['reference']}" in section
+        assert "> " + verification.replace("\n", "\n> ") in section
+        assert checked["specification_etag"] in section
+        assert "> " + legacy_notes.replace("\n", "\n> ") in text
+    else:
+        structured = json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])
+        assert structured["attempts"] == expected_attempts
+        proof = next(item for item in structured["attempts"] if item["id"] == recorded["id"])
+        assert proof["evidence"] == evidence
+        assert proof["artifacts"] == references
+        assert proof["verification"] == verification
+        assert proof["specification_etag"] == checked["specification_etag"]
+        legacy = next(item for item in structured["attempts"] if item["id"] == historical["id"])
+        assert legacy["evidence"] == legacy_notes and "artifacts" not in legacy
+    assert exported == store.export_workstream(ws, format=format)
+    assert exported["sha256"] == hashlib.sha256(text.encode()).hexdigest()
+    assert business_state(store) == before
+
+
 def test_export_shared_groups_respect_local_scope_and_filter(context, tmp_path):
     store, project, ws = context
     remote = store.init_project(str(tmp_path / "remote"), branch="main", confirmed=True)

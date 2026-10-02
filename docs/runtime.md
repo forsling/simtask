@@ -1,7 +1,7 @@
 # Runtime identity and stale capabilities
 
 This document describes the isolated candidate's protocol
-revision `4` and database schema revision `3`. The protected live service remains
+revision `6` and database schema revision `3`. The protected live service remains
 on revision `1` until coordinated rollout; its runtime identity should still
 report `1` for both fields. During that protected period, use candidate code only with explicit disposable databases and
 prepare companion skills without installing or reloading them. Keep the live
@@ -18,7 +18,7 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`5` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Candidate 5 adds global concrete prerequisites and compact blocker references; the database stays at schema 3. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`6` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Candidate 6 adds full-spec-bound structured durable proof and replaces `get_next_task` with `get_next_action`; the database stays at schema 3. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
@@ -63,6 +63,14 @@ Board/queue envelopes return `project_order_revision`; creation appends tasks an
 advances it, while reads/no-op moves never advance it. Candidate schema 0/1/2
 upgrades use a fresh verified `*.pre-schema-3.*.sqlite3` online backup before DDL,
 with transactional rollback and all prior columns/rows preserved.
+
+Protocol revision `5` adds global concrete prerequisites and compact blocker
+references. Protocol revision `6` requires full-spec-bound artifact/commit
+references and actual verification for factual result recording, without
+clearing workflow gates. It replaces the implementation-only `get_next_task`
+with `get_next_action`, selecting eligible implementation or one complete local
+pending review in shared project order. Both revisions retain database schema
+revision `3`.
 
 ## Minimum reliable reconnect procedure
 

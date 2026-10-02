@@ -190,6 +190,17 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
             )
             _section(lines, "Result", attempt["summary"], level=6)
             _section(lines, "Evidence", attempt["evidence"], level=6)
+            if artifacts := attempt.get("artifacts"):
+                _section(
+                    lines,
+                    "Artifact and commit references",
+                    "\n".join(f"{item['kind']}: {item['reference']}" for item in artifacts),
+                    level=6,
+                )
+            if verification := attempt.get("verification"):
+                _section(lines, "Verification", verification, level=6)
+            if specification_etag := attempt.get("specification_etag"):
+                _section(lines, "Checked specification token", specification_etag, level=6)
             if attempt["reviewer"]:
                 lines.extend([f"Reviewer: {_inline(attempt['reviewer'])}", ""])
             if attempt["review_note"]:
