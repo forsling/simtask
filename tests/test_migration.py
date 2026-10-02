@@ -53,7 +53,9 @@ def legacy_database(database, version):
     )
     attempt = store.record_result(done["id"], ws, 1, "worker", "Delivered", "Exact proof")
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Checked")
-    store.signoff_task(done["id"], 2, "approve", "Legacy human verdict", attempt["id"])
+    store.signoff_task(
+        done["id"], 2, "approve", "Legacy human verdict", attempt["id"], expected_attempt_revision=2
+    )
     # Keep a connection open: the migration must back up committed WAL content,
     # rather than assuming a copy of just the main file is sufficient.
     db = sqlite3.connect(database)

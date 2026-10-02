@@ -1,4 +1,4 @@
-"""Exercise the real stdio MCP interface against a disposable v1 database."""
+"""Exercise the real stdio MCP interface against a disposable explicit database."""
 
 import asyncio
 import hashlib
@@ -29,6 +29,16 @@ async def exercise(database: Path):
         assert {"init", "workstream_status", "create_group", "list_groups", "add_group_member"} <= {
             tool.name for tool in tools
         }
+        signoff_schema = next(tool.input_schema for tool in tools if tool.name == "signoff_task")
+        assert signoff_schema["properties"]["decision"]["enum"] == [
+            "approve",
+            "rework",
+            "revise",
+            "drop",
+            "defer",
+        ]
+        assert "expected_attempt_revision" in signoff_schema["required"]
+        assert not {"verdict", "rejection"} & signoff_schema["properties"].keys()
         print(f"Connected over stdio; discovered {len(tools)} tools.")
 
         async def call(name, **arguments):
@@ -113,10 +123,81 @@ async def exercise(database: Path):
             task_id=task_id,
             expected_revision=current["revision"],
             attempt_id=result["id"],
-            verdict="approve",
+            decision="approve",
+            expected_attempt_revision=reviewed["revision"],
             user_note="Synthetic demo approval, not a real user verdict.",
         )
         assert signed["status"] == "done"
+        signed_full = (await call("get_tasks", ids=[task_id]))["items"][0]
+        assert signed_full["signoff_decisions"][0]["decision_ref"] == signed["decision_ref"]
+        for decision in ("rework", "revise", "drop", "defer"):
+            item = await call(
+                "create_task",
+                project=project_id,
+                title=f"Signoff {decision}",
+                approval={"basis": "delegated", "note": "Synthetic authority within this goal"},
+                workstream_id=workstream_id,
+                scope="workstream",
+            )
+            built = await call(
+                "record_result",
+                task_id=item["id"],
+                workstream_id=workstream_id,
+                expected_revision=1,
+                implementer="builder",
+                summary="Synthetic result",
+                evidence="Synthetic proof",
+            )
+            await call(
+                "record_review",
+                attempt_id=built["id"],
+                expected_revision=1,
+                reviewer="separate reviewer",
+                verdict="pass",
+                note="Synthetic independent review",
+            )
+            extras = (
+                {"specification_question": "Which actual scope should replace this?"}
+                if decision == "revise"
+                else {}
+            )
+            judged = await call(
+                "signoff_task",
+                task_id=item["id"],
+                expected_revision=2,
+                attempt_id=built["id"],
+                expected_attempt_revision=2,
+                decision=decision,
+                user_note="Synthetic actual user decision",
+                **extras,
+            )
+            details = (await call("get_tasks", ids=[item["id"]]))["items"][0]
+            record = details["signoff_decisions"][0]
+            assert record["decision_ref"] == judged["decision_ref"]
+            assert record["result_judgment"] == ("rework" if decision == "rework" else "not_judged")
+            assert details["spec_revision"] == 1
+            if decision == "drop":
+                rejected = await client.call_tool(
+                    "set_disposition",
+                    {
+                        "task_id": item["id"],
+                        "expected_revision": judged["revision"],
+                        "disposition": "open",
+                        "note": "Restore",
+                    },
+                )
+                assert rejected.is_error and "revival_authorization_required" in str(
+                    rejected.content
+                )
+                revived = await call(
+                    "set_disposition",
+                    task_id=item["id"],
+                    expected_revision=judged["revision"],
+                    disposition="open",
+                    note="Restore",
+                    authorization="Synthetic actual revival instruction",
+                )
+                assert not revived["accepted"]
         # User origin preserves the request without approving an exploratory spec.
         draft = await call(
             "create_task",
@@ -249,7 +330,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.5.0"
+        assert catalog["version"] == "1.6.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

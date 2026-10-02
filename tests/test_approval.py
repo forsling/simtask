@@ -146,10 +146,15 @@ def test_withdrawal_retains_spec_decisions_proof_and_reapproval_reuses_review(co
     assert store.list_tasks(project, ws)["items"][0]["view"] == "pending_acceptance"
     with pytest.raises(TaskError, match="task_not_eligible"):
         store.record_result(created["id"], ws, after["revision"], "worker", "Another", "Proof")
-    for verdict in ("approve", "reject"):
+    for verdict in ("approve", "rework"):
         with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
             store.signoff_task(
-                created["id"], after["revision"], verdict, "Synthetic verdict", attempt["id"]
+                created["id"],
+                after["revision"],
+                verdict,
+                "Synthetic verdict",
+                attempt["id"],
+                expected_attempt_revision=2,
             )
     with sqlite3.connect(store.path) as db:
         event = db.execute(
@@ -171,6 +176,7 @@ def test_withdrawal_retains_spec_decisions_proof_and_reapproval_reuses_review(co
         "approve",
         "Synthetic informed verdict",
         attempt["id"],
+        expected_attempt_revision=2,
     )
     for operation in (
         lambda: store.withdraw_acceptance(created["id"], done["revision"], "Reopen"),
@@ -228,7 +234,12 @@ def test_real_spec_changes_keep_prior_review_on_its_original_revision(context):
     assert detail(store, created)["attempts"][0]["spec_revision"] == 1
     with pytest.raises(TaskError, match="review_required"):
         store.signoff_task(
-            created["id"], accepted["revision"], "approve", "Synthetic verdict", attempt["id"]
+            created["id"],
+            accepted["revision"],
+            "approve",
+            "Synthetic verdict",
+            attempt["id"],
+            expected_attempt_revision=2,
         )
 
 

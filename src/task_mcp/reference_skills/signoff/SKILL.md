@@ -5,18 +5,51 @@ description: Present reviewed implementation attempts for informed human sign-of
 
 # Sign-off
 
-Fetch the full task and reviewed attempts. Present what was built, the actual
-verification and review evidence, material limitations, and the exact attempt
-the user is judging. Ask for the user's informed verdict. Call `signoff_task`
-only after that explicit verdict, selecting one passed or human-reviewed
-attempt. Approval completes the project-owned task. Rejection with `rework` means the accepted
-specification remains correct and the attempt needs repair and fresh review.
-Once complete, the task is immutable; capture later requirements as new tasks.
-Rejection with `revise` invalidates acceptance and adds an unresolved item for
-the requested change. A shared group's completion derives from every member's
-completion across its projects; local task completion alone may leave it open.
-There is no separate group sign-off. The service records assertions but cannot
-authenticate the user or prove reviewer independence.
+Fetch the full task with `get_tasks(ids=[...])` and select its passed or
+explicitly human-reviewed current-spec attempt. Present the task's purpose,
+`acceptance_basis`, supporting `approval_decision` (actual note and decision
+reference), and whether it is currently accepted separately from the result,
+verification, independent review and material limitations. Specific approval
+already answers purpose for this scope and can be reused. Delegated or unknown
+approval needs an actual purpose judgment now; never infer it from origin or
+old prose. One informed approval may cover both purpose and result. Do not ask
+for two ceremonial confirmations.
+
+Only after the user's explicit informed verdict call `signoff_task` with the
+last-read task `expected_revision`, selected `attempt_id` and its
+`expected_attempt_revision`, actual `user_note`, and one `decision`:
+
+- `approve`: accepts purpose and result and completes the task. Current
+  acceptance, applicable passed/human-reviewed attempt and clear completion
+  gates are required. Completed tasks are immutable.
+- `rework`: purpose remains approved; repair this implementation, record a new
+  result and obtain fresh review. The selected attempt goes to rework.
+- `revise`: withdraw approval and pass the actual concrete
+  `specification_question`. The sound reviewed result survives. Recording this
+  verdict does not edit requirements or advance `spec_revision`; later real
+  edits do.
+- `drop`: deactivate approval and keep history, context and proof. Revival
+  requires an actual supporting authorization and current specification approval.
+- `defer`: pause while retaining approval, context and proof for resumption.
+
+`revise`, `drop` and `defer` leave human result quality `not_judged` by default.
+Only when the user separately supplied an actual technical judgment pass
+`result_judgment="accepted"` or `"rework"` and the actual `result_note`.
+Independent review remains its own evidence; a direction change alone does not
+make a sound attempt rework. `approve` itself covers purpose and result;
+`rework` itself retains purpose and judges the implementation in need of repair.
+The service records assertions, not authenticated identity or proven reviewer
+independence. Do not sign off on behalf of the user.
+
+Signoff and ordinary `set_disposition` return compact IDs, revisions, disposition
+and any new `unresolved_id`; signoff also returns `decision_ref` and selected
+attempt continuation state. Use deliberate `get_tasks` reads for proof,
+`approval_decision` and structured `signoff_decisions`, or detailed `list_events`
+for original audit snapshots. Ordinary drop/defer needs no reviewed attempt;
+drop deactivates approval, defer retains it, and leaving dropped status requires
+`authorization` with the actual revival instruction. Neither dropped nor
+deferred work satisfies a prerequisite. Shared-group completion still needs all
+members human signed off across projects; there is no separate group sign-off.
 
 Task origin/request metadata never grants acceptance. Creation, amendment and standalone
 `accept_task` use the same `approval={"basis": "specific" | "delegated", "note":

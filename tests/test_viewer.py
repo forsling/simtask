@@ -134,6 +134,7 @@ def test_browse_edit_conflicts_and_decisions(viewer):
                 "expected_revision": task["revision"],
                 "disposition": disposition,
                 "note": "Explicit synthetic decision",
+                "authorization": "Synthetic actual revival instruction",
             },
         )
         assert status == 200 and task["status"] == disposition
@@ -149,7 +150,8 @@ def test_review_and_signoff_use_separate_revisions_and_store_gates(viewer):
         "task_id": task["id"],
         "expected_revision": 2,
         "attempt_id": attempt["id"],
-        "verdict": "approve",
+        "decision": "approve",
+        "expected_attempt_revision": 2,
         "user_note": "I approve",
     }
     assert request(server, "/api/signoff", signoff)[0] == 400
@@ -460,5 +462,56 @@ def test_approved_and_draft_amendment_http_flow(viewer):
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
 def test_creation_amendment_approval_and_withdrawal_form_handlers():
     script = Path(__file__).with_name("viewer_approval.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "decision,disposition",
+    [
+        ("approve", "done"),
+        ("rework", "rework"),
+        ("revise", "open"),
+        ("drop", "dropped"),
+        ("defer", "deferred"),
+    ],
+)
+def test_purpose_result_decisions_over_real_viewer_transport(viewer, decision, disposition):
+    server, store, context = viewer
+    task = create(
+        server, context, approval={"basis": "delegated", "note": "Actual delegated authority"}
+    )
+    attempt = store.record_result(
+        task["id"], context["workstream"]["id"], 1, "worker", "Result", "Actual evidence"
+    )
+    store.record_review(attempt["id"], 1, "reviewer", "pass", "Independent review")
+    data = {
+        "task_id": task["id"],
+        "expected_revision": 2,
+        "attempt_id": attempt["id"],
+        "expected_attempt_revision": 1,
+        "decision": decision,
+        "user_note": "Actual synthetic verdict",
+    }
+    assert request(server, "/api/signoff", data)[0] == 409
+    data["expected_attempt_revision"] = 2
+    if decision == "revise":
+        data["specification_question"] = "Which behavior should replace this?"
+    status, ack = request(server, "/api/signoff", data)
+    assert status == 200 and ack["status"] == disposition
+    assert not {"attempts", "body", "signoff_decisions"} & ack.keys()
+    saved = request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
+    judgment = saved["signoff_decisions"][0]
+    assert judgment["decision_ref"] == ack["decision_ref"]
+    assert judgment["purpose_source"] == "user_verdict"
+    assert judgment["result_judgment"] == {"approve": "accepted", "rework": "rework"}.get(
+        decision, "not_judged"
+    )
+    assert saved["attempts"][0]["review_note"] == "Independent review"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_frontend_purpose_result_decision_forms():
+    script = Path(__file__).with_name("viewer_signoff.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr

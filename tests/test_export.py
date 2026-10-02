@@ -49,7 +49,12 @@ def finish(context, task):
     attempt = result(context, task)
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Independently checked")
     store.signoff_task(
-        task["id"], current(store, task)["revision"], "approve", "Synthetic approval", attempt["id"]
+        task["id"],
+        current(store, task)["revision"],
+        "approve",
+        "Synthetic approval",
+        attempt["id"],
+        expected_attempt_revision=2,
     )
     return attempt
 

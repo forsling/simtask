@@ -1,9 +1,9 @@
 # Runtime identity and stale capabilities
 
-This document describes the isolated candidate's protocol and database schema
-revision `2`. The protected live service remains on revision `1` until coordinated
-rollout; its runtime identity should still report `1` for both fields. During that
-protected period, use candidate code only with explicit disposable databases and
+This document describes the isolated candidate's protocol
+revision `3` and database schema revision `2`. The protected live service remains
+on revision `1` until coordinated rollout; its runtime identity should still
+report `1` for both fields. During that protected period, use candidate code only with explicit disposable databases and
 prepare companion skills without installing or reloading them. Keep the live
 executable, database and connections unchanged.
 
@@ -18,7 +18,7 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`2` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for an incompatible contract change. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`3` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for an incompatible contract change. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
@@ -43,8 +43,15 @@ success or rollback. A database with a higher revision is rejected rather than
 downgraded. Future storage migrations must advance the revision after their
 checks pass.
 
-Protocol and database schema revision `2` introduce independent persisted origin,
-classified `{basis, note}` approval for create/accept, and audited withdrawal.
+Database schema revision `2` introduces independent persisted origin,
+classified `{basis, note}` approval and audited withdrawal. Protocol revision
+`3` introduces the incompatible `signoff_task` decision/attempt-revision contract
+and explicit dropped-task revival authorization. Separate purpose/result
+judgments, exact judged revisions and reused approval event references are
+persisted in existing immutable audit JSON; no new DDL or schema bump is needed.
+Existing legacy signoff events remain unchanged and are never backfilled with
+inferred judgments. Full task reads expose new structured `signoff_decisions`
+and supporting `approval_decision`; detailed audit reads retain older records.
 Roll out code, stored schema, companion skills and refreshed client tool catalogs
 together, then use the reconnect procedure below to verify the affected client.
 

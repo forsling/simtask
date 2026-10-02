@@ -64,3 +64,13 @@ pending spec leaves spec revision unchanged. Compact update acknowledgements
 report `changed`, `spec_changed`, `approval_changed`, revisions and gates.
 Approval grants no scope, prerequisite satisfaction, review, completion or
 execution. Attempts and reviews remain proof only for their original spec.
+
+Signoff judges task purpose and delivered quality separately. Present the
+approval basis and actual supporting decision beside review evidence. One
+informed user decision covers both when appropriate: `approve`, `rework`,
+`revise`, `drop` or `defer`. Revise withdraws approval and adds a concrete
+question without changing spec revision; drop withdraws approval; defer keeps
+it. Direction changes default to human technical quality not judged and preserve
+sound proof. Ordinary drop/defer requires no reviewed attempt. Leaving dropped
+status requires actual `authorization`; reactivation also needs current spec
+approval. Read the packaged `signoff` workflow before recording a verdict.

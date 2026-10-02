@@ -57,7 +57,8 @@ delegated approval requires actual authority to select work within a stated
 goal. Explicit pending/design-first requests take precedence. Queueing starts
 no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
-state. Schema/protocol revision 2 intentionally changes the client contract.
+state. Database schema revision 2 preserves this data; candidate protocol 3
+adds the purpose/result signoff contract described below.
 
 Acceptance binds to the current specification. `update_task` atomically saves
 title/body/criteria amendments and optional exact-scope specific/delegated
@@ -196,3 +197,15 @@ cross-project concrete task prerequisites, joint attempts, synchronized lifecycl
 rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
+
+Candidate purpose/result signoff (protocol 3, database schema 2) uses one human
+`approve`/`rework`/`revise`/`drop`/`defer` decision. Specific current-scope purpose
+approval references its actual classified audit decision; delegated/unknown
+purpose is judged by the user's informed signoff decision. Direction-only
+changes preserve sound attempts and leave human technical quality unjudged
+unless separately supplied. Revise withdraws approval and opens a concrete
+question without a fabricated spec revision; drop withdraws approval and needs
+actual authority for revival; defer retains approval. Both remain unsatisfied
+prerequisites. Exact task/spec/attempt revisions and separate judgments live in
+immutable audit records, while full task reads deliberately expose proof and
+decision references. No storage DDL is added for this change.

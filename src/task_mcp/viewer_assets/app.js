@@ -644,7 +644,7 @@ function nextStep(t, view) {
     text = "This task is complete. A new requirement becomes a new task.";
   } else if (view === "deferred" || view === "dropped") {
     title = view === "deferred" ? "Deferred" : "Dropped";
-    text = "The specification and history are kept. Resume to put it back in the queue.";
+    text = t.status === "dropped" ? "History and proof are kept. Revival needs actual authorization, then current specification approval." : "Approval, context and proof are kept for resumption.";
     buttons.push(button("Resume task", () => disposition(t, "open", "Resume"), "btn primary"));
   } else if (view === "pending_acceptance" || t.accepted === false) {
     title = "Accept this spec to unblock work";
@@ -653,7 +653,7 @@ function nextStep(t, view) {
     buttons.push(button("Edit first", () => editTask(t)));
   } else if (view === "signoff" && a) {
     title = "Ready for your sign-off";
-    text = `${a.implementer}'s result has been reviewed. Check it against the acceptance criteria below.`;
+    text = `${a.implementer}'s result has been reviewed. Judge the task purpose and the result below; one informed decision can cover both.`;
     buttons.push(button("Approve & sign off", () => signoff(t, a), "btn primary"));
     buttons.push(button("Request changes", () => requestChanges(t, a)));
   } else if (view === "review" && a) {
@@ -714,9 +714,18 @@ function body(t) {
   criteria.classList.add("criteria");
   out.push(section("Acceptance criteria", criteria));
   if (t.user_request) out.push(section(`Request (${t.source || "unknown"} origin)`, markdown(t.user_request)));
-  if (t.acceptance_note) {
-    const note = el("details", "fold", node("summary", t.accepted ? `Acceptance (${t.acceptance_basis || "unknown"})` : "Previous acceptance (currently unaccepted)"), markdown(t.acceptance_note));
-    out.push(note);
+  out.push(section("Purpose and approval", purposeSummary(t)));
+  if (t.signoff_decisions?.length) {
+    const history = el("details", "fold", node("summary", `Sign-off decisions (${t.signoff_decisions.length})`));
+    for (const d of t.signoff_decisions) {
+      history.append(el("div", "sub",
+        node("h4", `${d.decision} · ${d.disposition}`),
+        node("p", `Task revision ${d.task_revision}, spec ${d.spec_revision}; attempt ${d.attempt_id}, revision ${d.attempt_revision}. Decision ${d.decision_ref}.`),
+        node("p", `Purpose: ${d.purpose_judgment} (${d.purpose_source.replaceAll("_", " ")})${d.reused_approval_decision_ref ? `; reused approval decision ${d.reused_approval_decision_ref}` : ""}.`),
+        node("p", `Human result quality: ${d.result_judgment.replaceAll("_", " ")}. Independent review remains in the result evidence.`),
+        markdown(d.user_note), d.result_note ? markdown(d.result_note) : null));
+    }
+    out.push(history);
   }
   const view = state.rows.find((r) => r.id === t.id)?.view;
   const requiredStates = view === "signoff" ? ["passed", "human_review"] : view === "review" ? ["review"] : null;
@@ -995,7 +1004,15 @@ function decision({ title, description, action, data, key, label, submit, danger
       payload.approval = { basis: "specific", note: payload[key] };
       delete payload[key];
     }
-    if (values.has("rejection")) payload.rejection = values.get("rejection");
+    if (action === "signoff") {
+      payload.decision = values.get("decision") || data.decision;
+      if (payload.decision === "revise") payload.specification_question = values.get("specification_question");
+      if (["revise", "drop", "defer"].includes(payload.decision)) {
+        payload.result_judgment = values.get("result_judgment") || "not_judged";
+        if (payload.result_judgment !== "not_judged") payload.result_note = values.get("result_note");
+      }
+    }
+    if (values.has("authorization")) payload.authorization = values.get("authorization");
     try {
       return await api(action, payload);
     } catch (e) {
@@ -1077,13 +1094,16 @@ function resolve(t, q) {
 function disposition(t, value, label) {
   decision({
     title: `${label} this task?`,
-    description: "The spec and history are kept either way.",
+    description: value === "dropped" ? "Dropping deactivates approval; history and proof survive. Revival will need actual authorization." : "Approval, context and proof are kept. A revived dropped task needs current specification approval.",
     action: "disposition",
     data: { task_id: t.id, expected_revision: t.revision, disposition: value },
     key: "note",
     label: "Reason",
     submit: label,
     danger: value === "dropped",
+    before: () => {
+      if (t.status === "dropped" && value !== "dropped") field("authorization", "Actual instruction authorizing revival");
+    },
   });
 }
 function humanReview(a) {
@@ -1097,47 +1117,62 @@ function humanReview(a) {
     submit: "Record review",
   });
 }
-function signoff(t, a) {
-  decision({
-    title: "Sign off this task?",
-    description: `Approves ${a.implementer}'s result and completes “${t.title}”. This can't be undone.`,
-    action: "signoff",
-    data: { task_id: t.id, expected_revision: t.revision, attempt_id: a.id, verdict: "approve" },
-    key: "user_note",
-    label: "Sign-off note",
-    submit: "Approve & sign off",
-  });
+function purposeSummary(t) {
+  const approval = t.approval_decision;
+  const specific = t.accepted && t.acceptance_basis === "specific" && approval?.active;
+  return el("div", "",
+    node("p", `Approval basis: ${t.acceptance_basis || "unknown"}. ${specific ? "Purpose already approved for this exact scope; that decision can be reused." : "An actual purpose judgment is needed. Approve accepts both purpose and result; rework retains purpose approval."}`),
+    approval ? node("p", `Supporting approval decision ${approval.decision_ref} · task revision ${approval.task_revision}, spec ${approval.spec_revision}${approval.active ? "" : " (inactive)"}.`) : node("p", "No classified supporting approval decision is recorded."),
+    t.acceptance_note ? markdown(t.acceptance_note) : null);
 }
-function requestChanges(t, a) {
+function signoff(t, a, initial = "approve") {
   decision({
-    title: "Request changes",
-    description: "Send the result back. Choose what needs to change.",
+    title: "Judge purpose and result",
+    description: `“${t.title}” · spec ${t.spec_revision}. Result ${a.id} · revision ${a.revision}. Approve completes the task and cannot be undone.`,
     action: "signoff",
-    data: { task_id: t.id, expected_revision: t.revision, attempt_id: a.id, verdict: "reject" },
+    data: { task_id: t.id, expected_revision: t.revision, attempt_id: a.id,
+      expected_attempt_revision: a.revision, decision: initial },
     key: "user_note",
-    label: "What needs to change",
-    submit: "Request changes",
+    label: "Your decision and reason",
+    submit: "Record decision",
     before: () => {
-      const group = el("fieldset", "choices");
-      group.append(node("legend", "What should happen"));
-      [
-        ["rework", "Rework the implementation", "The accepted spec stays; the result goes back for rework."],
-        ["revise", "Revise the spec", "Acceptance is withdrawn and your note becomes an open question."],
-      ].forEach(([value, title, text], i) => {
-        const l = node("label", undefined, "choice");
-        const r = node("input");
-        r.type = "radio";
-        r.name = "rejection";
-        r.value = value;
-        r.required = true;
-        r.checked = i === 0;
-        l.append(r, el("span", "", node("strong", title), node("small", text)));
-        group.append(l);
-      });
-      $("fields").append(group);
+      $("fields").append(section("Purpose and approval", purposeSummary(t)),
+        section("Reviewed result", el("div", "", markdown(a.summary || ""),
+          node("p", a.state === "human_review" ? "Actual human review recorded." : `Independent review by ${a.reviewer || "reviewer"}.`),
+          markdown(a.review_note || a.human_review_note || ""))));
+      const choice = node("select");
+      choice.id = "field-decision"; choice.name = "decision";
+      for (const [value, label] of [
+        ["approve", "Approve purpose and result; complete"],
+        ["rework", "Purpose approved; repair implementation and review again"],
+        ["revise", "Revise requirements; withdraw approval and ask a question"],
+        ["drop", "Drop task; deactivate approval and keep proof"],
+        ["defer", "Defer task; retain approval and proof"],
+      ]) {const option = node("option", label); option.value = value; choice.append(option);}
+      choice.value = initial;
+      $("fields").append(el("div", "field", node("label", "Decision"), choice));
+      const question = field("specification_question", "Concrete specification question", "", "textarea", false);
+      const quality = node("select"); quality.id = "field-result_judgment"; quality.name = "result_judgment";
+      for (const [value, label] of [["not_judged", "Human technical quality not judged"], ["accepted", "User separately judged result sound"], ["rework", "User separately requested technical rework"]]) {
+        const option = node("option", label); option.value = value; quality.append(option);
+      }
+      quality.value = "not_judged";
+      const qualityField = el("div", "field", node("label", "Separate actual quality judgment (optional)"), quality);
+      $("fields").append(qualityField);
+      const qualityNote = field("result_note", "Actual separate quality judgment", "", "textarea", false);
+      const sync = () => {
+        const direction = ["revise", "drop", "defer"].includes(choice.value);
+        question.parentElement.hidden = choice.value !== "revise";
+        question.disabled = choice.value !== "revise"; question.required = choice.value === "revise";
+        qualityField.hidden = !direction; quality.disabled = !direction;
+        const judged = direction && quality.value !== "not_judged";
+        qualityNote.parentElement.hidden = !judged; qualityNote.disabled = !judged; qualityNote.required = judged;
+      };
+      choice.onchange = sync; quality.onchange = sync; sync();
     },
   });
 }
+function requestChanges(t, a) { signoff(t, a, "rework"); }
 function editTask(t) {
   if (!t || t.object_type !== "task" || t.status === "done") return;
   let revision = t.revision;

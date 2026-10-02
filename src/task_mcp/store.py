@@ -195,7 +195,7 @@ class Store:
         return db
 
     def _event(self, db, action, request, scope, outcome, error=None):
-        db.execute(
+        cursor = db.execute(
             """INSERT INTO events
             (timestamp, actor, action, outcome, project_id, task_id, request_json,
              before_json, after_json, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -213,14 +213,18 @@ class Store:
             ),
         )
 
+        return cursor.lastrowid
+
     def _run(self, action: str, request: dict, operation: Callable) -> Any:
         scope: dict = {}
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
                 result = operation(db, scope)
-                self._event(db, action, request, scope, "ok")
+                decision_ref = self._event(db, action, request, scope, "ok")
                 db.commit()
+                if action == "task.signoff":
+                    result = {**result, "decision_ref": decision_ref}
                 return result
             except TaskError as exc:
                 db.rollback()
@@ -1175,6 +1179,38 @@ class Store:
         )
 
     @staticmethod
+    def _approval_decision(db, task):
+        """Reference a real classified approval event; never infer authority from prose."""
+        for row in db.execute(
+            "SELECT sequence,timestamp,action,request_json,after_json FROM events "
+            "WHERE task_id=? AND outcome='ok' "
+            "AND action IN ('task.created','task.accepted','task.updated') ORDER BY sequence DESC",
+            (task["id"],),
+        ):
+            request = json.loads(row["request_json"])
+            approval = request.get("approval")
+            after = json.loads(row["after_json"] or "null") or {}
+            after = after.get("task", after)
+            if (
+                isinstance(approval, dict)
+                and approval.get("basis") in {"specific", "delegated"}
+                and after.get("id") == task["id"]
+                and after.get("accepted_spec_revision") == task["spec_revision"]
+                and approval.get("basis") == task["acceptance_basis"]
+                and approval.get("note") == task["acceptance_note"]
+            ):
+                return {
+                    "decision_ref": row["sequence"],
+                    "timestamp": row["timestamp"],
+                    "action": row["action"],
+                    "task_revision": after["revision"],
+                    "spec_revision": task["spec_revision"],
+                    **approval,
+                    "active": task["accepted"],
+                }
+        return None
+
+    @staticmethod
     def _details(db, task):
         task = dict(task)
         task["accepted"] = (
@@ -1236,6 +1272,22 @@ class Store:
                 },
             }
             task["complete"] = bool(members) and task["progress"]["remaining"] == 0
+        task["approval_decision"] = Store._approval_decision(db, task)
+        task["signoff_decisions"] = []
+        for row in db.execute(
+            "SELECT sequence,timestamp,after_json FROM events WHERE task_id=? "
+            "AND action='task.signoff' AND outcome='ok' ORDER BY sequence",
+            (task["id"],),
+        ):
+            after = json.loads(row["after_json"] or "null") or {}
+            if judgment := after.get("signoff_decision"):
+                task["signoff_decisions"].append(
+                    {
+                        "decision_ref": row["sequence"],
+                        "timestamp": row["timestamp"],
+                        **judgment,
+                    }
+                )
         task["specification_etag"] = Store._specification_etag(task)
         return task
 
@@ -1683,27 +1735,40 @@ class Store:
 
         return self._run("task.acceptance_withdrawn", request, operation)
 
-    def set_disposition(self, task_id, expected_revision, disposition, note):
-        """Defer, resume, or drop without changing the accepted specification."""
+    def set_disposition(self, task_id, expected_revision, disposition, note, authorization=None):
+        """Pause with approval retained, or drop with approval inactive; keep all proof."""
         request = dict(
-            task_id=task_id, expected_revision=expected_revision, disposition=disposition, note=note
+            task_id=task_id,
+            expected_revision=expected_revision,
+            disposition=disposition,
+            note=note,
+            authorization=authorization,
         )
 
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
             self._require_mutable(db, before)
-            if disposition not in {"open", "deferred", "dropped"} or not note.strip():
+            if (
+                disposition not in {"open", "deferred", "dropped"}
+                or not isinstance(note, str)
+                or not note.strip()
+            ):
                 raise TaskError("invalid_disposition: use open, deferred or dropped with a reason")
+            if before["status"] == "dropped" and disposition != "dropped":
+                if not isinstance(authorization, str) or not authorization.strip():
+                    raise TaskError("revival_authorization_required: record the actual instruction")
             after = {
                 **before,
                 "status": disposition,
                 "revision": before["revision"] + 1,
                 "updated_at": timestamp(),
             }
+            if disposition == "dropped":
+                after.update(accepted_spec_revision=None, accepted=False)
             self._save_task(db, after)
             scope.update(before=before, after=after)
-            return self._details(db, after)
+            return self._task_ack(db, after)
 
         return self._run("task.disposition_changed", request, operation)
 
@@ -2270,26 +2335,45 @@ class Store:
         return self._run("attempt.human_reviewed", request, operation)
 
     def signoff_task(
-        self, task_id, expected_revision, verdict, user_note, attempt_id=None, rejection="rework"
+        self,
+        task_id,
+        expected_revision,
+        decision,
+        user_note,
+        attempt_id,
+        expected_attempt_revision,
+        result_judgment=None,
+        result_note=None,
+        specification_question=None,
     ):
+        """Record one actual human decision, separating purpose from technical quality."""
         request = dict(
             task_id=task_id,
             expected_revision=expected_revision,
-            verdict=verdict,
+            decision=decision,
             user_note=user_note,
             attempt_id=attempt_id,
-            rejection=rejection,
+            expected_attempt_revision=expected_attempt_revision,
+            result_judgment=result_judgment,
+            result_note=result_note,
+            specification_question=specification_question,
         )
 
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
-            if before["object_type"] != "task" or before["status"] == "done":
-                raise TaskError("invalid_signoff_target")
+            self._require_mutable(db, before)
+            if before["status"] not in {"open", "rework"}:
+                raise TaskError("invalid_signoff_target: resume the task before judging its result")
             if not before["accepted"]:
                 raise TaskError("task_not_ready_for_signoff: current acceptance required")
-            if verdict not in {"approve", "reject"} or not user_note.strip():
-                raise TaskError("user_verdict_required")
+            if (
+                not isinstance(decision, str)
+                or decision not in {"approve", "rework", "revise", "drop", "defer"}
+                or not isinstance(user_note, str)
+                or not user_note.strip()
+            ):
+                raise TaskError("user_verdict_required: approve, rework, revise, drop or defer")
             if not attempt_id:
                 raise TaskError("attempt_required: select the reviewed result")
             row = db.execute(
@@ -2300,34 +2384,112 @@ class Store:
                 or row["state"] not in {"passed", "human_review"}
                 or row["spec_revision"] != before["spec_revision"]
             ):
-                raise TaskError("review_required: select a passed attempt")
-            after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
-            if verdict == "approve":
-                if (
-                    not before["accepted"]
-                    or before["unresolved_items"]
-                    or self._unsatisfied_prerequisite(db, before["id"])
-                ):
-                    raise TaskError("task_not_ready_for_signoff")
-                after["status"] = "done"
-                after["selected_attempt_id"] = attempt_id
-            elif rejection == "rework":
-                after["status"] = "rework"
-                db.execute(
-                    "UPDATE attempts SET state='rework', revision=revision+1 WHERE id=?",
-                    (attempt_id,),
+                raise TaskError(
+                    "review_required: select a current-spec passed or human-reviewed attempt"
                 )
-            elif rejection == "revise":
-                after["status"] = "open"
-                after["spec_revision"] += 1
+            attempt = dict(row)
+            if (
+                type(expected_attempt_revision) is not int
+                or attempt["revision"] != expected_attempt_revision
+            ):
+                raise TaskError("revision_conflict: re-read the selected attempt")
+            quality = {"approve": "accepted", "rework": "rework"}.get(decision, "not_judged")
+            if result_judgment is not None:
+                if not isinstance(result_judgment, str) or result_judgment not in {
+                    "accepted",
+                    "rework",
+                    "not_judged",
+                }:
+                    raise TaskError("invalid_result_judgment")
+                if decision in {"approve", "rework"} and result_judgment != quality:
+                    raise TaskError("conflicting_result_judgment")
+                quality = result_judgment
+                if decision in {"revise", "drop", "defer"} and quality != "not_judged":
+                    if not isinstance(result_note, str) or not result_note.strip():
+                        raise TaskError(
+                            "result_note_required: record the separately supplied quality judgment"
+                        )
+            elif result_note is not None:
+                raise TaskError("result_judgment_required")
+            if decision == "revise":
+                if (
+                    not isinstance(specification_question, str)
+                    or not specification_question.strip()
+                ):
+                    raise TaskError("specification_question_required: record the concrete question")
+            elif specification_question is not None:
+                raise TaskError("specification_question_only_for_revise")
+            approval = self._approval_decision(db, before)
+            reused = (
+                approval["decision_ref"]
+                if approval
+                and before["acceptance_basis"] == "specific"
+                and decision in {"approve", "rework"}
+                else None
+            )
+            after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
+            unresolved_id = None
+            if decision == "approve":
+                if before["unresolved_items"] or self._unsatisfied_prerequisite(db, before["id"]):
+                    raise TaskError("task_not_ready_for_signoff")
+                after.update(status="done", selected_attempt_id=attempt_id)
+            elif decision == "rework":
+                after["status"] = "rework"
+            elif decision == "revise":
+                unresolved_id = _id("unr_")
+                after.update(status="open", accepted_spec_revision=None, accepted=False)
                 after["unresolved_items"] = before["unresolved_items"] + [
-                    {"id": _id("unr_"), "text": user_note}
+                    {"id": unresolved_id, "text": specification_question}
                 ]
+            elif decision == "drop":
+                after.update(status="dropped", accepted_spec_revision=None, accepted=False)
             else:
-                raise TaskError("invalid_rejection: rework or revise")
+                after["status"] = "deferred"
+            # A direction-only decision leaves an independently sound attempt intact.
+            # Only actual technical rework changes the selected attempt's state.
+            if quality == "rework":
+                db.execute(
+                    "UPDATE attempts SET state='rework', revision=revision+1, updated_at=? "
+                    "WHERE id=?",
+                    (after["updated_at"], attempt_id),
+                )
+            judged = {
+                "task_id": task_id,
+                "task_revision": before["revision"],
+                "spec_revision": before["spec_revision"],
+                "attempt_id": attempt_id,
+                "attempt_revision": attempt["revision"],
+                "decision": decision,
+                "purpose_judgment": {
+                    "approve": "approved",
+                    "rework": "approved",
+                    "revise": "revise",
+                    "drop": "dropped",
+                    "defer": "deferred",
+                }[decision],
+                "purpose_source": "reused_specific_approval" if reused else "user_verdict",
+                "approval_basis": before["acceptance_basis"],
+                "approval_decision_ref": approval["decision_ref"] if approval else None,
+                "reused_approval_decision_ref": reused,
+                "result_judgment": quality,
+                "result_note": result_note
+                if result_note is not None
+                else (user_note if decision in {"approve", "rework"} else None),
+                "user_note": user_note,
+                "disposition": after["status"],
+                "resulting_task_revision": after["revision"],
+                "resulting_attempt_revision": attempt["revision"] + (quality == "rework"),
+                "unresolved_id": unresolved_id,
+            }
             self._save_task(db, after)
-            scope.update(before=before, after=after)
-            return self._details(db, after)
+            scope.update(before=before, after={**after, "signoff_decision": judged})
+            return self._task_ack(db, after) | {
+                "attempt_id": attempt_id,
+                "attempt_revision": judged["resulting_attempt_revision"],
+                "selected_attempt_id": after["selected_attempt_id"],
+                "decision": decision,
+                "unresolved_id": unresolved_id,
+            }
 
         return self._run("task.signoff", request, operation)
 

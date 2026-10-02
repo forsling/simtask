@@ -34,7 +34,14 @@ def finish(store, item, workstream_id):
         item["id"], workstream_id, item["revision"], "implementer", "Done", "Verified"
     )
     store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
-    store.signoff_task(item["id"], item["revision"] + 1, "approve", "Approved", result["id"])
+    store.signoff_task(
+        item["id"],
+        item["revision"] + 1,
+        "approve",
+        "Approved",
+        result["id"],
+        expected_attempt_revision=2,
+    )
 
 
 def test_shared_group_three_projects_scope_and_independent_completion(tmp_path):
@@ -170,7 +177,9 @@ def test_group_membership_and_last_signoff_are_serialized(tmp_path):
 
     def signoff():
         barrier.wait()
-        return store.signoff_task(first["id"], 2, "approve", "Approved", result["id"])
+        return store.signoff_task(
+            first["id"], 2, "approve", "Approved", result["id"], expected_attempt_revision=2
+        )
 
     def attach():
         barrier.wait()

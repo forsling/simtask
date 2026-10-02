@@ -345,9 +345,10 @@ def create_server(store: Store) -> MCPServer:
         expected_revision: int,
         disposition: Literal["open", "deferred", "dropped"],
         note: str,
+        authorization: str | None = None,
     ) -> dict[str, Any]:
-        """Defer, resume, or drop a task with a reason; preserve its specification."""
-        return store.set_disposition(task_id, expected_revision, disposition, note)
+        """Pause preserving approval; drop revokes it. Revival needs actual authorization."""
+        return store.set_disposition(task_id, expected_revision, disposition, note, authorization)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -469,13 +470,28 @@ def create_server(store: Store) -> MCPServer:
         task_id: str,
         expected_revision: int,
         attempt_id: str,
-        verdict: Literal["approve", "reject"],
+        expected_attempt_revision: int,
+        decision: Literal["approve", "rework", "revise", "drop", "defer"],
         user_note: str,
-        rejection: Literal["rework", "revise"] = "rework",
+        result_judgment: Literal["accepted", "rework", "not_judged"] | None = None,
+        result_note: str | None = None,
+        specification_question: str | None = None,
     ) -> dict[str, Any]:
-        """Record informed human verdict; rejection chooses rework or specification revision."""
+        """Record one actual human decision on purpose and result. Approve covers both;
+        specific purpose approval may be reused. Direction-only decisions leave human
+        technical quality unjudged unless separately supplied with its actual note.
+        Revise needs a concrete specification question. Read full proof with get_tasks.
+        """
         return store.signoff_task(
-            task_id, expected_revision, verdict, user_note, attempt_id, rejection
+            task_id,
+            expected_revision,
+            decision,
+            user_note,
+            attempt_id,
+            expected_attempt_revision,
+            result_judgment,
+            result_note,
+            specification_question,
         )
 
     @server.tool(annotations=additive, structured_output=True)

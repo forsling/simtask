@@ -290,13 +290,19 @@ on the same task. An independent reviewer named differently from the implementer
 returns a verdict; the coordinator records it with `record_review`. A recorded
 `human_review` can satisfy the review gate when the user actually reviews the
 result or explicitly directs that further review is unnecessary. Agents must
-not self-issue it. One informed `signoff_task` verdict chooses a reviewed
-attempt. Approval completes the canonical task and records the selected attempt
-ID. Completed tasks are immutable; changed requirements become new tasks.
-Rejection chooses `rework` for the accepted specification or `revise` to
-invalidate acceptance and add an unresolved item. The service cannot
-authenticate reviewer independence or the
-human verdict, so reference workflows must accurately obtain and record them.
+not self-issue it. One informed `signoff_task` decision judges task purpose and
+result separately and selects the exact reviewed attempt. `approve` completes the
+canonical task; `rework` retains purpose approval and returns the implementation
+for repair and fresh review; `revise` withdraws approval and opens a concrete
+specification question without pretending requirements were edited; `drop`
+withdraws approval while keeping proof; `defer` retains approval while paused.
+Direction-only decisions leave human technical quality unjudged unless a
+separate actual judgment is supplied. Specific purpose approval can be reused;
+delegated/unknown cases need an actual purpose judgment at signoff. One informed
+approval can cover both. Completed tasks are immutable; changed requirements
+become new tasks. The service records assertions and cannot authenticate
+reviewer independence or the actual human verdict. Workflows must obtain and
+record them truthfully.
 
 The ordinary path is:
 
@@ -417,8 +423,10 @@ recording and sign-off. Reapproving the same spec may reuse an applicable review
 a real spec change leaves prior attempts tied to their original revision.
 Completed tasks remain immutable.
 
-Schema/protocol revision 2 separates origin from approval. Migration preserves
-all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
+Database schema revision 2 separates origin from approval. Candidate protocol
+revision 3 adds the five-decision purpose/result signoff contract; its structured
+judgments use existing immutable audit records and require no new storage DDL.
+Migration preserves all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
 and unclassified approval are `unknown`; old audit text is never parsed to infer
 authority. Before upgrading an existing schema 0/1 database, the service takes a
 fresh SQLite online backup under the migration writer lock and verifies its
@@ -430,6 +438,28 @@ state; reconnect clients only to the matching protocol/schema revision. Do not
 run a schema 1 server against schema 2 or overlay a backup onto active writers.
 Test candidate upgrades on disposable copies and keep incompatible code, client
 workflows and databases isolated until every serving client can be refreshed.
+
+Signoff uses one `decision` (`approve`, `rework`, `revise`, `drop`, `defer`),
+not a second rejection selector. Send the actual user's `user_note`, exact
+`attempt_id`, last-read task `expected_revision` and `expected_attempt_revision`.
+Present purpose/approval basis and its actual supporting `approval_decision`
+separately from result/review evidence. Specific approval can be reused;
+delegated/unknown cases need an actual purpose judgment, which an informed
+`approve` or `rework` decision covers without a second confirmation. Direction
+changes leave human technical quality `not_judged`; only a separately supplied
+actual judgment uses optional `result_judgment` plus `result_note`. Independent
+review remains distinct. `revise` requires a concrete `specification_question`
+and advances no spec revision until a real edit. Approval needs current
+acceptance, current-spec passed/human-reviewed result and clear completion gates.
+
+Signoff and `set_disposition` return compact continuation state; use `get_tasks`
+for complete proof, approval decision references and structured
+`signoff_decisions`, or detailed audit reads for historical snapshots. Drop
+clears active approval and preserves proof; defer keeps approval. Ordinary
+status changes need no reviewed result. Leaving dropped status requires actual
+`authorization`; restoration leaves approval inactive until explicitly accepted.
+Dropped/deferred tasks never satisfy done prerequisites. Completed work remains
+immutable.
 
 ## Deferred work
 

@@ -39,7 +39,9 @@ def task(store, project, ws, title="Implement", source="user"):
 def complete(store, task_id, workstream_id, revision):
     result = store.record_result(task_id, workstream_id, revision, "worker", "Done", "Verified")
     store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
-    return store.signoff_task(task_id, revision + 1, "approve", "User approved", result["id"])
+    return store.signoff_task(
+        task_id, revision + 1, "approve", "User approved", result["id"], expected_attempt_revision=2
+    )
 
 
 def test_session_init_discovery_repeat_and_three_repo_contexts(store, tmp_path):
@@ -206,7 +208,9 @@ def test_session_init_named_and_status_pagination(store, tmp_path):
     assert store.workstream_status(ws)["status"]["counts"]["review"] == 1
     store.record_review(result["id"], 1, "reviewer", "pass", "Checked")
     assert store.workstream_status(ws)["status"]["counts"]["signoff"] == 1
-    store.signoff_task(ready["id"], 2, "approve", "Approved", result["id"])
+    store.signoff_task(
+        ready["id"], 2, "approve", "Approved", result["id"], expected_attempt_revision=2
+    )
     summary = store.workstream_status(ws)["status"]
     assert summary["counts"]["done"] == 1
     assert summary["counts"]["pending_acceptance"] == 1
@@ -275,7 +279,9 @@ def test_inactive_attempts_are_history_not_status_gates(store, tmp_path, disposi
     assert status["status"]["overlapping_gate_diagnostics"]["signoff"] == 1
     assert store.workstream_status(other)["items"][0]["gate_diagnostics"] == ["review"]
     if disposition == "done":
-        store.signoff_task(work["id"], 3, "approve", "User approved", reviewed["id"])
+        store.signoff_task(
+            work["id"], 3, "approve", "User approved", reviewed["id"], expected_attempt_revision=2
+        )
     else:
         store.set_disposition(work["id"], 3, disposition, "User decision")
     status = store.workstream_status(ws)
@@ -309,9 +315,14 @@ def test_inactive_status_does_not_hide_prerequisite_from_signoff(store, tmp_path
     gated = store.add_prerequisite(work["id"], 2, blocker["id"])
     inactive = store.set_disposition(work["id"], gated["revision"], disposition, "Later")
     assert store.workstream_status(ws)["items"][0]["gate_diagnostics"] == []
-    with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
+    with pytest.raises(TaskError, match="invalid_signoff_target"):
         store.signoff_task(
-            work["id"], inactive["revision"], "approve", "User approved", result["id"]
+            work["id"],
+            inactive["revision"],
+            "approve",
+            "User approved",
+            result["id"],
+            expected_attempt_revision=2,
         )
 
 
@@ -529,7 +540,10 @@ def test_pending_prerequisite_proposal_is_atomic_and_disposition_preserves_accep
     deferred = store.set_disposition(parent["id"], 2, "deferred", "Wait for research")
     assert deferred["accepted"] and deferred["status"] == "deferred"
     resumed = store.set_disposition(parent["id"], 3, "open", "Research resumed")
-    assert resumed["accepted"] and resumed["body"] == parent["body"]
+    assert (
+        resumed["accepted"]
+        and store.get_tasks([parent["id"]])["items"][0]["body"] == parent["body"]
+    )
 
 
 def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
@@ -549,7 +563,14 @@ def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
             member, ws, accepted["revision"], "worker", "Done", "Verified"
         )
         store.record_review(attempt["id"], 1, "reviewer", "pass", "Reviewed")
-        store.signoff_task(member, accepted["revision"] + 1, "approve", "Approved", attempt["id"])
+        store.signoff_task(
+            member,
+            accepted["revision"] + 1,
+            "approve",
+            "Approved",
+            attempt["id"],
+            expected_attempt_revision=2,
+        )
     assert store.get_tasks([parent["id"]])["items"][0]["complete"]
     completed_group = store.get_tasks([parent["id"]])["items"][0]
     assert completed_group["accepted"] is None
@@ -695,30 +716,49 @@ def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_pat
     with pytest.raises(TaskError, match="independent_review_required"):
         store.record_review(result["id"], 1, "worker", "pass", "Looks good")
     with pytest.raises(TaskError, match="review_required"):
-        store.signoff_task(created["id"], 2, "approve", "Approved", result["id"])
+        store.signoff_task(
+            created["id"], 2, "approve", "Approved", result["id"], expected_attempt_revision=2
+        )
     reviewed = store.record_review(result["id"], 1, "reviewer", "pass", "Checked diff")
     assert reviewed["state"] == "passed"
-    rejected = store.signoff_task(created["id"], 2, "reject", "Fix input loss", result["id"])
+    rejected = store.signoff_task(
+        created["id"], 2, "rework", "Fix input loss", result["id"], expected_attempt_revision=2
+    )
     assert rejected["accepted"] and rejected["status"] == "rework"
     retry = store.record_result(created["id"], ws, 3, "worker", "Fixed", "repro passed")
     human = store.human_review(retry["id"], 1, "User reviewed and waived another reviewer")
     assert human["state"] == "human_review"
     revised = store.signoff_task(
-        created["id"], 4, "reject", "Change requirements", retry["id"], rejection="revise"
+        created["id"],
+        4,
+        "revise",
+        "Change requirements",
+        retry["id"],
+        specification_question="Which requirements should change?",
+        expected_attempt_revision=2,
     )
-    assert not revised["accepted"] and revised["unresolved_items"]
-    resolved = store.resolve_unresolved(
-        created["id"], 5, revised["unresolved_items"][0]["id"], "Settled"
-    )
+    assert not revised["accepted"] and revised["unresolved_id"]
+    resolved = store.resolve_unresolved(created["id"], 5, revised["unresolved_id"], "Settled")
     accepted = store.accept_task(
         created["id"], resolved["revision"], {"basis": "specific", "note": "Accepted revised spec"}
+    )
+    accepted = store.update_task(
+        created["id"],
+        accepted["revision"],
+        {"title": "New requirements"},
+        approval={"basis": "specific", "note": "Approved new requirements"},
     )
     final = store.record_result(
         created["id"], ws, accepted["revision"], "worker", "New result", "verified"
     )
     store.record_review(final["id"], 1, "reviewer", "pass", "Reviewed new result")
     complete = store.signoff_task(
-        created["id"], accepted["revision"] + 1, "approve", "User approved", final["id"]
+        created["id"],
+        accepted["revision"] + 1,
+        "approve",
+        "User approved",
+        final["id"],
+        expected_attempt_revision=2,
     )
     assert complete["status"] == "done"
     assert complete["selected_attempt_id"] == final["id"]
@@ -751,7 +791,12 @@ def test_parallel_workstream_attempts_and_group_completion(store, tmp_path):
         store.record_review(result["id"], 1, "reviewer", "pass", "Reviewed")
         store.record_review(alternate["id"], 1, "reviewer", "pass", "Reviewed")
         store.signoff_task(
-            member, accepted["revision"] + 2, "approve", "Winner selected", alternate["id"]
+            member,
+            accepted["revision"] + 2,
+            "approve",
+            "Winner selected",
+            alternate["id"],
+            expected_attempt_revision=2,
         )
     assert store.get_tasks([parent["id"]])["items"][0]["complete"]
 
