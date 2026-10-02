@@ -39,6 +39,16 @@ Identify the decisions that materially affect scope, user experience or cost.
 Present plausible approaches with concrete tradeoffs, and recommend a path with
 reasons. Do not manufacture alternatives for a settled or obvious detail.
 
+Attribute implementation history to its workstream/specification and inspect
+relevant actual checkout files and commits before relying on it locally,
+especially after rebinding the durable workstream. Branch names, matching titles,
+deployment reports and prose do not prove integration. Deliberate integration
+of an open task needs a new target-local result with origin attempt/workstream,
+actual source/target commits and target verification, then fresh independent
+review; no origin review is inherited. Completed proof stays immutable, so a
+later integration requirement is a new task. Capture these requirements when
+they are part of the agreed scope; design alone records no implementation.
+
 Prerequisites use canonical task/group IDs across any projects; shared membership
 is not required. Links do not add remote work to local scope or share attempts,
 reviews or code. Human-signed-off done clears a concrete blocker; every member

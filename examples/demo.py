@@ -454,7 +454,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.8.0"
+        assert catalog["version"] == "1.9.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

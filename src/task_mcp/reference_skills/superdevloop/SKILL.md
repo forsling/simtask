@@ -24,6 +24,27 @@ Group references are context, not executable tasks. A shared group expands only
 to concrete members owned by this workstream's project; inspect whole-group
 progress separately with `get_tasks(group_id)` or `workstream_status`.
 
+Continue using the durable workstream ID and its retained scope/history.
+Ordinary selection and execution gates use only its current-spec attempts;
+other-workstream or older-spec attempts are attributed history and do not block
+competing local implementations. Before relying on recorded proof, inspect the
+actual checkout, working diff and relevant commits against the current full
+specification, particularly after rebinding. Reuse applicable work as part of
+normal implementation; do not add routine checkpoints or repeated repository
+scans.
+
+When deliberately merging/cherry-picking an open task's implementation from
+another workstream, inspect its origin attempt/source commits and the target's
+current full specification, scope and actual checkout. Verify the integrated
+target tree and commits. Record an ordinary new target-local `record_result`
+whose evidence cites the origin attempt/workstream, actual integrated source
+and target commits, target verification and material limits. Then send that new
+attempt and target checkout to a fresh independent reviewer. Never copy the
+origin review or infer integration from a title, branch name, deployment report
+or prose. Recording uses the normal gates and grants no approval/completion.
+Completed tasks keep their selected human-approved proof; a later integration
+requirement is a new task. No adoption API or shared working state is needed.
+
 Assign the selected task to a fresh implementer. The implementer changes code,
 verifies it, and calls `record_result` with concrete evidence and its identity.
 This is the first durable attempt record; no start or claim call is required.

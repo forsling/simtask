@@ -198,6 +198,15 @@ durable resume; offset pages are for browsing current state, not a snapshot of a
 changing board. Completed tasks in different repositories remain separate;
 these views do not claim an integrated feature is complete.
 
+Continue on the same durable workstream ID. Before relying on recorded proof,
+check the actual checkout, affected files and commits against the current full
+specification, especially after rebinding. Another workstream's implementation
+does not gate local alternatives. Deliberate merge/cherry-pick integration of an
+open task uses a new target-local `record_result` with origin attempt/workstream,
+source/target commits and target verification, followed by fresh independent
+review. Completed proof stays immutable; later integration needs a new task.
+See [continuation and integration guidance](docs/continuation.md).
+
 Workstream scope is an explicit set of local concrete tasks and group references. `none` begins
 empty. A workstream name or ID as the first expression term snapshots its scope.
 `+task-id` and `-task-id` then add or remove references. Titles are accepted

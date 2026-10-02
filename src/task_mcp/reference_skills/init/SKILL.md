@@ -25,6 +25,14 @@ Rebind also requires the selected `workstream_id` and its last read
 `expected_revision`. Repeat calls for an already exact binding return `ready`
 without another mutation.
 
+Continue on that durable workstream ID; rebind preserves its scope and recorded
+history, not the files in the checkout. Before relying on an existing result,
+read the current full specification and inspect the actual checkout, working
+diff and relevant commits, especially after the binding moves. Verify the
+required behavior in the current tree. Registered bindings, branch names and
+old prose do not establish applicability. This is ordinary task verification,
+not an extra repository scan or progress checkpoint at every step.
+
 `none` begins a new workstream with an empty scope. A workstream ID/name as the
 first scope expression term snapshots its current scope; pass that source's
 last read `expected_revision`. `+task-id` and

@@ -15,6 +15,14 @@ approval needs an actual purpose judgment now; never infer it from origin or
 old prose. One informed approval may cover both purpose and result. Do not ask
 for two ceremonial confirmations.
 
+Attribute every alternative to its workstream and specification revision.
+Check actual checkout/commit applicability before presenting it as locally
+delivered, especially after rebinding. An open task deliberately integrated
+elsewhere needs its own target-local result with origin/source/target provenance,
+target verification and fresh independent review; origin review is not inherited.
+Completed tasks retain their selected human-approved result. A later integration
+requirement is a new task, never a rewrite of completed proof.
+
 Only after the user's explicit informed verdict call `signoff_task` with the
 last-read task `expected_revision`, selected `attempt_id` and its
 `expected_attempt_revision`, actual `user_note`, and one `decision`:

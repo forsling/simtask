@@ -145,6 +145,20 @@ specification or revision that invalidates acceptance and adds an unresolved
 item. The service cannot authenticate the reviewer or the user's verdict;
 workflow clients must obtain and accurately record those decisions.
 
+Continuation keeps the durable workstream ID, scope and history through
+`init`/rebind. Recorded state does not prove checkout applicability: callers
+inspect the actual tree and relevant commits against the current full spec,
+especially after moving a binding. Ordinary execution uses only current-spec
+local attempts, so another workstream's pending or passed result does not block
+parallel alternatives. Deliberate merge/cherry-pick integration of an open
+task produces an ordinary new target-local result citing origin attempt and
+workstream, actual source/target commits and target verification, followed by
+fresh independent review. Origin reviews are never inherited. Completed tasks
+retain selected human-approved proof; later integration is a new task. No
+adoption API, shared working state, schema expansion or routine checkpoints are
+needed. See [the focused workflow](docs/continuation.md); compact projections
+and interrupted-session action selection remain separate work.
+
 An active handler may add a task gate directly. An observer proposes a gate for
 review; the proposal is nonblocking until accepted. A coordinator may dismiss
 an unwanted or stale proposal with an audited reason, including when its target

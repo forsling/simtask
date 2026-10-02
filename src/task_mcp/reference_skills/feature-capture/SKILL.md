@@ -48,6 +48,14 @@ project documentation to identify the current behavior, integration points and
 constraints. Keep this research bounded to shaping the brief; no implementation
 or exhaustive architecture study is needed. State what remains unverified.
 
+Attribute implementation history to its workstream/specification. Before
+claiming existing behavior locally, inspect relevant checkout files and actual
+commits; branch names, deployment reports and prose do not prove integration.
+Completed proof remains immutable: a later integration requirement is a new
+task. An open task's deliberate cross-workstream integration will need a new
+target-local result with origin attempt/workstream, source/target commits and
+target verification, followed by fresh independent review.
+
 Record the desired user outcome and motivation, relevant current behavior with
 useful code references, tentative scope and exclusions, constraints, assumptions,
 possible approaches, and material open questions. Distinguish user decisions
