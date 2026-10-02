@@ -1,5 +1,12 @@
 # Runtime identity and stale capabilities
 
+This document describes the isolated candidate's protocol and database schema
+revision `2`. The protected live service remains on revision `1` until coordinated
+rollout; its runtime identity should still report `1` for both fields. During that
+protected period, use candidate code only with explicit disposable databases and
+prepare companion skills without installing or reloading them. Keep the live
+executable, database and connections unchanged.
+
 Call `runtime_info` on the client connection being diagnosed. Successful `init`
 responses carry the same fields under `runtime`, so an existing client that
 already knows `init` can inspect the process even if its tool catalog omits the
@@ -11,11 +18,11 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (currently `1`), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for an incompatible contract change. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`2` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for an incompatible contract change. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (currently `1`). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`2` after candidate startup, `1` in the protected live database). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is
@@ -25,11 +32,21 @@ PIDs and startup timestamps differ. Package metadata alone may retain the same
 version throughout development. The identifier detects changed resources but
 does not promise hot reload of resources or Python code.
 
-Existing unnumbered databases have revision `0`; normal Store startup runs the
-existing schema creation/migration and foreign-key checks, then transactionally
-sets revision `1`. Existing task IDs, content and audit history survive. A
-database with a higher revision is rejected rather than downgraded. Future
-storage migrations must advance the revision after their checks pass.
+Existing unnumbered databases have revision `0`; the protected live service uses
+revision `1`. Candidate Store startup creates fresh databases at revision `2`
+directly. Before upgrading an existing revision `0` or `1` database, it creates
+and verifies a fresh SQLite online backup under the writer lock, including
+committed WAL data. It then transactionally upgrades the schema, checks integrity
+and foreign keys, and sets revision `2` only after those checks pass. Existing
+task IDs, content and audit history survive; the backup remains available after
+success or rollback. A database with a higher revision is rejected rather than
+downgraded. Future storage migrations must advance the revision after their
+checks pass.
+
+Protocol and database schema revision `2` introduce independent persisted origin,
+classified `{basis, note}` approval for create/accept, and audited withdrawal.
+Roll out code, stored schema, companion skills and refreshed client tool catalogs
+together, then use the reconnect procedure below to verify the affected client.
 
 ## Minimum reliable reconnect procedure
 
@@ -63,10 +80,3 @@ step. Client-specific UI controls vary; the verification above defines success.
 The disposable stdio demo (`.venv/bin/python examples/demo.py`) checks a fresh
 subprocess and persisted task behavior. It is useful to verify the installation,
 but it does not prove the affected client's cached catalog has changed.
-
-Protocol/database schema revision 2 introduces independent persisted origin,
-classified `{basis, note}` approval for create/accept, and audited withdrawal.
-Schema 0/1 upgrades require the service's fresh verified online backup. Roll out
-code, stored schema and refreshed client tool catalogs together. During a
-protected period with old clients, use only isolated candidate code and explicit
-disposable databases; prepare native skills without installing or reloading them.
