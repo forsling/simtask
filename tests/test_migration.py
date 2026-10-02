@@ -127,6 +127,80 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
         writer.close()
 
 
+@pytest.mark.parametrize(
+    "legacy_disposition,restored_disposition",
+    [("dropped", "open"), ("dropped", "deferred"), ("deferred", "open")],
+)
+def test_legacy_disposition_restore_does_not_reactivate_dropped_acceptance(
+    tmp_path, legacy_disposition, restored_disposition
+):
+    database = tmp_path / "legacy-disposition.sqlite3"
+    store = Store(database)
+    setup = store.init(
+        str(tmp_path / "repo"), branch="main", action="create_project", confirmed=True
+    )
+    project, ws = setup["project"]["id"], setup["workstream"]["id"]
+    task = store.create_task(
+        project,
+        "Legacy accepted scope",
+        body="Keep the original requirements",
+        approval={"basis": "specific", "note": "Historical approval"},
+        scope="workstream",
+        workstream_id=ws,
+    )
+    attempt = store.record_result(task["id"], ws, 1, "worker", "Earlier result", "Durable proof")
+    store.record_review(attempt["id"], 1, "independent reviewer", "rework", "Repair needed")
+    # Schema 1 disposition changes retained accepted_spec_revision, including
+    # when dropping a task. Reproduce those persisted rows before migration.
+    with closing(sqlite3.connect(database)) as db:
+        for name in PROVENANCE_COLUMNS:
+            db.execute(f"ALTER TABLE tasks DROP COLUMN {name}")
+        db.execute("PRAGMA user_version=1")
+        db.execute(
+            "UPDATE tasks SET status=?,revision=revision+1 WHERE id=?",
+            (legacy_disposition, task["id"]),
+        )
+        db.commit()
+    columns, original_rows = snapshot(database)
+    store = Store(database)
+    assert snapshot(store.migration_backup_path) == (columns, original_rows)
+    assert snapshot(database, columns)[1] == original_rows
+    migrated = store.get_tasks([task["id"]])["items"][0]
+    assert migrated["accepted"] and migrated["acceptance_basis"] == "unknown"
+    restored = store.set_disposition(
+        task["id"],
+        migrated["revision"],
+        restored_disposition,
+        "Restore task only",
+        authorization="Actual instruction to restore" if legacy_disposition == "dropped" else None,
+    )
+    is_dropped = legacy_disposition == "dropped"
+    assert restored["accepted"] == (not is_dropped)
+    assert restored["accepted_spec_revision"] == (None if is_dropped else 1)
+    if restored_disposition == "deferred":
+        assert store.get_next_task(ws)["task"] is None
+        restored = store.set_disposition(task["id"], restored["revision"], "open", "Resume")
+    if is_dropped:
+        assert restored["gate_diagnostics"] == ["pending_acceptance"]
+        assert store.get_next_task(ws)["task"] is None
+        retained = store.get_tasks([task["id"]])["items"][0]
+        assert retained["acceptance_note"] == "Historical approval"
+        assert retained["acceptance_basis"] == "unknown" and retained["approval_decision"] is None
+        restored = store.accept_task(
+            task["id"],
+            restored["revision"],
+            {"basis": "specific", "note": "Actual approval of the exact restored requirements"},
+        )
+        assert restored["accepted"]
+    assert store.get_next_task(ws)["task"]["id"] == task["id"]
+    saved = Store(database).get_tasks([task["id"]])["items"][0]
+    assert saved["body"] == migrated["body"] and saved["spec_revision"] == 1
+    assert saved["attempts"] == migrated["attempts"] and saved["signoff_decisions"] == []
+    final_rows = snapshot(database, columns)[1]
+    assert final_rows["attempts"] == original_rows["attempts"]
+    assert final_rows["events"][: len(original_rows["events"])] == original_rows["events"]
+
+
 def test_migration_failure_rolls_back_ddl_revision_and_data_retains_backup(tmp_path, monkeypatch):
     database = tmp_path / "legacy.sqlite3"
     writer, _ = legacy_database(database, 1)

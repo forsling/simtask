@@ -1764,7 +1764,9 @@ class Store:
                 "revision": before["revision"] + 1,
                 "updated_at": timestamp(),
             }
-            if disposition == "dropped":
+            # Schema 1 drops retained acceptance. Revival authorization restores
+            # disposition only; even those legacy rows need current spec approval.
+            if disposition == "dropped" or before["status"] == "dropped":
                 after.update(accepted_spec_revision=None, accepted=False)
             self._save_task(db, after)
             scope.update(before=before, after=after)
