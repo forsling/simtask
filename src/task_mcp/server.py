@@ -298,14 +298,33 @@ def create_server(store: Store) -> MCPServer:
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def get_tasks(ids: list[str]) -> dict[str, Any]:
-        """Fetch 1–20 full task specifications, gates, attempts and revisions."""
+        """Fetch 1–20 full specifications with replacement etags, gates, proof and revisions."""
         return store.get_tasks(ids)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def update_task(task_id: str, expected_revision: int, changes: TaskPatch) -> dict[str, Any]:
-        """Edit specification fields. Material changes invalidate task acceptance."""
-        return store.update_task(task_id, expected_revision, changes.model_dump(exclude_unset=True))
+    def update_task(
+        task_id: str,
+        expected_revision: int,
+        changes: TaskPatch,
+        approval: Approval | None = None,
+        specification_etag: str | None = None,
+    ) -> dict[str, Any]:
+        """Save edits and optional exact-scope approval atomically; return compact change flags.
+
+        Body/acceptance_criteria are whole-field replacements: first read get_tasks
+        and supply its specification_etag. Title-only edits need no full read.
+        Actual specific/delegated approval accepts the resulting spec; unapproved
+        spec changes become pending. Other gates and old-spec proof stay intact.
+        Unchanged patches are no-ops unless approval changes; still check revision.
+        """
+        return store.update_task(
+            task_id,
+            expected_revision,
+            changes.model_dump(exclude_unset=True),
+            approval.model_dump() if approval is not None else None,
+            specification_etag,
+        )
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors

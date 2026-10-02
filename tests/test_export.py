@@ -62,7 +62,12 @@ def test_export_workflow_views_match_scoped_queue(context):
     store, project, ws = context
     create(context, "Ready")
     pending = create(context, "Pending")
-    store.update_task(pending["id"], 1, {"body": "Changed specification"})
+    store.update_task(
+        pending["id"],
+        1,
+        {"body": "Changed specification"},
+        specification_etag=pending["specification_etag"],
+    )
     question = create(context, "Question")
     store.add_unresolved(question["id"], 1, "Which protocol?")
     blocked = create(context, "Blocked")
@@ -143,7 +148,13 @@ def test_attempt_history_does_not_misrepresent_current_workstream_or_spec(contex
     assert "Human review note" in text
     old = result(context, task)
     store.record_review(old["id"], 1, "independent", "pass", "First version checked")
-    task = store.update_task(task["id"], current(store, task)["revision"], {"body": "New version"})
+    full = current(store, task)
+    task = store.update_task(
+        task["id"],
+        full["revision"],
+        {"body": "New version"},
+        specification_etag=full["specification_etag"],
+    )
     task = store.accept_task(
         task["id"], task["revision"], {"basis": "specific", "note": "Accept new version"}
     )

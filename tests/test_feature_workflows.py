@@ -71,8 +71,12 @@ def test_project_design_discovery_includes_captured_inbox_ideas(context):
     assert [item["id"] for item in candidates] == [brief["id"]]
     assert store.get_tasks([brief["id"]])["items"][0]["unresolved_items"]
     brief = store.update_task(
-        brief["id"], brief["revision"], {"body": "Synthetic agreed feature specification"}
+        brief["id"],
+        brief["revision"],
+        {"body": "Synthetic agreed feature specification"},
+        specification_etag=store.get_tasks([brief["id"]])["items"][0]["specification_etag"],
     )
+    brief = store.get_tasks([brief["id"]])["items"][0]
     brief = store.resolve_unresolved(
         brief["id"],
         brief["revision"],
@@ -109,6 +113,7 @@ def test_design_preserves_other_gates_and_requires_current_spec_acceptance(conte
             "body": "Agreed: session storage, scoped to a project. Reset clears its saved filters.",
             "acceptance_criteria": "Navigation preserves filters; reset clears them.",
         },
+        specification_etag=store.get_tasks([brief["id"]])["items"][0]["specification_etag"],
     )
     assert not agreed["accepted"]
     assert_no_implementation(store, workstream)
@@ -156,9 +161,11 @@ def test_decomposition_keeps_parent_and_children_ineligible_until_ready(context)
             "body": "Agreed split: persist session filters, then add the reset control.",
             "acceptance_criteria": "Navigation preserves filters; a reset control clears them.",
         },
+        specification_etag=parent["specification_etag"],
     )
     assert not parent["accepted"]
     assert_no_implementation(store, workstream)
+    parent = store.get_tasks([parent["id"]])["items"][0]
     parent = store.resolve_unresolved(
         parent["id"],
         parent["revision"],

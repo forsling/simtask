@@ -153,6 +153,27 @@ async def exercise(database: Path):
             approval={"basis": "specific", "note": "Synthetic exact-scope approval"},
         )
         assert approved_again["revision"] == withdrawn["revision"] + 1
+        full_spec = (await call("get_tasks", ids=[draft["id"]]))["items"][0]
+        unsafe = await client.call_tool(
+            "update_task",
+            {
+                "task_id": draft["id"],
+                "expected_revision": full_spec["revision"],
+                "changes": {"body": "A body preview cannot safely replace the spec"},
+            },
+        )
+        assert unsafe.is_error and "specification_read_required" in str(unsafe.content)
+        approved_again = await call(
+            "update_task",
+            task_id=draft["id"],
+            expected_revision=full_spec["revision"],
+            changes={"body": "Synthetic complete amended specification"},
+            specification_etag=full_spec["specification_etag"],
+            approval={"basis": "specific", "note": "Synthetic approval of this amended scope"},
+        )
+        assert approved_again["spec_revision"] == approved_again["accepted_spec_revision"] == 2
+        assert approved_again["accepted"] and approved_again["spec_changed"]
+        assert "body" not in approved_again and "attempts" not in approved_again
         obsolete = await client.call_tool(
             "accept_task",
             {
@@ -228,7 +249,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.4.0"
+        assert catalog["version"] == "1.5.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

@@ -101,3 +101,20 @@ Return the saved task ID/title, a short account of the preliminary findings and
 the main open decisions. Explain that "let's design X" or "review design tasks"
 resumes it through `feature-design`. Do not start that discussion or implement
 unless the user also requested that next phase.
+
+Specification amendments use `update_task(..., approval=...)` to save and accept
+already-authorized resulting scope in one revision-checked transaction. Reuse
+the actual supporting instruction; do not ask for the same approval again.
+Omit approval for unsettled or explicitly pending amendments. Every real
+title/body/criteria edit changes the spec; no editorial exemption is inferred.
+Before replacing body or acceptance_criteria, read the full task once with
+`get_tasks(ids=[...])` and pass its `specification_etag` plus the current task
+revision. These fields are whole replacements; board rows carry no token.
+Title-only edits need no full body read. `get_tasks` currently returns complete
+specifications by default; no `specification=true` flag exists. On conflict,
+re-read the full spec, reconcile, and use its current revision/token.
+Unchanged patches are no-ops unless approval changes; approving an unchanged
+pending spec leaves spec revision unchanged. Compact update acknowledgements
+report `changed`, `spec_changed`, `approval_changed`, revisions and gates.
+Approval grants no scope, prerequisite satisfaction, review, completion or
+execution. Attempts and reviews remain proof only for their original spec.

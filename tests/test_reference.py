@@ -6,7 +6,7 @@ from task_mcp.reference import default_skills
 
 def test_catalog_is_exact_canonical_on_disk_content():
     catalog = default_skills()
-    assert catalog["version"] == "1.4.0"
+    assert catalog["version"] == "1.5.0"
     assert {item["name"] for item in catalog["items"]} == {
         "init",
         "feature-capture",

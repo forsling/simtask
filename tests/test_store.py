@@ -371,7 +371,12 @@ def test_pending_acceptance_spec_invalidation_and_unresolved_resolution(store, t
     )
     assert resolved["accepted"]
     assert store.get_next_task(ws)["task"]["id"] == proposed["id"]
-    edited = store.update_task(proposed["id"], 4, {"body": "Materially different goal"})
+    edited = store.update_task(
+        proposed["id"],
+        4,
+        {"body": "Materially different goal"},
+        specification_etag=store.get_tasks([proposed["id"]])["items"][0]["specification_etag"],
+    )
     assert edited["spec_revision"] == 2 and not edited["accepted"]
     with pytest.raises(TaskError, match="task_not_eligible"):
         store.record_result(proposed["id"], ws, 5, "implementer", "Done", "Tests pass")

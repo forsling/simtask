@@ -148,7 +148,10 @@ def test_empty_group_blocks_prerequisite_and_remains_mutable(tmp_path):
         a["workstream"]["id"], current_ws_revision, f"none +{group['id']} +{task['id']}"
     )
     assert store.get_next_task(a["workstream"]["id"])["diagnostics"]["prerequisites"] == 1
-    changed = store.update_task(group["id"], 1, {"body": "Still open"})
+    changed = store.update_task(
+        group["id"], 1, {"body": "Still open"}, specification_etag=group["specification_etag"]
+    )
+    changed = store.get_tasks([changed["id"]])["items"][0]
     assert changed["body"] == "Still open" and not changed["complete"]
 
 

@@ -51,22 +51,24 @@ instead of appending dated discussion notes; audit events keep prior revisions.
 
 Save the resulting goal, boundaries, chosen behavior, relevant implementation
 direction, acceptance criteria and rationale with `update_task`. Editing these
-fields invalidates prior acceptance. Follow feature-capture's title and body
-rules for the final specification and any members; retitle only while already
-revising, since a title edit also invalidates acceptance. Preserve unresolved questions and unrelated
+fields without approval invalidates prior acceptance. When the user already
+approved the resulting scope, include the common approval payload in this save
+to accept it atomically. Follow feature-capture's title and body rules for the
+final specification and any members; retitle while already revising. Preserve unresolved questions and unrelated
 gates; call `resolve_unresolved` only for settled items, with an accurate decision
 note. Keep the design gate until the requested discussion and material decisions
 are complete. If the session ends early, leave the gate and save where to resume.
 
 For one implementation task, save the final specification before clearing the
-design gate. Use `accept_task(task_id, expected_revision, approval={"basis":
+design gate, including actual approval when it covers the resulting scope.
+Otherwise use `accept_task(task_id, expected_revision, approval={"basis":
 "specific", "note": ...})` only when the user's informed authorization covers
 that exact current specification. A decision already given for the presented
 scope is sufficient; do not impose a second ceremonial approval. Otherwise
 present the concrete scope for acceptance, or leave it pending if the user only
 asked to design. Acceptance alone does not clear other unresolved items,
 prerequisites, disposition or scope gates. Use the common approval payload for
-creation and standalone acceptance: `specific` records a real exact-scope
+creation, amendment and standalone acceptance: `specific` records a real exact-scope
 request/decision; `delegated` records actual authority to select work within a
 stated goal and its limits. Both need a nonempty note identifying the supporting
 instruction. Origin (`source`) and `user_request` remain descriptive, including
@@ -76,7 +78,7 @@ instructions take precedence over inferred authorization.
 Use `withdraw_acceptance(task_id, expected_revision, note)` to correct mistaken
 acceptance without editing the specification. Proof and decisions survive;
 reapproval of the unchanged spec can reuse applicable review. Completed work
-remains immutable. Compact create/accept/withdraw acknowledgements provide IDs,
+remains immutable. Compact create/update/accept/withdraw acknowledgements provide IDs,
 revisions, acceptance and gates; read `get_tasks` for specification/history.
 
 Split a larger feature only when concrete, independently deliverable members
@@ -116,3 +118,20 @@ IDs, decisions, remaining questions and whether implementation is eligible.
 Use the normal implementation workflow only when requested and eligible. Design
 agreement is neither an implementation result nor independent review or human
 sign-off; do not create delivery records for this conversation.
+
+Specification amendments use `update_task(..., approval=...)` to save and accept
+already-authorized resulting scope in one revision-checked transaction. Reuse
+the actual supporting instruction; do not ask for the same approval again.
+Omit approval for unsettled or explicitly pending amendments. Every real
+title/body/criteria edit changes the spec; no editorial exemption is inferred.
+Before replacing body or acceptance_criteria, read the full task once with
+`get_tasks(ids=[...])` and pass its `specification_etag` plus the current task
+revision. These fields are whole replacements; board rows carry no token.
+Title-only edits need no full body read. `get_tasks` currently returns complete
+specifications by default; no `specification=true` flag exists. On conflict,
+re-read the full spec, reconcile, and use its current revision/token.
+Unchanged patches are no-ops unless approval changes; approving an unchanged
+pending spec leaves spec revision unchanged. Compact update acknowledgements
+report `changed`, `spec_changed`, `approval_changed`, revisions and gates.
+Approval grants no scope, prerequisite satisfaction, review, completion or
+execution. Attempts and reviews remain proof only for their original spec.

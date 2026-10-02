@@ -237,7 +237,8 @@ class Store:
         if type(expected_revision) is not int or task["revision"] != expected_revision:
             raise TaskError(
                 f"revision_conflict: expected {expected_revision}, current {task['revision']}; "
-                "get_tasks, reconcile your edit, and retry with the current revision"
+                "re-read the full specification with get_tasks, reconcile your edit, "
+                "and retry with the current revision and specification_etag for body/criteria"
             )
 
     @staticmethod
@@ -1127,6 +1128,12 @@ class Store:
         return task
 
     @staticmethod
+    def _specification_etag(task):
+        """Whole-field replacement guard, independent of non-spec task revisions."""
+        content = [task[key] for key in ("id", "spec_revision", "body", "acceptance_criteria")]
+        return "sha256:" + hashlib.sha256(_json(content).encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _group_complete(db, group_id):
         return (
             bool(
@@ -1229,6 +1236,7 @@ class Store:
                 },
             }
             task["complete"] = bool(members) and task["progress"]["remaining"] == 0
+        task["specification_etag"] = Store._specification_etag(task)
         return task
 
     def get_tasks(self, ids):
@@ -1432,6 +1440,18 @@ class Store:
     def _task_ack(db, task):
         """Continuation state, without echoing the specification or proof history."""
         task = {**task, "accepted": task["accepted_spec_revision"] == task["spec_revision"]}
+        if task["object_type"] == "group":
+            return {
+                key: task[key]
+                for key in (
+                    "id",
+                    "revision",
+                    "spec_revision",
+                    "accepted_spec_revision",
+                    "acceptance_basis",
+                    "status",
+                )
+            } | {"accepted": None, "gate_diagnostics": []}
         reasons = Store._gate_reasons(db, task)
         scoped = db.execute(
             """SELECT 1 FROM workstreams w WHERE w.project_id=?
@@ -1548,16 +1568,34 @@ class Store:
 
         return self._run("task.created", request, operation)
 
-    def update_task(self, task_id, expected_revision, changes):
-        request = dict(task_id=task_id, expected_revision=expected_revision, changes=changes)
+    def update_task(
+        self, task_id, expected_revision, changes, approval=None, specification_etag=None
+    ):
+        request = dict(
+            task_id=task_id,
+            expected_revision=expected_revision,
+            changes=changes,
+            approval=approval,
+            specification_etag=specification_etag,
+        )
 
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
             self._require_mutable(db, before, concrete=False)
             allowed = {"title", "body", "acceptance_criteria"}
-            if not isinstance(changes, dict) or not changes or set(changes) - allowed:
+            if not isinstance(changes, dict) or set(changes) - allowed:
                 raise TaskError("invalid_patch: edit title, body, or acceptance_criteria")
+            if {"body", "acceptance_criteria"} & changes.keys():
+                if specification_etag != self._specification_etag(before):
+                    raise TaskError(
+                        "specification_read_required: re-read the full specification with "
+                        "get_tasks, reconcile your replacement, and supply its "
+                        "specification_etag and current revision"
+                    )
+            if approval is not None:
+                self._require_mutable(db, before)
+                self._approval(approval)
             after = {**before, **changes}
             if (
                 not isinstance(after["title"], str)
@@ -1565,15 +1603,38 @@ class Store:
                 or any(not isinstance(after[k], str) for k in ("body", "acceptance_criteria"))
             ):
                 raise TaskError("invalid_specification")
-            if any(before[k] != after[k] for k in allowed):
+            spec_changed = any(before[k] != after[k] for k in allowed)
+            if spec_changed:
+                after["spec_revision"] = before["spec_revision"] + 1
+            if approval is not None:
                 after.update(
-                    spec_revision=before["spec_revision"] + 1,
+                    accepted_spec_revision=after["spec_revision"],
+                    acceptance_basis=approval["basis"],
+                    acceptance_note=approval["note"],
+                )
+            after["accepted"] = after["accepted_spec_revision"] == after["spec_revision"]
+            approval_changed = any(
+                before[k] != after[k]
+                for k in (
+                    "accepted",
+                    "accepted_spec_revision",
+                    "acceptance_basis",
+                    "acceptance_note",
+                )
+            )
+            changed = spec_changed or approval_changed
+            if changed:
+                after.update(
                     revision=before["revision"] + 1,
                     updated_at=timestamp(),
                 )
                 self._save_task(db, after)
             scope.update(before=before, after=after)
-            return self._details(db, after)
+            return self._task_ack(db, after) | {
+                "changed": changed,
+                "spec_changed": spec_changed,
+                "approval_changed": approval_changed,
+            }
 
         return self._run("task.updated", request, operation)
 

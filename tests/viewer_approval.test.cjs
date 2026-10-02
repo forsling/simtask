@@ -14,7 +14,7 @@ function element(tag = "div") {
       this.children.push(child); if (child && typeof child === "object") child.parentElement = this;
     } },
     replaceChildren(...children) { this.children = []; this.append(...children); },
-    setAttribute() {}, querySelector() { return null; }, showModal() {}, close() {},
+    setAttribute() {}, querySelector() { return null; }, showModal() {}, close() {}, remove() {},
   };
   all.push(node);
   return node;
@@ -26,7 +26,8 @@ function get(id) {
   return roots.get(id);
 }
 const context = vm.createContext({
-  document: {getElementById: get, createElement: element, addEventListener() {}},
+  document: {getElementById: get, createElement: element, createDocumentFragment: element,
+    createTextNode: text => Object.assign(element(), {textContent: text}), addEventListener() {}},
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
   sessionStorage: {getItem: () => ""}, history: {replaceState() {}},
 });
@@ -83,5 +84,44 @@ async function test() {
   const labels = descendants(run('nextStep(task, "signoff")')).map(node => node.textContent);
   assert.ok(labels.includes("Accept spec"));
   assert.ok(!labels.includes("Approve & sign off"), "Withdrawn approval gates sign-off presentation");
+  Object.assign(context.task, {object_type: "task", body: "Full original scope",
+    acceptance_criteria: "Proof", specification_etag: "original-token"});
+  run("editTask(task);");
+  const saveMode = get("field-save_mode");
+  assert.equal(saveMode.value, "pending");
+  assert.equal(get("field-approval_note").disabled, true);
+  context.values = new Map([["title", "Amended"], ["body", "Full amended scope"],
+    ["acceptance_criteria", "Proof"], ["save_mode", "pending"]]);
+  await run("submitAction(values)");
+  assert.equal(context.captured.action, "edit");
+  assert.equal(context.captured.payload.expected_revision, 9);
+  assert.equal(context.captured.payload.specification_etag, "original-token");
+  assert.deepEqual(Object.keys(context.captured.payload.changes).sort(), ["acceptance_criteria", "body", "title"]);
+  assert.equal("approval" in context.captured.payload, false);
+  saveMode.value = "accepted"; saveMode.onchange();
+  assert.equal(get("field-approval_note").required, true);
+  context.values.set("save_mode", "accepted");
+  context.values.set("approval_note", "I approve this amended exact scope");
+  await assert.rejects(run("submitAction(values)"), /Confirm approval/);
+  context.values.set("approve_exact_spec", "on");
+  await run("submitAction(values)");
+  assert.equal(context.captured.payload.approval.note, "I approve this amended exact scope");
+  assert.equal(context.captured.payload.approval.basis, "specific");
+  run(`api = async (action, payload) => {
+    if (action === "details") return {items: [{...task, revision: 10, specification_etag: "latest-token"}]};
+    captured = {action, payload};
+    const error = new Error("revision_conflict"); error.conflict = true; throw error;
+  };`);
+  await assert.rejects(run("submitAction(values)"), /revision_conflict/);
+  assert.equal(get("field-body").value, "Full original scope", "Failure preserves the open fields");
+  await descendants(get("conflict")).find(n => n.textContent === "Show the current version next to my draft").onclick();
+  const confirm = descendants(get("fields")).find(n => n.name === "approve_exact_spec");
+  confirm.checked = true;
+  descendants(get("conflict")).find(n => n.textContent === "I've merged my draft — save over this version").onclick();
+  assert.equal(confirm.checked, false, "Reconciliation requires approval of the merged scope");
+  run("api = async (action, payload) => {captured = {action, payload}; return {id: task.id, revision: 11, accepted: true};};");
+  await run("submitAction(values)");
+  assert.equal(context.captured.payload.expected_revision, 10);
+  assert.equal(context.captured.payload.specification_etag, "latest-token");
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});

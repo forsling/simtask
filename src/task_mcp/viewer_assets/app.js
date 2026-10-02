@@ -1033,7 +1033,7 @@ function decision({ title, description, action, data, key, label, submit, danger
 function accept(t) {
   decision({
     title: "Accept this spec?",
-    description: "Your acceptance covers the exact specification shown. Editing it later needs a new acceptance.",
+    description: "Your acceptance covers the exact specification shown. Later amendments can be saved with their own approval.",
     action: "accept",
     data: { task_id: t.id, expected_revision: t.revision },
     key: "approval_note",
@@ -1141,18 +1141,51 @@ function requestChanges(t, a) {
 function editTask(t) {
   if (!t || t.object_type !== "task" || t.status === "done") return;
   let revision = t.revision;
-  openDialog("Edit task", t.accepted ? "Saving changes to the spec withdraws its acceptance." : "", "Save");
+  let etag = t.specification_etag;
+  openDialog("Edit task", "Save a draft, or approve the exact resulting specification. Other gates still apply.", "Save draft");
   $("dialog").classList.add("wide");
   field("title", "Title", t.title, "input");
   field("body", "Specification", t.body, "tall", false, "Markdown is supported.");
   field("acceptance_criteria", "Acceptance criteria", t.acceptance_criteria, "textarea", false);
+  const mode = node("select");
+  mode.id = "field-save_mode";
+  mode.name = "save_mode";
+  for (const [value, label] of [["pending", "Save draft — changes need acceptance"], ["accepted", "Save and approve exact specification"]]) {
+    const option = node("option", label);
+    option.value = value;
+    mode.append(option);
+  }
+  const modeLabel = node("label", "Acceptance");
+  modeLabel.htmlFor = mode.id;
+  $("fields").append(el("div", "field", modeLabel, mode));
+  const note = field("approval_note", "Your approval of this resulting scope (note)", "", "textarea", false);
+  const confirmLabel = node("label", undefined, "check");
+  const confirm = node("input");
+  confirm.type = "checkbox";
+  confirm.name = "approve_exact_spec";
+  confirmLabel.append(confirm, node("span", "I approve the resulting specification above. Other gates still apply."));
+  $("fields").append(confirmLabel);
+  mode.onchange = () => {
+    const accepted = mode.value === "accepted";
+    note.required = confirm.required = accepted;
+    note.disabled = confirm.disabled = !accepted;
+    note.parentElement.hidden = confirmLabel.hidden = !accepted;
+    confirm.checked = false;
+    $("submit").textContent = accepted ? "Save and approve" : "Save draft";
+  };
+  mode.value = "pending";
+  mode.onchange();
   submitAction = async (values) => {
+    const payload = {
+      task_id: t.id, expected_revision: revision, specification_etag: etag,
+      changes: Object.fromEntries(["title", "body", "acceptance_criteria"].map(key => [key, values.get(key)])),
+    };
+    if (values.get("save_mode") === "accepted") {
+      if (!values.has("approve_exact_spec")) throw new Error("Confirm approval of the exact resulting specification.");
+      payload.approval = { basis: "specific", note: values.get("approval_note") };
+    }
     try {
-      return await api("edit", {
-        task_id: t.id,
-        expected_revision: revision,
-        changes: Object.fromEntries(values),
-      });
+      return await api("edit", payload);
     } catch (e) {
       if (e.conflict) {
         $("conflict").replaceChildren(
@@ -1167,7 +1200,9 @@ function editTask(t) {
               markdown(latest.acceptance_criteria),
               button("I've merged my draft — save over this version", () => {
                 revision = latest.revision;
-                $("form-error").textContent = "Ready. Check your draft and save.";
+                etag = latest.specification_etag;
+                confirm.checked = false;
+                $("form-error").textContent = "Check your merged draft; confirm its resulting scope if saving with approval.";
                 n.remove();
               }, "btn small"),
             );

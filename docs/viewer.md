@@ -24,9 +24,13 @@ and returns the link. No browser is launched automatically.
 - Shared groups show all members across all projects and global completion.
   Opening a member moves to its own project's queue. A group's completion does
   not mean a particular local workstream delivered all of its members.
-- New tasks capture your request and begin accepted in the selected workstream,
-  or the project inbox when viewing the whole project. Editing title,
-  specification or acceptance criteria invalidates specification acceptance.
+- New tasks capture your request in the selected workstream or project inbox.
+  Choose draft or explicitly approve the exact specification. Edits similarly
+  offer **Save draft** or **Save and approve exact specification**. A changed
+  draft becomes pending; an approved save records your note and accepts the
+  resulting scope atomically. Approval leaves other gates intact and starts no
+  implementation. Saving unchanged fields preserves the spec revision; an
+  unchanged pending spec can be approved in the same save.
 - Accept a specification, answer a question, or defer/resume/drop with an
   explicit confirmation and recorded decision note. These are domain operations,
   not a generic status picker. Dropped/deferred context remains recoverable by
@@ -54,8 +58,10 @@ Store method, SQL or shell command endpoint.
 Dialogs submit the revision they read. If another browser or agent changes the
 same task, the Store rejects the stale write. Your unsaved fields and note stay
 open. Load the current version alongside your draft, reconcile the contents,
-and explicitly choose that revision before submitting again. Decision dialogs
-also require their confirmation checkbox again. The Store always makes the
+and explicitly choose that revision before submitting again. Full-detail reads
+also supply the replacement token used when saving the body/criteria. Reconciliation
+refreshes both revision and token. Decision and approved-edit dialogs require
+their confirmation checkbox again after reconciliation. The Store always makes the
 final eligibility check. A network failure is not proof a write failed: inspect
 the queue/history before retrying a create, which is not deduplicated.
 

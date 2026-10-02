@@ -223,8 +223,22 @@ means the user's request/decision covers the exact scope; `delegated` means real
 authority to select work within a stated goal, recorded in the note. New approval
 must be classified and have a nonempty note. Standalone
 `accept_task(task_id, expected_revision, approval)` uses the same payload.
-Editing title, body or acceptance criteria increments the hidden
-specification revision and invalidates acceptance. Resolving an unresolved item,
+`update_task(task_id, expected_revision, changes, approval?, specification_etag?)`
+saves a specification amendment and its optional approval in one transaction.
+Title, body and acceptance criteria changes advance the spec revision; without
+approval the new spec becomes pending. Supply the same specific/delegated
+payload when an actual decision already covers the resulting exact scope. An
+unchanged patch is a no-op unless approval changes; approving an unchanged
+pending spec advances only the task revision. No edit is inferred to be editorial.
+
+Body and criteria are whole-field replacements. First call `get_tasks(ids=[...])`
+for the complete spec and pass its `specification_etag` with the current task
+revision. The token binds task ID, spec revision, full body and criteria; it is a
+stale-read/data-loss guard, not authority. Title-only edits need no full read.
+On conflict, re-read the full spec and reconcile before retrying. Full detail
+remains the `get_tasks` default; there is no `specification=true` flag. The planned
+summary-only field is separate future work and is not available in this version.
+Resolving an unresolved item,
 changing scope or order, or adding evidence does not invalidate acceptance.
 Unresolved items are live gates; resolve them after settling the matter and
 record any material decision in the task description. A `blocked_by` prerequisite
@@ -388,9 +402,12 @@ layout should select it explicitly. Export itself never creates a file.
 See [the format details](docs/exports.md) and a
 [synthetic example report](docs/export-example.md).
 
-Creation, acceptance and withdrawal return compact acknowledgements with IDs,
+Creation, amendment, acceptance and withdrawal return compact acknowledgements with IDs,
 task/spec revisions, acceptance, disposition and applicable gate diagnostics;
 creation also returns changed workstream/group revisions for continuation.
+Amendments return `changed`, `spec_changed` and `approval_changed`; the latter
+includes activation/invalidation of current approval or a changed approval
+basis/note. No-op acknowledgements retain the current revisions.
 Fetch `get_tasks` for full specification and proof. Approval does not clear
 unresolved/prerequisite/disposition/scope gates or begin implementation. Correct
 mistaken acceptance with `withdraw_acceptance(task_id, expected_revision, note)`:

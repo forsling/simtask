@@ -56,11 +56,13 @@ async def exercise(call, samples, project, workstream):
             workstream_id=workstream,
             scope="workstream",
         )
+        full = await timed("get_tasks", ids=[task["id"]])
         task = await timed(
             "update_task",
             task_id=task["id"],
             expected_revision=task["revision"],
             changes={"body": "Synthetic benchmark specification"},
+            specification_etag=full["items"][0]["specification_etag"],
         )
         task = await timed(
             "accept_task",

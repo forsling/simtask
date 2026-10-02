@@ -216,8 +216,14 @@ def test_real_spec_changes_keep_prior_review_on_its_original_revision(context):
     )
     attempt = store.record_result(created["id"], ws, 1, "worker", "Done", "Proof")
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Checked")
-    edited = store.update_task(created["id"], 2, {"body": "Changed requirements"})
-    accepted = store.accept_task(created["id"], edited["revision"], approve())
+    edited = store.update_task(
+        created["id"],
+        2,
+        {"body": "Changed requirements"},
+        approval=approve(),
+        specification_etag=detail(store, created)["specification_etag"],
+    )
+    accepted = edited
     assert accepted["gate_diagnostics"] == [] and accepted["spec_revision"] == 2
     assert detail(store, created)["attempts"][0]["spec_revision"] == 1
     with pytest.raises(TaskError, match="review_required"):

@@ -59,8 +59,18 @@ no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
 state. Schema/protocol revision 2 intentionally changes the client contract.
 
-Acceptance binds to the current specification. Editing title, description or
-acceptance criteria invalidates it; clearing an unresolved item or recording
+Acceptance binds to the current specification. `update_task` atomically saves
+title/body/criteria amendments and optional exact-scope specific/delegated
+approval. An actual edit without approval becomes pending; all three fields
+belong to the spec, without inferred editorial exceptions. Unchanged fields
+are no-ops unless approval changes; unchanged pending specs can be approved
+without advancing their spec revision. Whole-field body/criteria replacement
+requires the `specification_etag` from a full detail read, tied to task ID,
+spec revision, body and criteria, alongside the expected task revision.
+`get_tasks` still returns full details in one call; compact cards and a separate
+descriptive summary field are deferred. Approval is committed with the resulting
+spec so no intermediate accepted state is exposed. Failed concurrency or audit
+writes roll back both together. Clearing an unresolved item or recording
 evidence does not. Revision-checked `withdraw_acceptance` audits its reason and
 clears current acceptance without a dummy edit, preserving spec revision,
 decisions and proof history. It gates implementation and sign-off. Reapproval
@@ -75,7 +85,7 @@ available after success or rollback. Migration preserves all existing rows and
 history; it never infers origin or approval basis from prior notes. Fresh empty
 databases create schema 2 directly. Candidate code, databases and companion
 workflow updates must remain isolated until client rollout can happen together.
-Create/accept/withdraw acknowledgements return continuation IDs/revisions,
+Create/update/accept/withdraw acknowledgements return continuation IDs/revisions,
 acceptance and accurate gates without echoing specs or proof history.
 
 Groups store overarching context and aggregate completion. They are never

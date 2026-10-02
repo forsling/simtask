@@ -423,8 +423,42 @@ def test_draft_approved_creation_and_withdrawal_return_compact_continuation(view
     )
 
 
+def test_approved_and_draft_amendment_http_flow(viewer):
+    server, store, context = viewer
+    task = create(server, context)
+    payload = {
+        "task_id": task["id"],
+        "expected_revision": task["revision"],
+        "changes": {"body": "Complete amended scope", "acceptance_criteria": "New proof"},
+        "approval": {"basis": "specific", "note": "I approve this resulting exact scope"},
+    }
+    status, denied = request(server, "/api/edit", payload)
+    assert status == 400 and "specification_read_required" in denied["error"]
+    assert store.get_tasks([task["id"]])["items"][0] == task
+    payload["specification_etag"] = task["specification_etag"]
+    status, saved = request(server, "/api/edit", payload)
+    assert status == 200 and saved["accepted"] and saved["spec_changed"]
+    assert saved["spec_revision"] == saved["accepted_spec_revision"] == 2
+    assert not {"body", "attempts", "acceptance_note"} & saved.keys()
+    status, conflict = request(server, "/api/edit", {**payload, "changes": {"body": "Stale"}})
+    assert status == 409 and "full specification" in conflict["error"]
+    latest = request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
+    assert latest["body"] == "Complete amended scope"
+    status, draft = request(
+        server,
+        "/api/edit",
+        {
+            "task_id": task["id"],
+            "expected_revision": latest["revision"],
+            "specification_etag": latest["specification_etag"],
+            "changes": {"body": "Draft scope"},
+        },
+    )
+    assert status == 200 and not draft["accepted"] and draft["spec_revision"] == 3
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
-def test_creation_approval_and_withdrawal_form_handlers():
+def test_creation_amendment_approval_and_withdrawal_form_handlers():
     script = Path(__file__).with_name("viewer_approval.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
