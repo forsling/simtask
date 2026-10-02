@@ -22,7 +22,7 @@ async def exercise(database: Path):
         for entrypoint in ("get_default_skills", "feature-capture", "feature-design"):
             assert entrypoint in client.instructions
         tools = (await client.list_tools()).tools
-        assert len(tools) == 37
+        assert len(tools) == 38
         assert "runtime_info" in {tool.name for tool in tools}
         assert "open_task_viewer" in {tool.name for tool in tools}
         assert "dismiss_gate_proposal" in {tool.name for tool in tools}
@@ -52,6 +52,7 @@ async def exercise(database: Path):
             acceptance_criteria="The demonstration passes.",
             source="user",
             user_request="Synthetic demo request",
+            approval={"basis": "specific", "note": "Synthetic demo request"},
             workstream_id=workstream_id,
             scope="workstream",
         )
@@ -116,6 +117,51 @@ async def exercise(database: Path):
             user_note="Synthetic demo approval, not a real user verdict.",
         )
         assert signed["status"] == "done"
+        # User origin preserves the request without approving an exploratory spec.
+        draft = await call(
+            "create_task",
+            project=project_id,
+            title="Explore a design later",
+            source="user",
+            user_request="Synthetic design-first request; leave pending",
+        )
+        assert not draft["accepted"] and "body" not in draft and "attempts" not in draft
+        details = (await call("get_tasks", ids=[draft["id"]]))["items"][0]
+        assert details["source"] == "user" and details["user_request"]
+        accepted = await call(
+            "accept_task",
+            task_id=draft["id"],
+            expected_revision=draft["revision"],
+            approval={
+                "basis": "delegated",
+                "note": "Synthetic authority to choose this exact scope",
+            },
+        )
+        assert accepted["accepted"] and accepted["acceptance_basis"] == "delegated"
+        withdrawn = await call(
+            "withdraw_acceptance",
+            task_id=draft["id"],
+            expected_revision=accepted["revision"],
+            note="Synthetic correction of mistaken approval",
+        )
+        assert not withdrawn["accepted"] and withdrawn["spec_revision"] == accepted["spec_revision"]
+        assert "pending_acceptance" in withdrawn["gate_diagnostics"]
+        approved_again = await call(
+            "accept_task",
+            task_id=draft["id"],
+            expected_revision=withdrawn["revision"],
+            approval={"basis": "specific", "note": "Synthetic exact-scope approval"},
+        )
+        assert approved_again["revision"] == withdrawn["revision"] + 1
+        obsolete = await client.call_tool(
+            "accept_task",
+            {
+                "task_id": draft["id"],
+                "expected_revision": approved_again["revision"],
+                "user_note": "Obsolete unclassified approval",
+            },
+        )
+        assert obsolete.is_error
         second = await call(
             "init",
             path="/tmp/task-mcp-demo-service-b",
@@ -150,6 +196,7 @@ async def exercise(database: Path):
                 title=title,
                 source="user",
                 user_request="Synthetic group demo",
+                approval={"basis": "specific", "note": "Synthetic group demo"},
                 group_id=group["id"],
                 group_expected_revision=current_group["revision"],
             )
@@ -181,7 +228,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.3.0"
+        assert catalog["version"] == "1.4.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

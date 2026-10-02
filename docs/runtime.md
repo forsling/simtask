@@ -63,3 +63,10 @@ step. Client-specific UI controls vary; the verification above defines success.
 The disposable stdio demo (`.venv/bin/python examples/demo.py`) checks a fresh
 subprocess and persisted task behavior. It is useful to verify the installation,
 but it does not prove the affected client's cached catalog has changed.
+
+Protocol/database schema revision 2 introduces independent persisted origin,
+classified `{basis, note}` approval for create/accept, and audited withdrawal.
+Schema 0/1 upgrades require the service's fresh verified online backup. Roll out
+code, stored schema and refreshed client tool catalogs together. During a
+protected period with old clients, use only isolated candidate code and explicit
+disposable databases; prepare native skills without installing or reloading them.

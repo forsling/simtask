@@ -32,6 +32,7 @@ def dispatch(store, action, data):
         "create": store.create_task,
         "edit": store.update_task,
         "accept": store.accept_task,
+        "withdraw-acceptance": store.withdraw_acceptance,
         "disposition": store.set_disposition,
         "question": store.add_unresolved,
         "resolve": store.resolve_unresolved,

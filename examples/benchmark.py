@@ -66,7 +66,10 @@ async def exercise(call, samples, project, workstream):
             "accept_task",
             task_id=task["id"],
             expected_revision=task["revision"],
-            user_note="Synthetic benchmark acceptance, not a real user verdict",
+            approval={
+                "basis": "specific",
+                "note": "Synthetic benchmark acceptance, not a real user verdict",
+            },
         )
         await timed(
             "record_result",

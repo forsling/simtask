@@ -39,6 +39,7 @@ DESTRUCTIVE = {
     "set_scope",
     "update_task",
     "accept_task",
+    "withdraw_acceptance",
     "set_disposition",
     "resolve_unresolved",
     "accept_gate_proposal",
@@ -120,6 +121,7 @@ def test_append_only_tools_preserve_existing_payload_and_audit_history(tmp_path)
         "Original criterion",
         source="user",
         user_request="Original user request",
+        approval={"basis": "specific", "note": "Original user request"},
         workstream_id=workstream,
         scope="workstream",
     )
@@ -158,6 +160,7 @@ def test_append_only_tools_preserve_existing_payload_and_audit_history(tmp_path)
         "Delivery body",
         source="user",
         user_request="Synthetic request",
+        approval={"basis": "specific", "note": "Synthetic request"},
         workstream_id=workstream,
         scope="workstream",
     )

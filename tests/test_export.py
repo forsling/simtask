@@ -20,15 +20,17 @@ def context(tmp_path):
 
 def create(context, title, **kwargs):
     store, project, ws = context
-    return store.create_task(
+    created = store.create_task(
         project,
         title,
         source="user",
         user_request="Synthetic export test",
+        approval={"basis": "specific", "note": "Synthetic export test"},
         scope="workstream",
         workstream_id=ws,
         **kwargs,
     )
+    return store.get_tasks([created["id"]])["items"][0]
 
 
 def current(store, task):
@@ -142,7 +144,9 @@ def test_attempt_history_does_not_misrepresent_current_workstream_or_spec(contex
     old = result(context, task)
     store.record_review(old["id"], 1, "independent", "pass", "First version checked")
     task = store.update_task(task["id"], current(store, task)["revision"], {"body": "New version"})
-    task = store.accept_task(task["id"], task["revision"], "Accept new version")
+    task = store.accept_task(
+        task["id"], task["revision"], {"basis": "specific", "note": "Accept new version"}
+    )
     text = store.export_workstream(ws)["content"]
     assert "- Workflow: Ready (ready)" in text
     assert "superseded specification, other workstream" in text
@@ -175,6 +179,7 @@ def test_export_shared_groups_respect_local_scope_and_filter(context, tmp_path):
                 body=f"{title} private body",
                 source="user",
                 user_request="Test",
+                approval={"basis": "specific", "note": "Test"},
                 group_id=group["id"],
                 group_expected_revision=group["revision"],
             )

@@ -116,6 +116,8 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                 f"- Stored disposition: {task['status']}",
                 f"- Revision: {task['revision']}; specification: {task['spec_revision']}",
                 f"- Current specification accepted: {'yes' if task['accepted'] else 'no'}",
+                f"- Request origin: {task['source']}",
+                f"- Approval basis (last recorded): {task['acceptance_basis']}",
                 f"- Accepted specification: {task['accepted_spec_revision'] or 'none'}",
                 f"- Updated: {task['updated_at']}",
             ]
@@ -127,6 +129,8 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
         lines.append("")
         _section(lines, "Specification", task["body"])
         _section(lines, "Acceptance criteria", task["acceptance_criteria"])
+        if task["user_request"]:
+            _section(lines, "Original request", task["user_request"])
         if task["acceptance_note"]:
             _section(lines, "Acceptance note (last recorded)", task["acceptance_note"])
 

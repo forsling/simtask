@@ -1149,7 +1149,8 @@ dialog h2 {
   color: var(--text-2);
 }
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--line-2);
@@ -1161,7 +1162,8 @@ dialog h2 {
   resize: vertical;
 }
 .field input:focus,
-.field textarea:focus {
+.field textarea:focus,
+.field select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--focus);

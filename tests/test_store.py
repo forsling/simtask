@@ -20,16 +20,20 @@ def setup(store, tmp_path, branch="main"):
 
 
 def task(store, project, ws, title="Implement", source="user"):
-    return store.create_task(
+    created = store.create_task(
         project,
         title,
         "Goal and boundaries",
         "Observable acceptance",
         source=source,
+        approval={"basis": "specific", "note": "User requested this outcome"}
+        if source == "user"
+        else None,
         user_request="User requested this outcome" if source == "user" else "",
         workstream_id=ws,
         scope="workstream",
     )
+    return store.get_tasks([created["id"]])["items"][0]
 
 
 def complete(store, task_id, workstream_id, revision):
@@ -356,7 +360,9 @@ def test_pending_acceptance_spec_invalidation_and_unresolved_resolution(store, t
     proposed = task(store, project, ws, source="agent")
     assert not proposed["accepted"]
     assert store.get_next_task(ws)["diagnostics"]["pending_acceptance"] == 1
-    accepted = store.accept_task(proposed["id"], 1, "User accepted exact specification")
+    accepted = store.accept_task(
+        proposed["id"], 1, {"basis": "specific", "note": "User accepted exact specification"}
+    )
     assert accepted["accepted"]
     gated = store.add_unresolved(proposed["id"], 2, "Need user-only credential")
     assert store.get_next_task(ws)["diagnostics"]["unresolved_items"] == 1
@@ -531,7 +537,9 @@ def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
         item["id"] for item in store.list_tasks(project, ws, state="prerequisites")["items"]
     }
     for member in group["members"]:
-        accepted = store.accept_task(member, 1, "User accepted member")
+        accepted = store.accept_task(
+            member, 1, {"basis": "specific", "note": "User accepted member"}
+        )
         attempt = store.record_result(
             member, ws, accepted["revision"], "worker", "Done", "Verified"
         )
@@ -565,7 +573,9 @@ def test_group_has_no_execution_gates_and_requires_resolved_decomposition(store,
     assert group["unresolved_items"] == []
     assert group["blocked_by"] == [] and group["attempts"] == []
     for action in (
-        lambda: store.accept_task(parent["id"], group["revision"], "Accept"),
+        lambda: store.accept_task(
+            parent["id"], group["revision"], {"basis": "specific", "note": "Accept"}
+        ),
         lambda: store.set_disposition(parent["id"], group["revision"], "deferred", "Wait"),
         lambda: store.add_unresolved(parent["id"], group["revision"], "Gate"),
         lambda: store.propose_prerequisite(parent["id"], group["revision"], "New task"),
@@ -603,7 +613,9 @@ def test_group_prerequisites_before_and_after_decomposition(store, tmp_path):
         assert store.get_tasks([member])["items"][0]["blocked_by"] == [foundation["id"]]
     complete(store, foundation["id"], ws, 1)
     for member in group["members"]:
-        accepted = store.accept_task(member, 1, "User accepted member")
+        accepted = store.accept_task(
+            member, 1, {"basis": "specific", "note": "User accepted member"}
+        )
         complete(store, member, ws, accepted["revision"])
     assert store.get_next_task(ws)["task"]["id"] == downstream["id"]
     later = task(store, project, ws, "Later")
@@ -652,7 +664,9 @@ def test_completed_tasks_and_attempts_are_immutable(store, tmp_path):
     other = task(store, project, ws, "Other")
     actions = (
         lambda: store.update_task(done["id"], done["revision"], {"body": "Changed"}),
-        lambda: store.accept_task(done["id"], done["revision"], "Again"),
+        lambda: store.accept_task(
+            done["id"], done["revision"], {"basis": "specific", "note": "Again"}
+        ),
         lambda: store.set_disposition(done["id"], done["revision"], "open", "Reopen"),
         lambda: store.add_unresolved(done["id"], done["revision"], "New gate"),
         lambda: store.add_prerequisite(done["id"], done["revision"], other["id"]),
@@ -691,7 +705,9 @@ def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_pat
     resolved = store.resolve_unresolved(
         created["id"], 5, revised["unresolved_items"][0]["id"], "Settled"
     )
-    accepted = store.accept_task(created["id"], resolved["revision"], "Accepted revised spec")
+    accepted = store.accept_task(
+        created["id"], resolved["revision"], {"basis": "specific", "note": "Accepted revised spec"}
+    )
     final = store.record_result(
         created["id"], ws, accepted["revision"], "worker", "New result", "verified"
     )
@@ -718,7 +734,9 @@ def test_parallel_workstream_attempts_and_group_completion(store, tmp_path):
     )
     other = branch["workstream"]["id"]
     for member in (a, b):
-        accepted = store.accept_task(member, 1, "User accepted member")
+        accepted = store.accept_task(
+            member, 1, {"basis": "specific", "note": "User accepted member"}
+        )
         result = store.record_result(
             member, ws, accepted["revision"], "worker-1", "Done", "tests pass"
         )

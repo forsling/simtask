@@ -14,9 +14,11 @@ feature (including "add a design task") uses `feature-capture` first.
 Use `list_tasks` and `get_tasks` to present each pending task's goal, boundaries,
 acceptance criteria, scope, and open unresolved items. Agent-discovered work
 starts pending through `create_task(source="agent")`; capturing it never grants
-authorization. The user may accept the current specification with `accept_task`
-after an informed decision. A task explicitly requested by the user may be
-created accepted with `source="user"` and the request recorded in `user_request`
+authorization. After an informed decision, use
+`accept_task(..., approval={"basis": "specific", "note": ...})` for the exact
+current specification. A task explicitly requested by the user may be
+created accepted with `approval={"basis": "specific", "note": ...}` identifying
+the actual supporting instruction, and its origin/request separately recorded
 when the request authorizes that implementation specification. "Add a task" can
 supply that authorization without a separate acceptance keyword; queueing it
 does not start implementation. Respect explicit requests to leave work unaccepted.
@@ -41,3 +43,12 @@ through its member projects. Pass the current group revision when creating or
 attaching a member, including a member in another project. Groups hold context
 and whole-group completion only; put execution blockers on concrete members.
 Preserve deferred context and audit history.
+
+Origin (`source`) and `user_request` describe where a task came from, including
+pending tasks; they never accept it. Use delegated approval only when the user's
+actual instruction grants authority to select that scope within a stated goal,
+and identify it in the note. Explicit pending/design-first requests take
+precedence. Approval clears no other gates and queueing starts no implementation.
+Use `withdraw_acceptance` with the last revision and a reason to correct mistaken
+acceptance while retaining spec revision, decisions and proof. Reapproval of the
+same spec may reuse current review; completed tasks remain immutable.

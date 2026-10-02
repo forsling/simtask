@@ -41,6 +41,7 @@ def seed(path):
                 criteria,
                 source="user",
                 user_request="Synthetic demo request",
+                approval={"basis": "specific", "note": "Synthetic demo request"},
                 workstream_id=stream,
                 scope="workstream",
             )
@@ -70,6 +71,7 @@ def seed(path):
         "Explain the new writing flow",
         source="user",
         user_request="Synthetic request",
+        approval={"basis": "specific", "note": "Synthetic request"},
         workstream_id=other["workstream"]["id"],
         scope="workstream",
         group_id=group["id"],

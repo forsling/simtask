@@ -48,17 +48,35 @@ an empty local slice does not imply global completion.
 
 ## Tasks and groups
 
-An agent-created task begins pending. A user-requested task can be created
-accepted when the request is recorded and covers its concrete specification.
-An ordinary "add a task" request can supply that authorization without a
-separate acceptance keyword; recording it does not start implementation.
-Exploratory ideas, agent-invented scope and explicit unaccepted requests remain
-pending. Acceptance binds to the current task
-specification. Editing the title, description, or acceptance criteria
-invalidates it; clearing an unresolved item or recording evidence does not.
-Readiness is derived from acceptance, unresolved items, prerequisites, scope,
-and implementation attempts. Completed tasks are immutable. A new requirement
-after completion is a new task.
+Task origin (`source`) and the original `user_request` are descriptive metadata,
+independent of approval and retained on pending tasks. Creation without approval
+is pending. A common `approval={basis: specific|delegated, note: actual supporting
+instruction}` payload atomically accepts the exact created spec, and is also
+required by standalone acceptance. Specific approval covers the exact scope;
+delegated approval requires actual authority to select work within a stated
+goal. Explicit pending/design-first requests take precedence. Queueing starts
+no implementation; approval clears no other gates. Legacy origin and approvals
+are unknown without guessing from historic text or changing accepted/completed
+state. Schema/protocol revision 2 intentionally changes the client contract.
+
+Acceptance binds to the current specification. Editing title, description or
+acceptance criteria invalidates it; clearing an unresolved item or recording
+evidence does not. Revision-checked `withdraw_acceptance` audits its reason and
+clears current acceptance without a dummy edit, preserving spec revision,
+decisions and proof history. It gates implementation and sign-off. Reapproval
+of the same spec may reuse applicable review; genuine spec changes retain old
+attempts on their old revision. Readiness also depends on unresolved items,
+prerequisites, disposition, scope and attempts. Completed tasks are immutable;
+a new requirement after completion is a new task.
+
+Existing schemas migrate transactionally after a fresh verified SQLite online
+backup under the writer lock. Backup includes committed WAL data and remains
+available after success or rollback. Migration preserves all existing rows and
+history; it never infers origin or approval basis from prior notes. Fresh empty
+databases create schema 2 directly. Candidate code, databases and companion
+workflow updates must remain isolated until client rollout can happen together.
+Create/accept/withdraw acknowledgements return continuation IDs/revisions,
+acceptance and accurate gates without echoing specs or proof history.
 
 Groups store overarching context and aggregate completion. They are never
 implementable and carry no unresolved items, disposition, attempts, or execution

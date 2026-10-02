@@ -59,12 +59,25 @@ note. Keep the design gate until the requested discussion and material decisions
 are complete. If the session ends early, leave the gate and save where to resume.
 
 For one implementation task, save the final specification before clearing the
-design gate. Use `accept_task` only when the user's informed authorization covers
+design gate. Use `accept_task(task_id, expected_revision, approval={"basis":
+"specific", "note": ...})` only when the user's informed authorization covers
 that exact current specification. A decision already given for the presented
 scope is sufficient; do not impose a second ceremonial approval. Otherwise
 present the concrete scope for acceptance, or leave it pending if the user only
 asked to design. Acceptance alone does not clear other unresolved items,
-prerequisites, disposition or scope gates.
+prerequisites, disposition or scope gates. Use the common approval payload for
+creation and standalone acceptance: `specific` records a real exact-scope
+request/decision; `delegated` records actual authority to select work within a
+stated goal and its limits. Both need a nonempty note identifying the supporting
+instruction. Origin (`source`) and `user_request` remain descriptive, including
+on pending briefs, and never imply acceptance. Explicit pending/design-first
+instructions take precedence over inferred authorization.
+
+Use `withdraw_acceptance(task_id, expected_revision, note)` to correct mistaken
+acceptance without editing the specification. Proof and decisions survive;
+reapproval of the unchanged spec can reuse applicable review. Completed work
+remains immutable. Compact create/accept/withdraw acknowledgements provide IDs,
+revisions, acceptance and gates; read `get_tasks` for specification/history.
 
 Split a larger feature only when concrete, independently deliverable members
 improve execution. Present their boundaries, acceptance criteria and dependencies

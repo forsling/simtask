@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 1
+DATABASE_SCHEMA_REVISION = 2
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
@@ -29,7 +29,9 @@ SCHEMA = (
         accepted_spec_revision INTEGER, acceptance_note TEXT NOT NULL,
         unresolved_json TEXT NOT NULL, parent_group_id TEXT REFERENCES tasks(id),
         order_key INTEGER NOT NULL, selected_attempt_id TEXT,
-        revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'unknown', user_request TEXT NOT NULL DEFAULT '',
+        acceptance_basis TEXT NOT NULL DEFAULT 'unknown')""",
     "CREATE INDEX IF NOT EXISTS task_board ON tasks(project_id, order_key, id)",
     """CREATE TABLE IF NOT EXISTS workstreams (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
@@ -104,32 +106,82 @@ class Store:
         self.path = path.expanduser().absolute()
         self.actor = actor
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.migration_backup_path: Path | None = None
         with closing(self._connect()) as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version > DATABASE_SCHEMA_REVISION:
+                raise RuntimeError("task database schema is newer than this server supports")
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA foreign_keys=OFF")
             db.execute("BEGIN IMMEDIATE")
-            if db.execute("PRAGMA user_version").fetchone()[0] > DATABASE_SCHEMA_REVISION:
-                raise RuntimeError("task database schema is newer than this server supports")
-            for statement in SCHEMA:
-                db.execute(statement)
-            columns = {row["name"]: row for row in db.execute("PRAGMA table_info(tasks)")}
-            if columns["project_id"]["notnull"]:
-                db.execute(
-                    SCHEMA[2].replace(
-                        "CREATE TABLE IF NOT EXISTS tasks (", "CREATE TABLE tasks_new ("
-                    )
-                )
-                db.execute("INSERT INTO tasks_new SELECT * FROM tasks")
-                db.execute("DROP TABLE tasks")
-                db.execute("ALTER TABLE tasks_new RENAME TO tasks")
-                db.execute(SCHEMA[3])
-            if db.execute("PRAGMA foreign_key_check").fetchone():
-                raise RuntimeError("task database has invalid foreign keys")
-            # Revision 0 is the legacy, unnumbered schema. Stamp only after its
-            # existing migrations and integrity checks succeed in this transaction.
-            db.execute(f"PRAGMA user_version={DATABASE_SCHEMA_REVISION}")
-            db.commit()
+            try:
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                if version > DATABASE_SCHEMA_REVISION:
+                    raise RuntimeError("task database schema is newer than this server supports")
+                existing = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+                ).fetchone()
+                if existing and version < DATABASE_SCHEMA_REVISION:
+                    # The writer lock prevents a commit between this online snapshot
+                    # and the migration. A separate read connection includes WAL data.
+                    self.migration_backup_path = self._backup_for_migration(version)
+                self._upgrade_schema(db)
+                db.execute(f"PRAGMA user_version={DATABASE_SCHEMA_REVISION}")
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
             db.execute("PRAGMA foreign_keys=ON")
+
+    @staticmethod
+    def _upgrade_schema(db):
+        for statement in SCHEMA:
+            db.execute(statement)
+        columns = {row["name"]: row for row in db.execute("PRAGMA table_info(tasks)")}
+        for name, definition in (
+            ("source", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("user_request", "TEXT NOT NULL DEFAULT ''"),
+            ("acceptance_basis", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ):
+            if name not in columns:
+                db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+        if columns["project_id"]["notnull"]:
+            db.execute(
+                SCHEMA[2].replace("CREATE TABLE IF NOT EXISTS tasks (", "CREATE TABLE tasks_new (")
+            )
+            db.execute("INSERT INTO tasks_new SELECT * FROM tasks")
+            db.execute("DROP TABLE tasks")
+            db.execute("ALTER TABLE tasks_new RENAME TO tasks")
+            db.execute(SCHEMA[3])
+        if db.execute("PRAGMA foreign_key_check").fetchone():
+            raise RuntimeError("task database has invalid foreign keys")
+        if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise RuntimeError("task database failed integrity check")
+
+    def _backup_for_migration(self, version: int) -> Path:
+        """Create and verify a fresh SQLite online backup before changing schema."""
+        backup = self.path.with_name(
+            f"{self.path.name}.pre-schema-{DATABASE_SCHEMA_REVISION}.{uuid4().hex}.sqlite3"
+        )
+        # Never replace an earlier backup and keep private task contents private.
+        descriptor = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        try:
+            with (
+                closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as source,
+                closing(sqlite3.connect(backup)) as destination,
+            ):
+                source.backup(destination)
+                if (
+                    destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok"
+                    or destination.execute("PRAGMA foreign_key_check").fetchone()
+                    or destination.execute("PRAGMA user_version").fetchone()[0] != version
+                ):
+                    raise RuntimeError("pre-migration backup failed verification")
+            return backup
+        except Exception:
+            backup.unlink(missing_ok=True)
+            raise
 
     def database_schema_revision(self) -> int:
         """Read the actual persisted revision without an audit or any database write."""
@@ -469,6 +521,8 @@ class Store:
             return "group"
         if task["status"] in {"done", "dropped", "deferred"}:
             return task["status"]
+        if "pending_acceptance" in reasons:
+            return "pending_acceptance"
         if "signoff" in reasons:
             return "signoff"
         if "review" in reasons:
@@ -1108,6 +1162,7 @@ class Store:
             unresolved_json=:unresolved_json, object_type=:object_type,
             parent_group_id=:parent_group_id, order_key=:order_key, status=:status,
             selected_attempt_id=:selected_attempt_id,
+            source=:source, user_request=:user_request, acceptance_basis=:acceptance_basis,
             revision=:revision, updated_at=:updated_at WHERE id=:id""",
             values,
         )
@@ -1300,15 +1355,43 @@ class Store:
         return self._run("group.member_added", request, operation)
 
     @staticmethod
+    def _approval(approval):
+        """Shared approval contract for creation and acceptance of an exact spec."""
+        if (
+            not isinstance(approval, dict)
+            or set(approval) != {"basis", "note"}
+            or not isinstance(approval["basis"], str)
+            or approval["basis"] not in {"specific", "delegated"}
+            or not isinstance(approval["note"], str)
+            or not approval["note"].strip()
+        ):
+            raise TaskError(
+                "invalid_approval: basis specific or delegated and supporting note required"
+            )
+        return approval
+
+    @staticmethod
     def _insert_task(
-        db, project_id, title, body, acceptance_criteria, accepted, note, parent_group_id=None
+        db,
+        project_id,
+        title,
+        body,
+        acceptance_criteria,
+        approval=None,
+        parent_group_id=None,
+        source="agent",
+        user_request="",
     ):
         if not isinstance(title, str) or not title.strip() or not isinstance(body, str):
             raise TaskError("invalid_specification: title and description required")
         if not isinstance(acceptance_criteria, str):
             raise TaskError("invalid_specification: acceptance criteria must be text")
-        if accepted and not note.strip():
-            raise TaskError("user_request_required: record the explicit user request")
+        if not isinstance(source, str) or source not in {"agent", "user", "unknown"}:
+            raise TaskError("invalid_source: agent, user or unknown")
+        if not isinstance(user_request, str):
+            raise TaskError("invalid_user_request: request must be text")
+        if approval is not None:
+            Store._approval(approval)
         now = timestamp()
         order = db.execute(
             "SELECT coalesce(max(order_key),0)+1 FROM tasks WHERE project_id=?", (project_id,)
@@ -1318,8 +1401,8 @@ class Store:
             """INSERT INTO tasks
             (id,project_id,title,body,acceptance_criteria,status,object_type,spec_revision,
              accepted_spec_revision,acceptance_note,unresolved_json,parent_group_id,order_key,
-             selected_attempt_id,revision,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             selected_attempt_id,revision,created_at,updated_at,source,user_request,acceptance_basis)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task_id,
                 project_id,
@@ -1329,8 +1412,8 @@ class Store:
                 "open",
                 "task",
                 1,
-                1 if accepted else None,
-                note if accepted else "",
+                1 if approval is not None else None,
+                approval["note"] if approval is not None else "",
                 "[]",
                 parent_group_id,
                 order,
@@ -1338,9 +1421,42 @@ class Store:
                 1,
                 now,
                 now,
+                source,
+                user_request,
+                approval["basis"] if approval is not None else "unknown",
             ),
         )
         return task_id
+
+    @staticmethod
+    def _task_ack(db, task):
+        """Continuation state, without echoing the specification or proof history."""
+        task = {**task, "accepted": task["accepted_spec_revision"] == task["spec_revision"]}
+        reasons = Store._gate_reasons(db, task)
+        scoped = db.execute(
+            """SELECT 1 FROM workstreams w WHERE w.project_id=?
+            AND NOT EXISTS (SELECT 1 FROM scope_exclusions e
+                WHERE e.workstream_id=w.id AND e.task_id=?)
+            AND (EXISTS (SELECT 1 FROM scope_members m
+                WHERE m.workstream_id=w.id AND m.task_id=?)
+                OR EXISTS (SELECT 1 FROM scope_groups g
+                WHERE g.workstream_id=w.id AND g.group_id=?)) LIMIT 1""",
+            (task["project_id"], task["id"], task["id"], task["parent_group_id"]),
+        ).fetchone()
+        if not scoped and task["status"] not in {"done", "dropped", "deferred"}:
+            reasons.append("task_out_of_scope")
+        return {
+            key: task[key]
+            for key in (
+                "id",
+                "revision",
+                "spec_revision",
+                "accepted_spec_revision",
+                "acceptance_basis",
+                "accepted",
+                "status",
+            )
+        } | {"gate_diagnostics": [reason for reason in reasons if reason != "closed_or_group"]}
 
     def create_task(
         self,
@@ -1354,6 +1470,7 @@ class Store:
         scope="inbox",
         group_id=None,
         group_expected_revision=None,
+        approval=None,
     ):
         request = dict(
             project=project,
@@ -1366,12 +1483,11 @@ class Store:
             scope=scope,
             group_id=group_id,
             group_expected_revision=group_expected_revision,
+            approval=approval,
         )
 
         def operation(db, event):
             project_id = self._project(db, project, event)["id"]
-            if source not in {"agent", "user"}:
-                raise TaskError("invalid_source: agent or user")
             if scope not in {"inbox", "workstream"}:
                 raise TaskError("invalid_scope: inbox or workstream")
             if scope == "workstream":
@@ -1392,9 +1508,10 @@ class Store:
                 title,
                 body,
                 acceptance_criteria,
-                source == "user",
-                user_request,
+                approval,
                 group_id,
+                source,
+                user_request,
             )
             if group_id:
                 db.execute(
@@ -1417,7 +1534,17 @@ class Store:
                 event["after"] = {"task": task, "group": self._details(db, updated_group)}
             else:
                 event["after"] = task
-            return task
+            ack = self._task_ack(db, task)
+            ack["scope"] = scope
+            if workstream_id:
+                ack["workstream_id"] = workstream_id
+                ack["workstream_revision"] = self._workstream(db, workstream_id)["revision"]
+                ack["in_scope"] = task_id in self._scope_ids(db, workstream_id)
+                if not ack["in_scope"] and "task_out_of_scope" not in ack["gate_diagnostics"]:
+                    ack["gate_diagnostics"].append("task_out_of_scope")
+            if group_id:
+                ack.update(group_id=group_id, group_revision=updated_group["revision"])
+            return ack
 
         return self._run("task.created", request, operation)
 
@@ -1450,27 +1577,50 @@ class Store:
 
         return self._run("task.updated", request, operation)
 
-    def accept_task(self, task_id, expected_revision, user_note):
-        request = dict(task_id=task_id, expected_revision=expected_revision, user_note=user_note)
+    def accept_task(self, task_id, expected_revision, approval):
+        request = dict(task_id=task_id, expected_revision=expected_revision, approval=approval)
 
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
             self._require_mutable(db, before)
-            if not isinstance(user_note, str) or not user_note.strip():
-                raise TaskError("user_verdict_required")
+            self._approval(approval)
             after = {
                 **before,
                 "accepted_spec_revision": before["spec_revision"],
-                "acceptance_note": user_note,
+                "accepted": True,
+                "acceptance_basis": approval["basis"],
+                "acceptance_note": approval["note"],
                 "revision": before["revision"] + 1,
                 "updated_at": timestamp(),
             }
             self._save_task(db, after)
             scope.update(before=before, after=after)
-            return self._details(db, after)
+            return self._task_ack(db, after)
 
         return self._run("task.accepted", request, operation)
+
+    def withdraw_acceptance(self, task_id, expected_revision, note):
+        request = dict(task_id=task_id, expected_revision=expected_revision, note=note)
+
+        def operation(db, scope):
+            before = self._task(db, task_id, scope)
+            self._revision(before, expected_revision)
+            self._require_mutable(db, before)
+            if not isinstance(note, str) or not note.strip():
+                raise TaskError("withdrawal_reason_required")
+            after = {
+                **before,
+                "accepted_spec_revision": None,
+                "accepted": False,
+                "revision": before["revision"] + 1,
+                "updated_at": timestamp(),
+            }
+            self._save_task(db, after)
+            scope.update(before=before, after=after)
+            return self._task_ack(db, after)
+
+        return self._run("task.acceptance_withdrawn", request, operation)
 
     def set_disposition(self, task_id, expected_revision, disposition, note):
         """Defer, resume, or drop without changing the accepted specification."""
@@ -1518,7 +1668,7 @@ class Store:
                 if task_id not in self._scope_ids(db, workstream_id):
                     raise TaskError("task_out_of_scope")
             proposed_id = self._insert_task(
-                db, before["project_id"], title, body, acceptance_criteria, False, ""
+                db, before["project_id"], title, body, acceptance_criteria
             )
             db.execute("INSERT INTO prerequisites VALUES (?, ?)", (task_id, proposed_id))
             if workstream_id:
@@ -1787,8 +1937,7 @@ class Store:
                     member["title"],
                     member.get("body", ""),
                     member.get("acceptance_criteria", ""),
-                    False,
-                    "",
+                    None,
                     task_id,
                 )
                 db.execute(
@@ -2076,6 +2225,8 @@ class Store:
             self._revision(before, expected_revision)
             if before["object_type"] != "task" or before["status"] == "done":
                 raise TaskError("invalid_signoff_target")
+            if not before["accepted"]:
+                raise TaskError("task_not_ready_for_signoff: current acceptance required")
             if verdict not in {"approve", "reject"} or not user_note.strip():
                 raise TaskError("user_verdict_required")
             if not attempt_id:

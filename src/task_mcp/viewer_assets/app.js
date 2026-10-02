@@ -136,6 +136,7 @@ const EVENTS = {
   "task.created": "Created",
   "task.updated": "Edited",
   "task.accepted": "Spec accepted",
+  "task.acceptance_withdrawn": "Acceptance withdrawn",
   "task.disposition_changed": "Status changed",
   "task.signoff": "Sign-off decision",
   "task.decomposed": "Split into a group",
@@ -645,6 +646,11 @@ function nextStep(t, view) {
     title = view === "deferred" ? "Deferred" : "Dropped";
     text = "The specification and history are kept. Resume to put it back in the queue.";
     buttons.push(button("Resume task", () => disposition(t, "open", "Resume"), "btn primary"));
+  } else if (view === "pending_acceptance" || t.accepted === false) {
+    title = "Accept this spec to unblock work";
+    text = "Agents won't implement it until you accept this exact specification.";
+    buttons.push(button("Accept spec", () => accept(t), "btn primary"));
+    buttons.push(button("Edit first", () => editTask(t)));
   } else if (view === "signoff" && a) {
     title = "Ready for your sign-off";
     text = `${a.implementer}'s result has been reviewed. Check it against the acceptance criteria below.`;
@@ -654,11 +660,6 @@ function nextStep(t, view) {
     title = "Result waiting for review";
     text = `${a.implementer} recorded a result. An independent reviewer usually handles this, or you can review it yourself.`;
     buttons.push(button("Record my review", () => humanReview(a)));
-  } else if (view === "pending_acceptance") {
-    title = "Accept this spec to unblock work";
-    text = "Agents won't implement it until you accept this exact specification.";
-    buttons.push(button("Accept spec", () => accept(t), "btn primary"));
-    buttons.push(button("Edit first", () => editTask(t)));
   } else if (view === "unresolved_items") {
     const n = t.unresolved_items.length;
     title = n === 1 ? "One question needs an answer" : `${n} questions need answers`;
@@ -712,8 +713,9 @@ function body(t) {
   const criteria = markdown(t.acceptance_criteria, { checklist: true });
   criteria.classList.add("criteria");
   out.push(section("Acceptance criteria", criteria));
+  if (t.user_request) out.push(section(`Request (${t.source || "unknown"} origin)`, markdown(t.user_request)));
   if (t.acceptance_note) {
-    const note = el("details", "fold", node("summary", t.accepted ? "Acceptance note" : "Previous acceptance note (spec changed since)"), markdown(t.acceptance_note));
+    const note = el("details", "fold", node("summary", t.accepted ? `Acceptance (${t.acceptance_basis || "unknown"})` : "Previous acceptance (currently unaccepted)"), markdown(t.acceptance_note));
     out.push(note);
   }
   const view = state.rows.find((r) => r.id === t.id)?.view;
@@ -880,7 +882,7 @@ function activity(t) {
         );
         li.lastChild.lastChild.title = new Date(e.timestamp).toLocaleString();
         if (failed) li.append(node("div", "Failed", "warn-text"));
-        const note = e.request?.user_note || e.request?.note || e.request?.text || e.error;
+        const note = e.request?.approval?.note || e.request?.user_note || e.request?.note || e.request?.text || e.error;
         if (note) li.append(node("p", note, "event-note"));
         content.append(li);
       });
@@ -918,6 +920,7 @@ function moreMenu(anchor, t) {
     }, "menu-item " + cls);
   const items = [item("Ask a question", () => askQuestion(t))];
   if (!t.accepted) items.push(item("Accept spec", () => accept(t)));
+  else items.push(item("Withdraw acceptance", () => withdrawAcceptance(t)));
   if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => disposition(t, "open", "Resume")));
   else items.push(item("Defer", () => disposition(t, "deferred", "Defer")), item("Drop", () => disposition(t, "dropped", "Drop"), "danger"));
   items.forEach((b) => b.setAttribute("role", "menuitem"));
@@ -988,6 +991,10 @@ function decision({ title, description, action, data, key, label, submit, danger
   const taskId = state.task.id;
   submitAction = async (values) => {
     const payload = { ...data, [key]: values.get(key) };
+    if (action === "accept") {
+      payload.approval = { basis: "specific", note: payload[key] };
+      delete payload[key];
+    }
     if (values.has("rejection")) payload.rejection = values.get("rejection");
     try {
       return await api(action, payload);
@@ -1029,9 +1036,20 @@ function accept(t) {
     description: "Your acceptance covers the exact specification shown. Editing it later needs a new acceptance.",
     action: "accept",
     data: { task_id: t.id, expected_revision: t.revision },
-    key: "user_note",
-    label: "Why it's ready (note)",
+    key: "approval_note",
+    label: "Your approval of this exact scope (note)",
     submit: "Accept spec",
+  });
+}
+function withdrawAcceptance(t) {
+  decision({
+    title: "Withdraw acceptance?",
+    description: "This blocks implementation and sign-off. The specification and all results and reviews are retained. You can approve the same specification again.",
+    action: "withdraw-acceptance",
+    data: { task_id: t.id, expected_revision: t.revision },
+    key: "note",
+    label: "Reason for withdrawing acceptance",
+    submit: "Withdraw acceptance",
   });
 }
 function askQuestion(t) {
@@ -1166,22 +1184,56 @@ function createTask() {
   openDialog(
     "New task",
     state.stream
-      ? `Adds an accepted task to ${streamName(state.stream)}.`
-      : `Adds an accepted task to the ${projectName(state.project)} inbox.`,
+      ? `Adds a task to ${streamName(state.stream)}. Choose draft or approve its exact scope.`
+      : `Adds a task to the ${projectName(state.project)} inbox. Choose draft or approve its exact scope.`,
     "Create task",
   );
   $("dialog").classList.add("wide");
   field("title", "Title", "", "input");
   field("body", "What needs to happen?", "", "tall", false, "Markdown is supported.");
   field("acceptance_criteria", "How will you know it's done?", "", "textarea", false);
-  field("user_request", "Your request", "", "textarea", true, "Recorded as your authorization for this task.");
+  field("user_request", "Your original request", "", "textarea", false, "Preserved independently of approval.");
+  const mode = node("select");
+  mode.id = "field-creation_mode";
+  mode.name = "creation_mode";
+  for (const [value, label] of [["pending", "Save draft — pending acceptance"], ["accepted", "Create and approve exact specification"]]) {
+    const option = node("option", label);
+    option.value = value;
+    mode.append(option);
+  }
+  const modeLabel = node("label", "Acceptance");
+  modeLabel.htmlFor = mode.id;
+  $("fields").append(el("div", "field", modeLabel, mode));
+  const note = field("approval_note", "Your approval of this exact scope (note)", "", "textarea", false);
+  const confirmLabel = node("label", undefined, "check");
+  const confirm = node("input");
+  confirm.type = "checkbox";
+  confirm.name = "approve_exact_spec";
+  confirmLabel.append(confirm, node("span", "I approve the specification above. Other gates still apply."));
+  $("fields").append(confirmLabel);
+  mode.onchange = () => {
+    const accepted = mode.value === "accepted";
+    note.required = confirm.required = accepted;
+    note.disabled = confirm.disabled = !accepted;
+    note.parentElement.hidden = confirmLabel.hidden = !accepted;
+    confirm.checked = false;
+  };
+  mode.value = "pending";
+  mode.onchange();
   submitAction = async (values) => {
-    const r = await api("create", {
-      ...Object.fromEntries(values),
+    const payload = {
+      title: values.get("title"), body: values.get("body"),
+      acceptance_criteria: values.get("acceptance_criteria"),
+      user_request: values.get("user_request"), source: "user",
       project: state.project,
       workstream_id: state.stream,
       scope: state.stream ? "workstream" : "inbox",
-    });
+    };
+    if (values.get("creation_mode") === "accepted") {
+      if (!values.has("approve_exact_spec")) throw new Error("Confirm approval of the exact specification.");
+      payload.approval = { basis: "specific", note: values.get("approval_note") };
+    }
+    const r = await api("create", payload);
     state.selected = r.id;
     return r;
   };

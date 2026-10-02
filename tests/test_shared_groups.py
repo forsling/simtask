@@ -17,14 +17,16 @@ def contexts(store, tmp_path):
 
 
 def local_task(store, context, title, group_id=None, group_revision=None):
-    return store.create_task(
+    created = store.create_task(
         context["project"]["id"],
         title,
         source="user",
         user_request="Requested",
+        approval={"basis": "specific", "note": "Requested"},
         group_id=group_id,
         group_expected_revision=group_revision,
     )
+    return store.get_tasks([created["id"]])["items"][0]
 
 
 def finish(store, item, workstream_id):
@@ -246,15 +248,23 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
         ("wst_legacy", "prj_legacy", "main", "main", "/legacy", 3, now),
     )
     group_id = Store._insert_task(
-        db, "prj_legacy", "Group", "Context", "Criteria", True, "Accepted"
+        db, "prj_legacy", "Group", "Context", "Criteria", {"basis": "specific", "note": "Accepted"}
     )
     db.execute("UPDATE tasks SET object_type='group' WHERE id=?", (group_id,))
     child_id = Store._insert_task(
-        db, "prj_legacy", "Child", "Body", "Checks", True, "Accepted", group_id
+        db,
+        "prj_legacy",
+        "Child",
+        "Body",
+        "Checks",
+        {"basis": "specific", "note": "Accepted"},
+        group_id,
     )
     db.execute("INSERT INTO scope_groups VALUES (?,?)", ("wst_legacy", group_id))
     db.execute("INSERT INTO scope_exclusions VALUES (?,?)", ("wst_legacy", child_id))
-    blocker_id = Store._insert_task(db, "prj_legacy", "Blocker", "", "", True, "Accepted")
+    blocker_id = Store._insert_task(
+        db, "prj_legacy", "Blocker", "", "", {"basis": "specific", "note": "Accepted"}
+    )
     db.execute("INSERT INTO prerequisites VALUES (?,?)", (blocker_id, group_id))
     db.execute(
         "INSERT INTO attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

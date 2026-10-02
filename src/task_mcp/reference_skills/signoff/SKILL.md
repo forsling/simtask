@@ -17,3 +17,14 @@ the requested change. A shared group's completion derives from every member's
 completion across its projects; local task completion alone may leave it open.
 There is no separate group sign-off. The service records assertions but cannot
 authenticate the user or prove reviewer independence.
+
+Task origin/request metadata never grants acceptance. Creation and standalone
+`accept_task` use the same `approval={"basis": "specific" | "delegated", "note":
+...}` payload: exact-scope user approval or real authority to select work within
+a stated goal, with the actual supporting instruction recorded. Omit approval
+for pending or design-first work, even with user origin. No approval clears
+other gates or starts implementation. `withdraw_acceptance` is revision-checked
+and records a reason without changing spec revision or deleting decisions/proof;
+reapproval of an unchanged spec may reuse applicable review. Completed tasks
+are immutable. Read full details after compact create/accept/withdraw ACKs when
+needed; use returned revisions to continue.

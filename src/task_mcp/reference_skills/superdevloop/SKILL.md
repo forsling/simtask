@@ -36,3 +36,14 @@ user review or an explicit user direction to skip further review. Do not
 self-issue it. Review passed makes the result ready for human sign-off; it does
 not complete the task. Multiple workstreams may record alternatives, which the
 user can compare at sign-off.
+
+Task origin/request metadata never grants acceptance. Creation and standalone
+`accept_task` use the same `approval={"basis": "specific" | "delegated", "note":
+...}` payload: exact-scope user approval or real authority to select work within
+a stated goal, with the actual supporting instruction recorded. Omit approval
+for pending or design-first work, even with user origin. No approval clears
+other gates or starts implementation. `withdraw_acceptance` is revision-checked
+and records a reason without changing spec revision or deleting decisions/proof;
+reapproval of an unchanged spec may reuse applicable review. Completed tasks
+are immutable. Read full details after compact create/accept/withdraw ACKs when
+needed; use returned revisions to continue.

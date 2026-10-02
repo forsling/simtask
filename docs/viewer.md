@@ -103,3 +103,11 @@ task. It prints the private link and exact stop command. All decisions in that
 database are synthetic. `pytest tests/test_viewer.py` covers protected access,
 allowed edit and decision flows, stale revisions, Store gate enforcement,
 local/global scope distinctions and cross-process launch/stop/restart.
+
+Creation defaults to **Save draft — pending acceptance**, with the original
+request preserved as user origin. Choose **Create and approve exact specification**,
+record an approval note and confirm that scope to create accepted work. Origin
+alone never accepts it. **Accept spec** records specific approval of the displayed
+specification. **Withdraw acceptance** records a reason, blocks implementation
+and sign-off, and retains spec revision, results and reviews. Reapproval of the
+same spec can reuse applicable proof. Completed tasks remain immutable.

@@ -28,7 +28,8 @@ def test_capture_is_pending_before_and_after_adding_design_gate(context):
         project,
         "Remember filter choices",
         body="User requested a design task. Research: filters currently reset on navigation.",
-        source="agent",
+        source="user",
+        user_request="Save a design task; leave approval pending",
         workstream_id=workstream,
         scope="workstream",
     )
@@ -51,7 +52,11 @@ def test_capture_is_pending_before_and_after_adding_design_gate(context):
     assert restored["unresolved_items"] == brief["unresolved_items"]
 
     # Even accepting the draft does not bypass the still-open design discussion.
-    store.accept_task(brief["id"], brief["revision"], "Synthetic acceptance of draft scope")
+    store.accept_task(
+        brief["id"],
+        brief["revision"],
+        {"basis": "specific", "note": "Synthetic acceptance of draft scope"},
+    )
     assert_no_implementation(store, workstream)
 
 
@@ -74,7 +79,9 @@ def test_project_design_discovery_includes_captured_inbox_ideas(context):
         brief["unresolved_items"][0]["id"],
         "Synthetic design discussion completed",
     )
-    brief = store.accept_task(brief["id"], brief["revision"], "Synthetic scope approval")
+    brief = store.accept_task(
+        brief["id"], brief["revision"], {"basis": "specific", "note": "Synthetic scope approval"}
+    )
     assert_no_implementation(store, workstream)
     current = store.workstream_status(workstream)["workstream"]
     store.set_scope(workstream, current["revision"], f"{workstream} +{brief['id']}")
@@ -90,7 +97,11 @@ def test_design_preserves_other_gates_and_requires_current_spec_acceptance(conte
     design_gate = brief["unresolved_items"][0]["id"]
     brief = store.add_unresolved(brief["id"], brief["revision"], "Need an authorized test fixture")
     fixture_gate = brief["unresolved_items"][1]["id"]
-    brief = store.accept_task(brief["id"], brief["revision"], "Synthetic approval of draft scope")
+    brief = store.accept_task(
+        brief["id"],
+        brief["revision"],
+        {"basis": "specific", "note": "Synthetic approval of draft scope"},
+    )
     agreed = store.update_task(
         brief["id"],
         brief["revision"],
@@ -112,10 +123,12 @@ def test_design_preserves_other_gates_and_requires_current_spec_acceptance(conte
     )
     assert_no_implementation(store, workstream)
     accepted = store.accept_task(
-        resolved["id"], resolved["revision"], "Synthetic approval of the exact final specification"
+        resolved["id"],
+        resolved["revision"],
+        {"basis": "specific", "note": "Synthetic approval of the exact final specification"},
     )
     assert store.get_next_task(workstream)["task"]["id"] == accepted["id"]
-    assert accepted["attempts"] == []
+    assert store.get_tasks([accepted["id"]])["items"][0]["attempts"] == []
 
 
 def test_decomposition_keeps_parent_and_children_ineligible_until_ready(context):
@@ -125,6 +138,7 @@ def test_decomposition_keeps_parent_and_children_ineligible_until_ready(context)
         "Persist filters",
         source="user",
         user_request="Synthetic existing authorization",
+        approval={"basis": "specific", "note": "Synthetic existing authorization"},
         workstream_id=workstream,
         scope="workstream",
     )
@@ -158,10 +172,16 @@ def test_decomposition_keeps_parent_and_children_ineligible_until_ready(context)
     persistence, reset = store.get_tasks(group["members"])["items"]
     assert not persistence["accepted"] and not reset["accepted"]
     reset = store.add_prerequisite(reset["id"], reset["revision"], persistence["id"])
-    store.accept_task(reset["id"], reset["revision"], "Synthetic approval of reset member")
+    store.accept_task(
+        reset["id"],
+        reset["revision"],
+        {"basis": "specific", "note": "Synthetic approval of reset member"},
+    )
     assert_no_implementation(store, workstream)
     persistence = store.accept_task(
-        persistence["id"], persistence["revision"], "Synthetic approval of persistence member"
+        persistence["id"],
+        persistence["revision"],
+        {"basis": "specific", "note": "Synthetic approval of persistence member"},
     )
     assert store.get_next_task(workstream)["task"]["id"] == persistence["id"]
     states = {item["id"]: item["view"] for item in store.list_tasks(project, workstream)["items"]}

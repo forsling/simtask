@@ -14,10 +14,19 @@ automatically ask for feature design.
 
 After `init` and checking the board and relevant specifications, when the user
 wants to queue concrete work with settled scope, record its faithful specification
-accepted with `create_task(source="user", user_request=...)`. Explicit requests
+with `create_task(source="user", user_request=..., approval={"basis": "specific",
+"note": ...})`. Record the actual supporting instruction in the approval note;
+only approval accepts the exact created specification. Source and user_request
+are descriptive provenance and never grant approval. Explicit requests
 to design first or leave work unaccepted take precedence.
-For an existing task, use `accept_task` when the request covers its exact current
-specification. No separate acceptance keyword or repeated approval is needed.
+For an existing task, use `accept_task(task_id, expected_revision,
+approval={"basis": "specific", "note": ...})` when the request covers its exact
+current specification. Use the same payload for standalone approval. `specific`
+means a real request/decision covering that exact scope; `delegated` requires
+actual authority to select work within the user's stated goal. Record that
+instruction and respect its limits. Never invent delegation from an idea,
+origin label or general encouragement. No separate acceptance keyword or
+repeated approval is needed.
 For example, "add a task to reject blank names" can authorize that behavior.
 Queueing accepted work does not start implementation; retain the requested scope
 and execution timing. If blockers must be added in separate calls, create pending,
@@ -56,12 +65,12 @@ field.
 
 ## Save without making implementation ready
 
-For an exploratory design brief, create a normal task with `source="agent"`,
-even when the idea came from the user, so it starts pending. Preserve the user's
-actual request in its body.
+For an exploratory design brief, create a normal task with honest `source`
+(`"user"` for a user idea, `"agent"` for an agent suggestion) and preserve the
+actual `user_request` independently. Omit `approval` so it starts pending.
 Use the requested scope, or the project inbox when no workstream placement was
-requested. Do not create it accepted with `source="user"`: creation and adding a
-gate are separate calls, leaving an implementation eligibility window.
+requested. Omit approval: supplying it before the separate gate call would
+leave an implementation eligibility window.
 
 Add an active unresolved item using the revision returned by creation:
 
@@ -78,6 +87,12 @@ Completed work needs a new task; preserve deferred disposition and other gates.
 Leave an exploratory brief pending until the user's decisions cover its current
 specification. Reuse authorization already given when it covers that scope;
 a request to record an idea does not approve unresolved or agent-invented scope.
+If acceptance was recorded by mistake, use `withdraw_acceptance` with the last
+read revision and a reason. It retains specification text/revision, decisions,
+results and reviews; no dummy specification edit is needed. Reapproval of the
+unchanged specification may reuse applicable review. Completed work is immutable.
+Creation/acceptance/withdrawal return compact acknowledgements; use their IDs
+and revisions to continue and `get_tasks` when full details are needed.
 Use the latest returned revision for each mutation. On a conflict, re-read and
 reconcile; after an uncertain create, inspect the board before retrying. If
 adding the gate fails, report the incomplete capture and leave the task pending.

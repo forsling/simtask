@@ -76,8 +76,8 @@ Group details list workstreams that explicitly include the group, with
 project/branch links to their scoped queues. Independently scoped member tasks
 do not imply that the whole group is included in a workstream.
 Dedicated dialogs
-record creation, edits, acceptance, questions, defer/resume/drop, human review
-and sign-off. Concurrent changes retain your draft and offer reconciliation.
+record draft or explicitly approved creation, edits, acceptance or withdrawal,
+questions, defer/resume/drop, human review and sign-off. Concurrent changes retain your draft and offer reconciliation.
 The app uses the existing Store and database; it has no synchronized copy.
 Task text is displayed as safe, whitespace-preserving text, including Markdown
 source. Full task setup, result recording and uncommon workflow operations
@@ -188,7 +188,7 @@ gates become active again when resumed. Full `get_tasks` details and audit event
 retain unresolved items, prerequisite links and attempt/review history; retained
 history does not create actionable gates on inactive tasks.
 The single `view` shown in `list_tasks` and status drill-down prioritizes
-terminal disposition, then review/sign-off, then acceptance/unresolved/
+terminal disposition, then acceptance, review/sign-off and unresolved/
 prerequisite gates; use diagnostics to see every simultaneous gate.
 `recorded_state=registered` means only that the binding exists;
 `agent_liveness=not_tracked` means the service intentionally does not observe
@@ -214,10 +214,16 @@ task without claiming it, or compact reasons why the scope has no eligible work.
 
 ## Task lifecycle
 
-There is one task model. `create_task(source="agent")` creates a pending proposal.
-`source="user"` can create an accepted task in one call when `user_request`
-records the explicit request. `accept_task` binds user acceptance to the current
-specification. Editing title, body or acceptance criteria increments the hidden
+There is one task model. Origin (`source="user"`, `"agent"` or `"unknown"`) and
+`user_request` are descriptive, persisted independently even on pending tasks.
+They never accept a specification. `create_task` without `approval` creates
+pending work; supplying `approval={"basis": "specific", "note": "actual supporting
+instruction"}` atomically accepts that exact created specification. `specific`
+means the user's request/decision covers the exact scope; `delegated` means real
+authority to select work within a stated goal, recorded in the note. New approval
+must be classified and have a nonempty note. Standalone
+`accept_task(task_id, expected_revision, approval)` uses the same payload.
+Editing title, body or acceptance criteria increments the hidden
 specification revision and invalidates acceptance. Resolving an unresolved item,
 changing scope or order, or adding evidence does not invalidate acceptance.
 Unresolved items are live gates; resolve them after settling the matter and
@@ -341,7 +347,7 @@ those rare workflows are deferred.
 | Project and workstream | `init`, `list_projects`, `list_workstreams`, `workstream_status`; compatibility: `init_project`, `attach_checkout`, `init_workstream`, `rebind_workstream`, `preflight` |
 | Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `reorder_tasks`, `get_next_task` |
 | Groups | `create_group`, `list_groups`, `add_group_member`, `decompose_task` |
-| Specification and gates | `create_task`, `update_task`, `accept_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
+| Specification and gates | `create_task`, `update_task`, `accept_task`, `withdraw_acceptance`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
 | Inspection | `list_events`, `export_workstream`, `get_default_skills`, `runtime_info` |
 | Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
@@ -382,11 +388,31 @@ layout should select it explicitly. Export itself never creates a file.
 See [the format details](docs/exports.md) and a
 [synthetic example report](docs/export-example.md).
 
-The service transactionally upgrades the earlier task table to allow global
-groups without project ownership, preserving existing IDs and related rows.
-The service creates its current SQLite schema in a private database. For a live
-WAL database, use SQLite's backup API instead of copying only the main
-`.sqlite3` file.
+Creation, acceptance and withdrawal return compact acknowledgements with IDs,
+task/spec revisions, acceptance, disposition and applicable gate diagnostics;
+creation also returns changed workstream/group revisions for continuation.
+Fetch `get_tasks` for full specification and proof. Approval does not clear
+unresolved/prerequisite/disposition/scope gates or begin implementation. Correct
+mistaken acceptance with `withdraw_acceptance(task_id, expected_revision, note)`:
+the reason is audited, the specification and its revision remain unchanged,
+and prior decisions, attempts and reviews survive. Withdrawal gates both result
+recording and sign-off. Reapproving the same spec may reuse an applicable review;
+a real spec change leaves prior attempts tied to their original revision.
+Completed tasks remain immutable.
+
+Schema/protocol revision 2 separates origin from approval. Migration preserves
+all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
+and unclassified approval are `unknown`; old audit text is never parsed to infer
+authority. Before upgrading an existing schema 0/1 database, the service takes a
+fresh SQLite online backup under the migration writer lock and verifies its
+integrity, foreign keys and source revision. The private adjacent
+`*.pre-schema-2.*.sqlite3` backup is retained; failure aborts the transaction.
+An empty new database needs no migration backup. For rollback, stop all writers
+before restoring a verified backup with SQLite's backup API, including WAL
+state; reconnect clients only to the matching protocol/schema revision. Do not
+run a schema 1 server against schema 2 or overlay a backup onto active writers.
+Test candidate upgrades on disposable copies and keep incompatible code, client
+workflows and databases isolated until every serving client can be refreshed.
 
 ## Deferred work
 

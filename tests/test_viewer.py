@@ -67,11 +67,15 @@ def create(server, context, **overrides):
         "body": "The specification",
         "acceptance_criteria": "Verified outcome",
         "user_request": "An explicit synthetic human request",
+        "approval": {
+            "basis": "specific",
+            "note": "Synthetic approval of exact browser specification",
+        },
         **overrides,
     }
     status, task = request(server, "/api/create", args)
     assert status == 200, task
-    return task
+    return request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
 
 
 def test_browse_edit_conflicts_and_decisions(viewer):
@@ -96,7 +100,11 @@ def test_browse_edit_conflicts_and_decisions(viewer):
     status, task = request(
         server,
         "/api/accept",
-        {"task_id": task["id"], "expected_revision": 2, "user_note": "I accept this specification"},
+        {
+            "task_id": task["id"],
+            "expected_revision": 2,
+            "approval": {"basis": "specific", "note": "I accept this specification"},
+        },
     )
     assert status == 200 and task["accepted"]
     status, task = request(
@@ -352,5 +360,71 @@ def test_attempt_actions_and_details_select_eligible_results():
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
 def test_pending_dialog_submission_cannot_be_abandoned():
     script = Path(__file__).with_name("viewer_dialog.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_draft_approved_creation_and_withdrawal_return_compact_continuation(viewer):
+    server, store, context = viewer
+    draft = create(server, context, approval=None, user_request="Save user-origin draft")
+    assert not draft["accepted"] and draft["source"] == "user"
+    assert draft["user_request"] == "Save user-origin draft"
+    status, accepted = request(
+        server,
+        "/api/accept",
+        {
+            "task_id": draft["id"],
+            "expected_revision": draft["revision"],
+            "approval": {"basis": "specific", "note": "Approve the displayed exact draft"},
+        },
+    )
+    assert status == 200 and accepted["accepted"]
+    assert accepted["revision"] == draft["revision"] + 1
+    assert not {"title", "body", "attempts", "acceptance_note"} & accepted.keys()
+    status, withdrawn = request(
+        server,
+        "/api/withdraw-acceptance",
+        {
+            "task_id": draft["id"],
+            "expected_revision": accepted["revision"],
+            "note": "Mistaken approval",
+        },
+    )
+    assert status == 200 and not withdrawn["accepted"]
+    assert withdrawn["spec_revision"] == accepted["spec_revision"]
+    assert withdrawn["gate_diagnostics"] == ["pending_acceptance"]
+    assert store.get_tasks([draft["id"]])["items"][0]["user_request"] == "Save user-origin draft"
+    stale, conflict = request(
+        server,
+        "/api/withdraw-acceptance",
+        {
+            "task_id": draft["id"],
+            "expected_revision": accepted["revision"],
+            "note": "Stale",
+        },
+    )
+    assert stale == 409 and "revision_conflict" in conflict["error"]
+    status, created = request(
+        server,
+        "/api/create",
+        {
+            "project": context["project"]["id"],
+            "workstream_id": context["workstream"]["id"],
+            "scope": "workstream",
+            "title": "Approved creation",
+            "user_request": "Actual request",
+            "approval": {"basis": "specific", "note": "Explicit exact-scope browser approval"},
+        },
+    )
+    assert status == 200 and created["accepted"] and created["workstream_revision"] == 3
+    assert not {"title", "body", "attempts", "user_request"} & created.keys()
+    assert (
+        request(server, "/api/details", {"ids": [created["id"]]})[1]["items"][0]["source"] == "user"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_creation_approval_and_withdrawal_form_handlers():
+    script = Path(__file__).with_name("viewer_approval.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr

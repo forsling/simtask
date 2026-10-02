@@ -9,7 +9,7 @@ from typing import Any, Literal
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from task_mcp.reference import default_skills
 from task_mcp.runtime import RUNTIME_IDENTITY
@@ -21,6 +21,14 @@ class TaskPatch(BaseModel):
     title: str | None = None
     body: str | None = None
     acceptance_criteria: str | None = None
+
+
+class Approval(BaseModel):
+    """User authority covering the exact specification, independent of origin."""
+
+    model_config = ConfigDict(extra="forbid")
+    basis: Literal["specific", "delegated"]
+    note: str = Field(min_length=1)
 
 
 def domain_errors(function):
@@ -51,7 +59,11 @@ def create_server(store: Store) -> MCPServer:
             "implementer records ordinary review; human_review requires an actual user "
             "instruction. signoff_task requires the user's informed verdict. Actor labels and "
             "human assertions are not authenticated. Reads append local audit events. "
-            "Concrete 'add a task' requests retain authorization; queueing does not start work. "
+            "Origin is descriptive and never accepts a task. Supply approval={basis: specific or "
+            "delegated, note: actual supporting instruction} only for authorized exact scope. "
+            "Concrete 'add a task' requests can supply specific approval; explicit pending or "
+            "design-first requests take precedence. Delegation must actually cover the work. "
+            "Queueing does not start work. Approval clears no other gates. "
             "For 'add a design task' or an exploratory feature idea, fetch get_default_skills "
             "and follow feature-capture. For 'let's design X', 'review design tasks', or "
             "designrev, fetch it and follow feature-design (not implementation review). "
@@ -243,16 +255,19 @@ def create_server(store: Store) -> MCPServer:
         title: str,
         body: str = "",
         acceptance_criteria: str = "",
-        source: Literal["agent", "user"] = "agent",
+        source: Literal["agent", "user", "unknown"] = "agent",
         user_request: str = "",
         workstream_id: str | None = None,
         scope: Literal["inbox", "workstream"] = "inbox",
         group_id: str | None = None,
         group_expected_revision: int | None = None,
+        approval: Approval | None = None,
     ) -> dict[str, Any]:
-        """source=user accepts the recorded specification; source=agent stays pending.
+        """Persist origin/request; only supplied approval atomically accepts this exact spec.
 
-        Group membership also requires the group's read revision.
+        Omit approval for pending/design-first work. Approval needs real specific
+        or delegated user authority and its supporting instruction, and clears no
+        other gates. Group membership requires the group's read revision.
         """
         return store.create_task(
             project,
@@ -265,6 +280,7 @@ def create_server(store: Store) -> MCPServer:
             scope,
             group_id,
             group_expected_revision,
+            approval.model_dump() if approval is not None else None,
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -293,9 +309,15 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def accept_task(task_id: str, expected_revision: int, user_note: str) -> dict[str, Any]:
-        """Record explicit user acceptance of the current specification revision."""
-        return store.accept_task(task_id, expected_revision, user_note)
+    def accept_task(task_id: str, expected_revision: int, approval: Approval) -> dict[str, Any]:
+        """Approve the exact current spec using classified actual authority; keep other gates."""
+        return store.accept_task(task_id, expected_revision, approval.model_dump())
+
+    @server.tool(annotations=editing, structured_output=True)
+    @domain_errors
+    def withdraw_acceptance(task_id: str, expected_revision: int, note: str) -> dict[str, Any]:
+        """Withdraw acceptance with an audited reason, preserving spec and delivery history."""
+        return store.withdraw_acceptance(task_id, expected_revision, note)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
