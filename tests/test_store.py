@@ -700,7 +700,6 @@ def test_completed_tasks_and_attempts_are_immutable(store, tmp_path):
         lambda: store.record_result(done["id"], ws, done["revision"], "worker", "Again", "OK"),
         lambda: store.record_review(attempt_id, 2, "another", "pass", "Again"),
         lambda: store.human_review(attempt_id, 2, "Again"),
-        lambda: store.reorder_tasks(project, [other["id"], done["id"]], [done["id"], other["id"]]),
     )
     for action in actions:
         with pytest.raises(TaskError, match="completed_task_immutable|task_not_eligible"):
@@ -805,12 +804,13 @@ def test_order_and_deterministic_export(store, tmp_path):
     project, ws, _ = setup(store, tmp_path)
     first = task(store, project, ws, "First")
     second = task(store, project, ws, "Second")
+    revision = store.list_tasks(project)["project_order_revision"]
     store.reorder_tasks(
-        project, [second["id"], first["id"]], expected_order=[first["id"], second["id"]]
+        project, second["id"], first["id"], "before", revision, "Synthetic decision"
     )
     with pytest.raises(TaskError, match="revision_conflict"):
         store.reorder_tasks(
-            project, [first["id"], second["id"]], expected_order=[first["id"], second["id"]]
+            project, first["id"], second["id"], "before", revision, "Synthetic decision"
         )
     assert store.get_next_task(ws)["task"]["id"] == second["id"]
     one = store.export_workstream(ws)

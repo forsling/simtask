@@ -252,7 +252,14 @@ def test_export_determinism_hash_order_escaping_and_no_state_mutation(context):
         body="## Body heading\n```\nif a < b && c > d:\n```\n<script>no</script>",
     )
     second = create(context, "Second")
-    store.reorder_tasks(project, [second["id"], first["id"]], [first["id"], second["id"]])
+    store.reorder_tasks(
+        project,
+        second["id"],
+        first["id"],
+        "before",
+        store.list_tasks(project)["project_order_revision"],
+        "Synthetic scheduling decision",
+    )
     before = business_state(store)
     one = store.export_workstream(ws)
     two = store.export_workstream(ws)

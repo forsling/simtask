@@ -420,10 +420,21 @@ def create_server(store: Store) -> MCPServer:
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def reorder_tasks(
-        project: str, ordered_ids: list[str], expected_order: list[str]
+        project: str,
+        task_id: str,
+        anchor_id: str,
+        position: Literal["before", "after"],
+        expected_order_revision: int,
+        instruction: str,
     ) -> dict[str, Any]:
-        """Set project order using the previously read full order as a concurrency check."""
-        return store.reorder_tasks(project, ordered_ids, expected_order)
+        """Move one task before/after an anchor with the board's project_order_revision.
+
+        Use only for actual scheduling intent; record its supporting instruction or
+        authority. Shared ordering never changes requirements/proof or workstream gates.
+        """
+        return store.reorder_tasks(
+            project, task_id, anchor_id, position, expected_order_revision, instruction
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors

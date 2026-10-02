@@ -39,6 +39,12 @@ async def exercise(database: Path):
         ]
         assert "expected_attempt_revision" in signoff_schema["required"]
         assert not {"verdict", "rejection"} & signoff_schema["properties"].keys()
+        move_schema = next(tool.input_schema for tool in tools if tool.name == "reorder_tasks")
+        assert move_schema["properties"]["position"]["enum"] == ["before", "after"]
+        assert {"task_id", "anchor_id", "expected_order_revision", "instruction"} <= set(
+            move_schema["required"]
+        )
+        assert not {"ordered_ids", "expected_order"} & move_schema["properties"].keys()
         print(f"Connected over stdio; discovered {len(tools)} tools.")
 
         async def call(name, **arguments):
@@ -130,6 +136,36 @@ async def exercise(database: Path):
         assert signed["status"] == "done"
         signed_full = (await call("get_tasks", ids=[task_id]))["items"][0]
         assert signed_full["signoff_decisions"][0]["decision_ref"] == signed["decision_ref"]
+        prioritized = await call(
+            "create_task",
+            project=project_id,
+            title="Prioritized remaining work",
+            approval={"basis": "specific", "note": "Synthetic exact scope request"},
+            workstream_id=workstream_id,
+            scope="workstream",
+        )
+        board = await call("list_tasks", project=project_id)
+        move_args = dict(
+            project=project_id,
+            task_id=prioritized["id"],
+            anchor_id=task_id,
+            position="before",
+            expected_order_revision=board["project_order_revision"],
+            instruction="Synthetic user scheduling decision",
+        )
+        moved = await call("reorder_tasks", **move_args)
+        assert moved["changed"] and not {"ordered_ids", "items"} & moved.keys()
+        stale_move = await client.call_tool("reorder_tasks", move_args)
+        assert stale_move.is_error and "revision_conflict" in str(stale_move.content)
+        move_args["expected_order_revision"] = moved["project_order_revision"]
+        assert not (await call("reorder_tasks", **move_args))["changed"]
+        selected = await call("get_next_task", workstream_id=workstream_id)
+        assert selected["task"]["id"] == prioritized["id"]
+        done_after = (await call("get_tasks", ids=[task_id]))["items"][0]
+        assert {k: v for k, v in signed_full.items() if k != "order_key"} == {
+            k: v for k, v in done_after.items() if k != "order_key"
+        }
+        print("Atomic move preserved completed proof and selected remaining work.")
         for decision in ("rework", "revise", "drop", "defer"):
             item = await call(
                 "create_task",
@@ -330,7 +366,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.6.0"
+        assert catalog["version"] == "1.7.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

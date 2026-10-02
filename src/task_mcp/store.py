@@ -14,12 +14,12 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 2
+DATABASE_SCHEMA_REVISION = 3
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, canonical_path TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL)""",
+        created_at TEXT NOT NULL, order_revision INTEGER NOT NULL DEFAULT 0)""",
     """CREATE TABLE IF NOT EXISTS project_paths (
         path TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id))""",
     """CREATE TABLE IF NOT EXISTS tasks (
@@ -137,6 +137,9 @@ class Store:
     def _upgrade_schema(db):
         for statement in SCHEMA:
             db.execute(statement)
+        project_columns = {row["name"] for row in db.execute("PRAGMA table_info(projects)")}
+        if "order_revision" not in project_columns:
+            db.execute("ALTER TABLE projects ADD COLUMN order_revision INTEGER NOT NULL DEFAULT 0")
         columns = {row["name"]: row for row in db.execute("PRAGMA table_info(tasks)")}
         for name, definition in (
             ("source", "TEXT NOT NULL DEFAULT 'unknown'"),
@@ -387,7 +390,9 @@ class Store:
                 created_at=now,
             )
             db.execute(
-                "INSERT INTO projects VALUES (:id,:name,:canonical_path,:created_at)", project
+                "INSERT INTO projects (id,name,canonical_path,created_at) "
+                "VALUES (:id,:name,:canonical_path,:created_at)",
+                project,
             )
             db.execute("INSERT INTO project_paths VALUES (?, ?)", (canonical, project["id"]))
             ws = self._insert_workstream(
@@ -488,6 +493,7 @@ class Store:
                 "project": dict(project),
                 "workstream": ws,
                 "status": self._status_summary(db, workstream_id),
+                "project_order_revision": self._order_revision(db, ws["project_id"]),
                 **self._paged(queue[offset : offset + limit + 1], limit, offset),
             }
 
@@ -748,7 +754,9 @@ class Store:
                     created_at=now,
                 )
                 db.execute(
-                    "INSERT INTO projects VALUES (:id,:name,:canonical_path,:created_at)", selected
+                    "INSERT INTO projects (id,name,canonical_path,created_at) "
+                    "VALUES (:id,:name,:canonical_path,:created_at)",
+                    selected,
                 )
                 db.execute("INSERT INTO project_paths VALUES (?,?)", (canonical, selected["id"]))
                 ws = self._insert_workstream(
@@ -818,6 +826,7 @@ class Store:
             "project": project,
             "workstream": ws,
             "scope_revision": ws["revision"],
+            "project_order_revision": self._order_revision(db, project["id"]),
             "queue": self._scoped_queue(db, ws["id"]),
             "groups": self._scope_group_ids(db, ws["id"]),
             "status": self._status_summary(db, ws["id"]),
@@ -1454,7 +1463,9 @@ class Store:
             Store._approval(approval)
         now = timestamp()
         order = db.execute(
-            "SELECT coalesce(max(order_key),0)+1 FROM tasks WHERE project_id=?", (project_id,)
+            "SELECT coalesce(max(order_key),0)+1 FROM tasks "
+            "WHERE project_id=? AND object_type='task'",
+            (project_id,),
         ).fetchone()[0]
         task_id = _id("tsk_")
         db.execute(
@@ -1486,6 +1497,7 @@ class Store:
                 approval["basis"] if approval is not None else "unknown",
             ),
         )
+        db.execute("UPDATE projects SET order_revision=order_revision+1 WHERE id=?", (project_id,))
         return task_id
 
     @staticmethod
@@ -2048,6 +2060,10 @@ class Store:
             }
             self._save_task(db, after)
             db.execute(
+                "UPDATE projects SET order_revision=order_revision+1 WHERE id=?",
+                (before["project_id"],),
+            )
+            db.execute(
                 """INSERT OR IGNORE INTO scope_groups
                 SELECT workstream_id, ? FROM scope_members WHERE task_id=?""",
                 (task_id, task_id),
@@ -2080,44 +2096,81 @@ class Store:
 
         return self._run("task.decomposed", request, operation)
 
-    def reorder_tasks(self, project, ordered_ids, expected_order=None):
-        request = dict(project=project, ordered_ids=ordered_ids, expected_order=expected_order)
+    @staticmethod
+    def _order_revision(db, project_id):
+        return db.execute(
+            "SELECT order_revision FROM projects WHERE id=?", (project_id,)
+        ).fetchone()[0]
+
+    def reorder_tasks(
+        self, project, task_id, anchor_id, position, expected_order_revision, instruction
+    ):
+        """Move one concrete task immediately before/after an anchor in shared project order."""
+        request = dict(
+            project=project,
+            task_id=task_id,
+            anchor_id=anchor_id,
+            position=position,
+            expected_order_revision=expected_order_revision,
+            instruction=instruction,
+        )
 
         def operation(db, scope):
             project_id = self._project(db, project, scope)["id"]
+            revision = self._order_revision(db, project_id)
+            if type(expected_order_revision) is not int or expected_order_revision != revision:
+                raise TaskError("revision_conflict: re-read the project order revision")
+            if not isinstance(position, str) or position not in {"before", "after"}:
+                raise TaskError("invalid_order: position must be before or after")
+            if not isinstance(instruction, str) or not instruction.strip():
+                raise TaskError(
+                    "scheduling_instruction_required: record the actual instruction or authority"
+                )
+            moving = self._task(db, task_id, {})
+            anchor = self._task(db, anchor_id, {})
+            if task_id == anchor_id:
+                raise TaskError("invalid_order: a task cannot anchor itself")
+            if any(
+                t["object_type"] != "task" or t["project_id"] != project_id
+                for t in (moving, anchor)
+            ):
+                raise TaskError(
+                    "invalid_order: task and anchor must be concrete tasks in this project"
+                )
             current = [
-                r["id"]
-                for r in db.execute(
-                    "SELECT id FROM tasks WHERE project_id=? AND object_type='task' "
+                dict(row)
+                for row in db.execute(
+                    "SELECT id,order_key FROM tasks WHERE project_id=? AND object_type='task' "
                     "ORDER BY order_key,id",
                     (project_id,),
                 )
             ]
-            if expected_order != current:
-                raise TaskError("revision_conflict: re-read the current project order")
-            if len(ordered_ids) != len(current) or set(ordered_ids) != set(current):
-                raise TaskError("invalid_order: include every project task exactly once")
-            old_positions = {identity: index for index, identity in enumerate(current, 1)}
-            completed = {
-                row["id"]
-                for row in db.execute(
-                    "SELECT id FROM tasks WHERE project_id=? AND status='done'", (project_id,)
+            old_ids = [row["id"] for row in current]
+            new_ids = [identity for identity in old_ids if identity != task_id]
+            target = new_ids.index(anchor_id) + (position == "after")
+            new_ids.insert(target, task_id)
+            changed = new_ids != old_ids
+            if changed:
+                # Order is scheduling metadata. Do not touch task/spec revisions,
+                # acceptance, selected attempts, reviews, or completed proof.
+                for index, identity in enumerate(new_ids, 1):
+                    db.execute("UPDATE tasks SET order_key=? WHERE id=?", (index, identity))
+                db.execute(
+                    "UPDATE projects SET order_revision=order_revision+1 WHERE id=?", (project_id,)
                 )
+            ack = {
+                "project_id": project_id,
+                "task_id": task_id,
+                "anchor_id": anchor_id,
+                "project_order_revision": revision + int(changed),
+                "changed": changed,
             }
-            if any(
-                old_positions[identity] != index
-                for index, identity in enumerate(ordered_ids, 1)
-                if identity in completed
-            ):
-                raise TaskError("completed_task_immutable: ordering cannot move signed-off tasks")
-            for index, task_id in enumerate(ordered_ids, 1):
-                if old_positions[task_id] != index:
-                    db.execute(
-                        "UPDATE tasks SET order_key=?, revision=revision+1 WHERE id=?",
-                        (index, task_id),
-                    )
-            scope.update(before={"ordered_ids": current}, after={"ordered_ids": ordered_ids})
-            return scope["after"]
+            scope.update(
+                task_id=task_id,
+                before={"project_order_revision": revision, "order_key": moving["order_key"]},
+                after=ack,
+            )
+            return ack
 
         return self._run("tasks.reordered", request, operation)
 
@@ -2167,9 +2220,14 @@ class Store:
         def operation(db, scope):
             ws = self._workstream(db, workstream_id)
             scope["project_id"] = ws["project_id"]
+            order_revision = self._order_revision(db, ws["project_id"])
             ids = self._scope_ids(db, workstream_id)
             if not ids:
-                return {"task": None, "diagnostics": {"scope_empty": True, "scoped": 0}}
+                return {
+                    "project_order_revision": order_revision,
+                    "task": None,
+                    "diagnostics": {"scope_empty": True, "scoped": 0},
+                }
             marks = ",".join("?" for _ in ids)
             tasks = [
                 self._task(db, r["id"], {})
@@ -2193,12 +2251,14 @@ class Store:
                 if not reasons:
                     return {
                         "task": self._details(db, task),
+                        "project_order_revision": order_revision,
                         "diagnostics": {"scope_empty": False, "scoped": len(ids)},
                     }
                 for reason in reasons:
                     counts[reason] += 1
             return {
                 "task": None,
+                "project_order_revision": order_revision,
                 "diagnostics": {"scope_empty": False, "scoped": len(ids), **counts},
             }
 
@@ -2531,7 +2591,11 @@ class Store:
                         "object_type": task["object_type"],
                     }
                 )
-            return self._paged(result[offset : offset + limit + 1], limit, offset)
+            return {
+                "project_id": project_id,
+                "project_order_revision": self._order_revision(db, project_id),
+                **self._paged(result[offset : offset + limit + 1], limit, offset),
+            }
 
         return self._run("tasks.listed", request, operation)
 

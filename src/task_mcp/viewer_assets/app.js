@@ -307,6 +307,18 @@ async function pages(action, data = {}) {
   } while (offset !== null);
   return items;
 }
+async function taskBoard(data) {
+  let items = [], offset = 0, revision = null;
+  do {
+    const page = await api("tasks", { ...data, limit: 100, offset });
+    if (revision !== null && page.project_order_revision !== revision)
+      throw new Error("Project order changed while loading. Refresh to see the current order.");
+    revision = page.project_order_revision;
+    items.push(...page.items);
+    offset = page.next_offset;
+  } while (offset !== null);
+  return { items, project_order_revision: revision };
+}
 function projectName(id) {
   return state.projects.find((p) => p.id === id)?.name || "Other project";
 }
@@ -432,9 +444,10 @@ async function reload({ quiet = false } = {}) {
   );
   $("new").hidden = state.groups;
   try {
+    const board = groups ? null : await taskBoard({ project, workstream_id: state.stream });
     const loaded = groups
       ? await pages("groups", groups === "project" ? { project } : {})
-      : await pages("tasks", { project: state.project, workstream_id: state.stream });
+      : board.items;
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
     const streams = state.groups ? state.streams : await pages("workstreams", { project });
     if (generation !== state.generation) return;
@@ -599,7 +612,7 @@ function renderDetail(t) {
   const view = row?.view || t.status;
   const locked = t.status === "done";
 
-  const actions = [];
+  const actions = [button("Move in project order", () => moveTask(t).catch((e) => toast(e.message, true)))];
   if (!locked) {
     actions.push(iconButton("edit", "Edit (e)", () => editTask(t)));
     actions.push(iconButton("more", "More actions", (e) => moreMenu(e.currentTarget, t)));
@@ -1047,6 +1060,64 @@ function decision({ title, description, action, data, key, label, submit, danger
     }
   };
 }
+async function moveTask(t) {
+  if (submissionPending) return;
+  const board = await taskBoard({ project: t.project_id });
+  if (submissionPending) return;
+  let revision = board.project_order_revision;
+  openDialog("Move in project order", `Move “${t.title}”. This shared order applies to every workstream. Each workstream keeps its own scope and eligibility. Completed task positions may shift.`, "Move task");
+  const wrap = el("div", "field");
+  const label = node("label", "Place this task");
+  label.htmlFor = "field-position";
+  const position = node("select");
+  position.id = "field-position"; position.name = "position";
+  for (const value of ["before", "after"]) {
+    const option = node("option", value === "before" ? "Immediately before" : "Immediately after");
+    option.value = value; position.append(option);
+  }
+  position.value = "before";
+  const anchorLabel = node("label", "Project task");
+  anchorLabel.htmlFor = "field-anchor_id";
+  const anchor = node("select");
+  anchor.id = "field-anchor_id"; anchor.name = "anchor_id"; anchor.required = true;
+  const populate = (items) => {
+    const selected = anchor.value;
+    anchor.replaceChildren();
+    for (const row of items.filter((row) => row.id !== t.id)) {
+      const option = node("option", `${row.order_key}. ${row.title}${row.view === "done" ? " (done)" : ""}`);
+      option.value = row.id; anchor.append(option);
+    }
+    if (items.some((row) => row.id === selected && row.id !== t.id)) anchor.value = selected;
+  };
+  populate(board.items);
+  wrap.append(label, position, anchorLabel, anchor);
+  $("fields").append(wrap);
+  field("instruction", "Scheduling decision", "", "textarea", true, "Record the actual instruction or authority for this move.");
+  confirmation("Apply this scheduling decision to the shared project order.");
+  submitAction = async (values) => {
+    try {
+      return await api("reorder", {
+        project: t.project_id, task_id: t.id, anchor_id: values.get("anchor_id"),
+        position: values.get("position"), expected_order_revision: revision,
+        instruction: values.get("instruction"),
+      });
+    } catch (error) {
+      if (error.conflict) $("conflict").replaceChildren(button("Show the current project order", async () => {
+        const latest = await taskBoard({ project: t.project_id });
+        const list = el("ol", "");
+        for (const row of latest.items) list.append(node("li", row.title));
+        $("conflict").replaceChildren(el("div", "conflict-box", list, button("I've reviewed it — use this order", () => {
+          revision = latest.project_order_revision;
+          populate(latest.items);
+          $("fields").querySelector("[type=checkbox]").checked = false;
+          $("form-error").textContent = "Check the anchor and scheduling note, confirm again, then submit.";
+          $("conflict").replaceChildren();
+        }, "btn small")));
+      }, "btn small"));
+      throw error;
+    }
+  };
+}
 function accept(t) {
   decision({
     title: "Accept this spec?",
@@ -1325,7 +1396,7 @@ $("form").onsubmit = async (e) => {
     $("form-error").textContent =
       e.message +
       (e.conflict
-        ? " Someone else changed this task. Your draft is kept; review the current version before retrying."
+        ? " Recorded state changed. Your draft is kept; review the current version before retrying."
         : " If you're unsure whether it saved, check the task before retrying.");
   } finally {
     submissionPending = false;

@@ -31,6 +31,7 @@ def dispatch(store, action, data):
         "events": store.list_events,
         "create": store.create_task,
         "edit": store.update_task,
+        "reorder": store.reorder_tasks,
         "accept": store.accept_task,
         "withdraw-acceptance": store.withdraw_acceptance,
         "disposition": store.set_disposition,

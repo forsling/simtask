@@ -1,7 +1,7 @@
 # Runtime identity and stale capabilities
 
 This document describes the isolated candidate's protocol
-revision `3` and database schema revision `2`. The protected live service remains
+revision `4` and database schema revision `3`. The protected live service remains
 on revision `1` until coordinated rollout; its runtime identity should still
 report `1` for both fields. During that protected period, use candidate code only with explicit disposable databases and
 prepare companion skills without installing or reloading them. Keep the live
@@ -18,11 +18,11 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`3` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for an incompatible contract change. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`4` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for an incompatible contract change. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`2` after candidate startup, `1` in the protected live database). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`3` after candidate startup, `1` in the protected live database). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is
@@ -33,11 +33,11 @@ version throughout development. The identifier detects changed resources but
 does not promise hot reload of resources or Python code.
 
 Existing unnumbered databases have revision `0`; the protected live service uses
-revision `1`. Candidate Store startup creates fresh databases at revision `2`
-directly. Before upgrading an existing revision `0` or `1` database, it creates
+revision `1`. Candidate Store startup creates fresh databases at revision `3`
+directly. Before upgrading an existing revision `0`, `1` or `2` database, it creates
 and verifies a fresh SQLite online backup under the writer lock, including
 committed WAL data. It then transactionally upgrades the schema, checks integrity
-and foreign keys, and sets revision `2` only after those checks pass. Existing
+and foreign keys, and sets revision `3` only after those checks pass. Existing
 task IDs, content and audit history survive; the backup remains available after
 success or rollback. A database with a higher revision is rejected rather than
 downgraded. Future storage migrations must advance the revision after their
@@ -54,6 +54,15 @@ inferred judgments. Full task reads expose new structured `signoff_decisions`
 and supporting `approval_decision`; detailed audit reads retain older records.
 Roll out code, stored schema, companion skills and refreshed client tool catalogs
 together, then use the reconnect procedure below to verify the affected client.
+
+Database schema revision `3` adds `projects.order_revision` (default 0 on
+migration) for atomic shared-order concurrency. Protocol revision `4` replaces
+`reorder_tasks` whole-order arguments/results with one before/after task move,
+required `expected_order_revision` and the actual scheduling `instruction`.
+Board/queue envelopes return `project_order_revision`; creation appends tasks and
+advances it, while reads/no-op moves never advance it. Candidate schema 0/1/2
+upgrades use a fresh verified `*.pre-schema-3.*.sqlite3` online backup before DDL,
+with transactional rollback and all prior columns/rows preserved.
 
 ## Minimum reliable reconnect procedure
 

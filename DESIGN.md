@@ -40,7 +40,19 @@ of local tasks, group references, and exclusions. A group inclusion is live:
 future members of the workstream's own project enter it unless individually excluded. An
 explicit exclusion takes precedence over group expansion. A workstream can
 snapshot another workstream's current expression, then add or remove references.
-Project task order is global and advisory; scope and prerequisites are gates.
+Project task order is shared; scope and prerequisites remain gates. Scheduling
+metadata is separate from task revisions and immutable specifications/proof.
+An atomic `reorder_tasks` moves one concrete task immediately before/after a
+same-project anchor using the last board/queue `project_order_revision` and the
+actual supporting scheduling instruction. Stale/invalid/self/cross-project moves
+fail atomically. A no-op does not advance the order revision or normalize keys;
+a changed move advances it once. Insertions append and advance it; decomposition
+advances it for parent removal and member insertions. Existing projects start at
+order revision 0 during the explicit schema 3 migration. Completed rows may
+shift without touching acceptance, selected delivery or review. Each workstream
+filters shared order by local scope and eligibility. Reads/selection never
+reorder. Actual scheduling intent and actor attribution live in existing audit
+events; no automatic priority rules, normalization or usage-tracking calls exist.
 Every explicit scope change increments the workstream revision atomically.
 Local queues, status counts and exports include only concrete tasks from the
 workstream's project. Group references and whole-group progress are separate;
@@ -57,8 +69,8 @@ delegated approval requires actual authority to select work within a stated
 goal. Explicit pending/design-first requests take precedence. Queueing starts
 no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
-state. Database schema revision 2 preserves this data; candidate protocol 3
-adds the purpose/result signoff contract described below.
+state. Database schema revision 2 introduced this data; candidate protocol 4
+includes the purpose/result signoff contract described below.
 
 Acceptance binds to the current specification. `update_task` atomically saves
 title/body/criteria amendments and optional exact-scope specific/delegated
@@ -84,7 +96,7 @@ Existing schemas migrate transactionally after a fresh verified SQLite online
 backup under the writer lock. Backup includes committed WAL data and remains
 available after success or rollback. Migration preserves all existing rows and
 history; it never infers origin or approval basis from prior notes. Fresh empty
-databases create schema 2 directly. Candidate code, databases and companion
+databases create schema 3 directly. Candidate code, databases and companion
 workflow updates must remain isolated until client rollout can happen together.
 Create/update/accept/withdraw acknowledgements return continuation IDs/revisions,
 acceptance and accurate gates without echoing specs or proof history.
@@ -198,7 +210,8 @@ rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
 
-Candidate purpose/result signoff (protocol 3, database schema 2) uses one human
+Candidate purpose/result signoff (introduced in protocol 3; current protocol 4,
+schema 3) uses one human
 `approve`/`rework`/`revise`/`drop`/`defer` decision. Specific current-scope purpose
 approval references its actual classified audit decision; delegated/unknown
 purpose is judged by the user's informed signoff decision. Direction-only
@@ -208,4 +221,4 @@ question without a fabricated spec revision; drop withdraws approval and needs
 actual authority for revival; defer retains approval. Both remain unsatisfied
 prerequisites. Exact task/spec/attempt revisions and separate judgments live in
 immutable audit records, while full task reads deliberately expose proof and
-decision references. No storage DDL is added for this change.
+decision references. No additional DDL is needed for signoff judgments.

@@ -253,7 +253,10 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
             else statement
         )
     now = timestamp()
-    db.execute("INSERT INTO projects VALUES (?,?,?,?)", ("prj_legacy", "legacy", "/legacy", now))
+    db.execute(
+        "INSERT INTO projects (id,name,canonical_path,created_at) VALUES (?,?,?,?)",
+        ("prj_legacy", "legacy", "/legacy", now),
+    )
     db.execute("INSERT INTO project_paths VALUES (?,?)", ("/legacy", "prj_legacy"))
     db.execute(
         "INSERT INTO workstreams VALUES (?,?,?,?,?,?,?)",

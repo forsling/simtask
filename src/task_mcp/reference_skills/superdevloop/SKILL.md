@@ -74,3 +74,18 @@ it. Direction changes default to human technical quality not judged and preserve
 sound proof. Ordinary drop/defer requires no reviewed attempt. Leaving dropped
 status requires actual `authorization`; reactivation also needs current spec
 approval. Read the packaged `signoff` workflow before recording a verdict.
+
+Shared project order is scheduling metadata, filtered by each workstream's explicit
+scope and local eligibility. New tasks append at the end. Reorder only for an
+actual scheduling decision: read `list_tasks`/`workstream_status` or `init` for
+`project_order_revision`, then call `reorder_tasks(project, task_id, anchor_id,
+position="before"|"after", expected_order_revision=..., instruction=...)` to move
+one task immediately beside a concrete project anchor. Record the actual
+supporting instruction/authority; the configured audit actor is attribution,
+not authenticated identity. The compact ACK returns project/task/anchor IDs,
+`project_order_revision` and `changed`. A stale order revision requires a fresh
+board read and reconciliation; an already-satisfied move changes nothing.
+Completed task positions may shift without changing specifications, acceptance,
+results or reviews. Reads and selection never reorder work. Do not repeatedly
+normalize queues, add automatic priority rules or routine reporting calls;
+evaluate excessive reordering after rollout through existing audit events.

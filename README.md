@@ -208,9 +208,10 @@ exclusion persists and overrides membership inherited from a scoped group;
 `+task-id` removes that exclusion. Every explicit scope change advances the
 workstream revision. A task proposed from a
 workstream may enter that scope or the project inbox. It cannot be delegated to
-another workstream by creating it. Project order is global and advisory;
-prerequisites are hard gates. `get_next_task` returns the first full eligible
-task without claiming it, or compact reasons why the scope has no eligible work.
+another workstream by creating it. Project order is shared across workstreams;
+each filters it by explicit scope and branch-local eligibility. Preconditions
+remain hard gates. `get_next_task` returns the first full eligible task without
+claiming it, or compact reasons why the scope has no eligible work.
 
 ## Task lifecycle
 
@@ -373,8 +374,31 @@ those rare workflows are deferred.
 | Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
 
 Mutations that change a task or workstream require the last revision read.
-`reorder_tasks` takes the previously read complete project order as
-`expected_order` for the same concurrency check.
+Board/queue responses (`list_tasks`, `workstream_status`, successful `init`,
+`get_next_task`) expose `project_order_revision`. Move one task immediately before
+or after a concrete task in the same project:
+
+```text
+reorder_tasks(project, task_id, anchor_id, position="before"|"after",
+              expected_order_revision=board.project_order_revision,
+              instruction="actual supporting scheduling instruction/authority")
+```
+
+The compact acknowledgement contains project/task/anchor IDs, the order revision
+and `changed`. Stale moves, self-anchors and invalid/cross-project/group anchors
+fail atomically. A move already in place returns `changed:false` and keeps the
+order revision. Successful moves advance it once; new tasks append at the end
+and advance it on insertion. Decomposition also advances it for removal of the
+concrete parent and each new member. Migrated projects begin at order revision 0.
+Ordering changes no task/spec revisions, acceptance or proof, even when completed
+rows shift position. Every workstream sees the same order through its own scope;
+local attempts and all execution gates remain local. Reads and selection never
+reorder or normalize work. Use moves only for actual scheduling intent, recorded
+alongside the configured audit actor (which is not authenticated). Assess
+excessive use after rollout with existing audit events, without routine reporting
+or automatic reshuffling. The browser's **Move in project order** form uses the
+same anchor contract and preserves the draft on conflict for explicit review.
+
 Concurrent writes to one revision permit one winner and return
 `revision_conflict` to the other. Task creation is not deduplicated: inspect the
 board before retrying an uncertain response. Every handler call except the
@@ -423,19 +447,21 @@ recording and sign-off. Reapproving the same spec may reuse an applicable review
 a real spec change leaves prior attempts tied to their original revision.
 Completed tasks remain immutable.
 
-Database schema revision 2 separates origin from approval. Candidate protocol
-revision 3 adds the five-decision purpose/result signoff contract; its structured
-judgments use existing immutable audit records and require no new storage DDL.
+Database schema revision 2 separates origin from approval. Schema revision 3
+adds `projects.order_revision` for shared-order concurrency, with a default of 0
+on existing projects. Candidate protocol revision 4 replaces whole-order
+replacement with the atomic move contract; protocol 3's purpose/result signoff
+judgments continue to use existing immutable audit records.
 Migration preserves all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
 and unclassified approval are `unknown`; old audit text is never parsed to infer
-authority. Before upgrading an existing schema 0/1 database, the service takes a
+authority. Before upgrading an existing schema 0/1/2 database, the service takes a
 fresh SQLite online backup under the migration writer lock and verifies its
 integrity, foreign keys and source revision. The private adjacent
-`*.pre-schema-2.*.sqlite3` backup is retained; failure aborts the transaction.
+`*.pre-schema-3.*.sqlite3` backup is retained; failure aborts the transaction.
 An empty new database needs no migration backup. For rollback, stop all writers
 before restoring a verified backup with SQLite's backup API, including WAL
 state; reconnect clients only to the matching protocol/schema revision. Do not
-run a schema 1 server against schema 2 or overlay a backup onto active writers.
+run an older server against schema 3 or overlay a backup onto active writers.
 Test candidate upgrades on disposable copies and keep incompatible code, client
 workflows and databases isolated until every serving client can be refreshed.
 
