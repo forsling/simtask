@@ -44,6 +44,16 @@ attaching a member, including a member in another project. Groups hold context
 and whole-group completion only; put execution blockers on concrete members.
 Preserve deferred context and audit history.
 
+Use `add_prerequisite` to add a link. For a mistaken or obsolete active link, use
+`remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` with the
+dependent task's last revision and the actual decision note. It removes either
+milestone link and immediately recalculates the gate, preserving specification,
+acceptance, scope and proof. A deletion advances the task revision once; an absent
+link returns `changed=false` without advancing it. Stale revisions still fail,
+completed tasks stay immutable, and actor/note are audited even for a no-op.
+Use proposal dismissal for a pending observer gate; do not remove a real blocker
+merely to make the queue eligible.
+
 Prerequisites use canonical task/group IDs across any projects; shared membership
 is not required. Links do not add remote work to local scope or share attempts,
 reviews or code. Default `milestone="review"` clears on done or any current-spec

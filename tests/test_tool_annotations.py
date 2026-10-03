@@ -45,6 +45,7 @@ DESTRUCTIVE = {
     "withdraw_acceptance",
     "set_disposition",
     "resolve_unresolved",
+    "remove_prerequisite",
     "accept_gate_proposal",
     "dismiss_gate_proposal",
     "decompose_task",

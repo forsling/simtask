@@ -77,7 +77,7 @@ delegated approval requires actual authority to select work within a stated
 goal. Explicit pending/design-first requests take precedence. Queueing starts
 no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
-state. Database schema revision 2 introduced this data; candidate protocol 8
+state. Database schema revision 2 introduced this data; candidate protocol 9
 retains the purpose/result signoff contract described below.
 
 Acceptance binds to the current specification. `update_task` atomically saves
@@ -150,7 +150,15 @@ serialization and revision checks protect a race between membership changes and
 last-member sign-off. Protocol 8/schema 5 persist link milestones, including
 observer proposals, and migrate every existing link/proposal to `review`. A
 duplicate link with a different milestone fails rather than silently changing
-the gate. Decomposition preserves each inherited milestone.
+the gate. Decomposition preserves each inherited milestone. Protocol 9 adds
+`remove_prerequisite(task_id, expected_revision, blocked_by_id, note)`: a required
+actual decision note and configured actor are audited with the removed link in
+the same transaction. It immediately recomputes the gate and advances only the
+dependent task revision, once for a real deletion. An absent link returns
+`changed=false` with the original revision/timestamp, while stale revisions and
+completed/group targets still fail under the same mutability rules as additions.
+Specifications, acceptance, scope, attempts, reviews and other link milestones
+survive. Schema 5 already supports removal; no migration is needed.
 Replace known prose gates only after verifying actual IDs/meaning and adding
 real links before resolving the old item; no automatic parsing or state repair.
 

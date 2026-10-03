@@ -2578,6 +2578,52 @@ class Store:
 
         return self._run("gate.prerequisite_added", request, operation)
 
+    def remove_prerequisite(self, task_id, expected_revision, blocked_by_id, note):
+        request = dict(
+            task_id=task_id,
+            expected_revision=expected_revision,
+            blocked_by_id=blocked_by_id,
+            note=note,
+        )
+
+        def operation(db, scope):
+            before = self._task(db, task_id, scope)
+            self._revision(before, expected_revision)
+            self._require_mutable(db, before)
+            if not isinstance(note, str) or not note.strip():
+                raise TaskError("decision_note_required")
+            row = db.execute(
+                "SELECT * FROM prerequisites WHERE task_id=? AND blocked_by_id=?",
+                (task_id, blocked_by_id),
+            ).fetchone()
+            removed = dict(row) if row is not None else None
+            changed = (
+                db.execute(
+                    "DELETE FROM prerequisites WHERE task_id=? AND blocked_by_id=?",
+                    (task_id, blocked_by_id),
+                ).rowcount
+                > 0
+            )
+            after = {
+                **before,
+                "revision": before["revision"] + int(changed),
+                "updated_at": timestamp() if changed else before["updated_at"],
+            }
+            if changed:
+                self._save_task(db, after)
+            scope.update(
+                before={"task": before, "prerequisite": removed},
+                after={
+                    "task": after,
+                    "removed_prerequisite": removed,
+                    "note": note.strip(),
+                    "changed": changed,
+                },
+            )
+            return self._details(db, after) | {"changed": changed}
+
+        return self._run("gate.prerequisite_removed", request, operation)
+
     def accept_gate_proposal(self, proposal_id, expected_revision):
         request = dict(proposal_id=proposal_id, expected_revision=expected_revision)
 

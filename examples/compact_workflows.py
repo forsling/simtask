@@ -41,7 +41,7 @@ async def exercise(database):
                 "excludes host wrapper/schema text. Refreshed host verification awaits rollout."
             ),
         }
-        assert len(catalog.tools) == 41
+        assert len(catalog.tools) == 42
 
         async def call(tool_name, **args):
             result = await client.call_tool(tool_name, args)

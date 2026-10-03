@@ -75,6 +75,9 @@ def create_server(
             "Prerequisites clear on current-spec passed/human review by default; "
             "signoff links are rare exceptions for work very likely wasted "
             "without a human verdict. "
+            "Use add_prerequisite to link a blocker; remove_prerequisite with the last "
+            "dependent revision and an actual decision note to remove a mistaken or obsolete "
+            "link. Removal preserves acceptance and proof; an absent link is a no-op. "
             "A satisfied canonical milestone does not prove integration into this checkout."
         ),
         lifespan=lifespan,
@@ -458,6 +461,22 @@ def create_server(
         """
         return store.compact_call(
             "add_prerequisite", task_id, expected_revision, blocked_by_id, handling, milestone
+        )
+
+    @server.tool(annotations=editing, structured_output=True)
+    @domain_errors
+    def remove_prerequisite(
+        task_id: str, expected_revision: int, blocked_by_id: str, note: str
+    ) -> dict[str, Any]:
+        """Remove a prerequisite link with an actual decision note; recalculate the gate.
+
+        Use the dependent task's last revision. A removed link advances it once;
+        an absent link returns changed=false with the same revision. Acceptance,
+        specifications and proof survive. Completed tasks remain immutable.
+        The configured actor and note are audited, including no-ops.
+        """
+        return store.compact_call(
+            "remove_prerequisite", task_id, expected_revision, blocked_by_id, note
         )
 
     @server.tool(annotations=additive, structured_output=True)

@@ -42,6 +42,14 @@ the user's verdict would very likely waste work. Dropped/deferred blockers remai
 unsatisfied. Rework/spec changes can block review links again; dependent results
 survive. Inspect `milestone`, `satisfied` and `blocking` in prerequisite references
 to explain waits. A cleared milestone proves no integration into this checkout.
+Add required links with `add_prerequisite`. Use
+`remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` only for a
+mistaken or obsolete link, with the dependent task's last revision and the actual
+decision note. Removal immediately recalculates the gate and preserves spec,
+acceptance, scope and proof; only a real deletion advances the revision. An absent
+link returns `changed=false`, while stale revisions and completed tasks still fail.
+The configured actor and note are audited. Never remove a real blocker merely to
+drain the queue.
 Before relying on recorded proof, inspect the
 actual checkout, working diff and relevant commits against the current full
 specification, particularly after rebinding. Reuse applicable work as part of

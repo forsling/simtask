@@ -20,7 +20,7 @@ async def exercise(database: Path):
     async with Client(server, read_timeout_seconds=60) as client:
         assert client.instructions
         tools = (await client.list_tools()).tools
-        assert len(tools) == 41
+        assert len(tools) == 42
         assert "runtime_info" in {tool.name for tool in tools}
         assert "open_task_viewer" in {tool.name for tool in tools}
         assert "dismiss_gate_proposal" in {tool.name for tool in tools}
@@ -497,7 +497,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.12.0"
+        assert catalog["version"] == "1.13.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

@@ -63,6 +63,14 @@ Never infer dependencies by parsing prose or claim another branch is integrated.
 Milestone satisfaction is canonical state, not proof of integration into the
 dependent checkout; inspect actual code and commits before relying on it.
 
+Add links with `add_prerequisite`. Remove a mistaken or obsolete link with
+`remove_prerequisite(task_id, expected_revision, blocked_by_id, note)`, using the
+dependent task's last revision and the actual decision note. Removal recalculates
+the gate without changing specifications, acceptance, scope or proof. Only a real
+deletion advances the task revision; an absent link returns `changed=false`.
+Stale revisions and completed tasks still fail. Actor and note are audited;
+removal records an actual scope/dependency decision, not a bypass of unsettled design.
+
 Discuss one decision at a time, starting with the one that constrains the rest.
 Answer questions and adapt the recommendation to the user's priorities. Resolve
 ordinary reversible details through research and judgment. Record meaningful

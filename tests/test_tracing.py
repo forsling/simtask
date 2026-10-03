@@ -434,7 +434,7 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
             mode=mode,
             client_info=types.Implementation(name="trace-test", version="1"),
         ) as client:
-            assert len((await client.list_tools()).tools) == 41
+            assert len((await client.list_tools()).tools) == 42
             assert not (await client.call_tool("runtime_info", {})).is_error
             assert not (
                 await client.call_tool("get_default_skills", {"name": "feature-design"})

@@ -328,6 +328,13 @@ scope or transfer attempts, reviews or code. Self-edges and cycles through prere
 and implicit group-to-member completion edges fail atomically, including during
 observer-proposal acceptance and membership changes. Linking changes the
 dependent task revision, leaving both specifications and their acceptance intact.
+Use `remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` for a
+mistaken or obsolete link, with the dependent task's last revision and the actual
+decision note. It removes either milestone link atomically, immediately recalculates
+the gate, and audits the configured actor, note and removed link. A real deletion
+advances the dependent revision once; an absent link returns `changed=false`
+without advancing it. Stale revisions still fail, and completed tasks are immutable.
+Removal preserves specifications, acceptance, attempts, reviews, other links and scope.
 Resolve unresolved items and proposed gates before decomposition;
 existing prerequisites move to the concrete members. Use related
 pending proposals for optional work. A session actively handling a task may add
@@ -456,7 +463,7 @@ those rare workflows are deferred.
 | Project and workstream | `init`, `list_projects`, `list_workstreams`, `workstream_status`; compatibility: `init_project`, `attach_checkout`, `init_workstream`, `rebind_workstream`, `preflight` |
 | Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
 | Groups | `create_group`, `list_groups`, `list_group_members`, `add_group_member`, `decompose_task` |
-| Specification and gates | `create_task`, `update_task`, `accept_task`, `withdraw_acceptance`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
+| Specification and gates | `create_task`, `update_task`, `accept_task`, `withdraw_acceptance`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
 | Inspection | `list_events`, `export_workstream`, `get_default_skills`, `runtime_info` |
 | Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
@@ -549,7 +556,8 @@ one-call chosen proof, complete compact acknowledgements, paged attempts/members
 and the named skill index. Schema 4 adds nullable summary/source-revision columns
 without backfill. Protocol 8/schema 5 add `review`/`signoff` prerequisite
 milestones and computed satisfaction; all existing links and observer proposals
-migrate to `review`. The surface now advertises 41 tools.
+migrate to `review`. Protocol 9 adds audited `remove_prerequisite` with revision-checked
+deletion and missing-link no-ops, retaining schema 5. The surface now advertises 42 tools.
 Protocol 3's purpose/result signoff
 judgments continue to use existing immutable audit records.
 Migration preserves all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
