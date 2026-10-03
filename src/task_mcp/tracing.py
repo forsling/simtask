@@ -21,8 +21,13 @@ TRACE_FORMAT_REVISION = 1
 logger = logging.getLogger(__name__)
 
 
-def utc_now():
-    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+def utc_now(timestamp_ns=None):
+    timestamp_ns = time.time_ns() if timestamp_ns is None else timestamp_ns
+    return (
+        datetime.fromtimestamp(timestamp_ns / 1e9, UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def json_bytes(value):
@@ -52,8 +57,14 @@ class TraceConfig:
             raise ValueError("trace limits must be positive")
 
 
-def capture(value, limit):
-    encoded = json_bytes(value)
+@dataclass(frozen=True)
+class CapturedPayload:
+    """An immutable, already serialized capture ready to embed in a record."""
+
+    encoded: bytes
+
+
+def encoded_capture(encoded, limit):
     result = {
         "bytes": len(encoded),
         "sha256": hashlib.sha256(encoded).hexdigest(),
@@ -61,10 +72,25 @@ def capture(value, limit):
     }
     if result["truncated"]:
         result["json_prefix"] = encoded[:limit].decode("utf-8", errors="ignore")
+        envelope = json_bytes(result)
     else:
-        # Snapshot mutable input before handing it to the asynchronous writer.
-        result["payload"] = json.loads(encoded)
-    return result
+        envelope = json_bytes(result)[:-1] + b',"payload":' + encoded + b"}"
+    return CapturedPayload(envelope)
+
+
+def capture(value, limit):
+    return json.loads(encoded_capture(json_bytes(value), limit).encoded)
+
+
+def encode_record(record):
+    # Captured payloads have already been serialized and frozen. Embedding
+    # their JSON avoids decoding and re-encoding full specifications/evidence.
+    captured = {key: value for key, value in record.items() if isinstance(value, CapturedPayload)}
+    ordinary = {key: value for key, value in record.items() if key not in captured}
+    encoded = json_bytes(ordinary)[:-1]
+    for key, value in captured.items():
+        encoded += b"," + json_bytes(key) + b":" + value.encoded
+    return encoded + b"}\n"
 
 
 def entity_references(value):
@@ -122,6 +148,18 @@ class TraceCollector:
         self._failures = 0
         self._last_warning = 0
 
+    def _metadata(self):
+        return {
+            "runtime": RUNTIME_IDENTITY,
+            "limits": {
+                "max_age_days": self.config.max_age_days,
+                "max_bytes": self.config.max_bytes,
+                "payload_bytes": self.config.payload_bytes,
+                "segment_bytes": self.config.segment_bytes,
+                "queue_bytes": self.config.queue_bytes,
+            },
+        }
+
     def start(self):
         self._thread = threading.Thread(target=self._write_loop, daemon=True)
         try:
@@ -132,17 +170,7 @@ class TraceCollector:
             self._failed()
             logger.warning("Task MCP trace writer could not start: %s", exc)
             return
-        self.emit(
-            {
-                "event": "connection_start",
-                "runtime": RUNTIME_IDENTITY,
-                "limits": {
-                    "max_age_days": self.config.max_age_days,
-                    "max_bytes": self.config.max_bytes,
-                    "payload_bytes": self.config.payload_bytes,
-                },
-            }
-        )
+        self.emit({"event": "connection_start", **self._metadata()})
 
     def close(self):
         self.emit({"event": "connection_end"})
@@ -156,13 +184,14 @@ class TraceCollector:
 
     def emit(self, record):
         try:
+            recorded_ns = time.time_ns()
             record = {
                 "trace_format_revision": TRACE_FORMAT_REVISION,
                 "connection_id": self.connection_id,
-                "timestamp": utc_now(),
+                "timestamp": utc_now(recorded_ns),
                 **record,
             }
-            encoded = json_bytes(record) + b"\n"
+            encoded = encode_record(record)
             with self._guard:
                 if (
                     self._closing.is_set()
@@ -171,26 +200,29 @@ class TraceCollector:
                     self._failures += 1
                     return
                 self._pending_bytes += len(encoded)
-            self._queue.put_nowait(encoded)
+            self._queue.put_nowait((encoded, recorded_ns))
         except Exception:
             self._failed()
 
     def _write_loop(self):
         while not self._closing.is_set() or not self._queue.empty():
             try:
-                encoded = self._queue.get(timeout=0.05)
+                encoded, recorded_ns = self._queue.get(timeout=0.05)
             except queue.Empty:
                 continue
             try:
                 with self._guard:
                     failures = self._failures
                 if failures:
-                    record = json.loads(encoded)
-                    record["collection_failures_before_record"] = failures
-                    encoded_to_write = json_bytes(record) + b"\n"
+                    encoded_to_write = (
+                        encoded[:-2]
+                        + b","
+                        + json_bytes({"collection_failures_before_record": failures})[1:]
+                        + b"\n"
+                    )
                 else:
                     encoded_to_write = encoded
-                self._append(encoded_to_write)
+                self._append(encoded_to_write, recorded_ns)
             except Exception as exc:
                 self._failed()
                 if time.monotonic() - self._last_warning >= 60:
@@ -201,7 +233,24 @@ class TraceCollector:
                     self._pending_bytes -= len(encoded)
                 self._queue.task_done()
 
-    def _append(self, encoded):
+    @staticmethod
+    def _segment_age_ns(path, info):
+        parts = path.stem.split("-")
+        if len(parts) == 4 and len(parts[1]) == 32 and parts[2].isdigit():
+            return int(parts[2])
+        # Older format-1 segments have no birth time in their name. Their first
+        # record normally contains the immutable connection/observation time.
+        try:
+            with path.open("rb") as stream:
+                first = json.loads(stream.readline(64 * 1024))
+            timestamp = datetime.fromisoformat(first["timestamp"].replace("Z", "+00:00"))
+            if timestamp.tzinfo is not None:
+                return int(timestamp.timestamp() * 1e9)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            pass
+        return info.st_mtime_ns
+
+    def _append(self, encoded, recorded_ns=None):
         # A shared lock protects the aggregate budget across server processes.
         # It runs on the daemon writer, never on the tool's execution path.
         import fcntl
@@ -225,31 +274,55 @@ class TraceCollector:
                     if time.monotonic() >= deadline:
                         raise TimeoutError("trace retention lock busy") from None
                     time.sleep(0.005)
+            now_ns = time.time_ns()
+            recorded_ns = now_ns if recorded_ns is None else recorded_ns
+            oldest = now_ns - self.config.max_age_days * 86400 * 1e9
+            if recorded_ns < oldest:
+                raise ValueError("trace observation expired before storage")
             files = []
-            oldest = time.time() - self.config.max_age_days * 86400
             for path in directory.glob("trace-*.jsonl"):
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
                     continue
-                if info.st_mtime < oldest:
+                age_ns = self._segment_age_ns(path, info)
+                if age_ns < oldest:
                     path.unlink()
                 else:
-                    files.append((info.st_mtime_ns, path.name, path, info.st_size))
+                    files.append((age_ns, path.name, path, info.st_size))
             total = sum(entry[3] for entry in files)
-            if len(encoded) > self.config.max_bytes:
+            header = (
+                json_bytes(
+                    {
+                        "trace_format_revision": TRACE_FORMAT_REVISION,
+                        "connection_id": self.connection_id,
+                        "timestamp": utc_now(recorded_ns),
+                        "event": "segment_start",
+                        **self._metadata(),
+                    }
+                )
+                + b"\n"
+            )
+            if len(encoded) + len(header) > self.config.max_bytes:
                 raise ValueError("trace record exceeds aggregate storage budget")
-            for _, _, path, size in sorted(files):
-                if total + len(encoded) <= self.config.max_bytes:
-                    break
-                path.unlink()
-                total -= size
-            if (
+            new_segment = (
                 self._path is None
                 or not self._path.exists()
                 or self._path.stat().st_size + len(encoded) > self.config.segment_bytes
-            ):
+            )
+            for _, _, path, size in sorted(files):
+                required = len(encoded) + (len(header) if new_segment else 0)
+                if total + required <= self.config.max_bytes:
+                    break
+                path.unlink()
+                total -= size
+                if path == self._path:
+                    new_segment = True
+            if new_segment:
                 self._segment += 1
-                self._path = directory / f"trace-{self.connection_id}-{self._segment:06d}.jsonl"
+                self._path = directory / (
+                    f"trace-{self.connection_id}-{recorded_ns:020d}-{self._segment:06d}.jsonl"
+                )
+                encoded = header + encoded
             fd = os.open(
                 self._path,
                 os.O_CREAT | os.O_APPEND | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
@@ -274,12 +347,14 @@ class TraceCollector:
         self._sequence += 1
         call_id = f"{self.connection_id}:{self._sequence}"
         params = ctx.params if isinstance(ctx.params, dict) else {}
+        tool = params.get("name") if ctx.method == "tools/call" else None
         base = {
             "call_id": call_id,
             "sequence": self._sequence,
             "request_id": ctx.request_id,
             "method": ctx.method,
-            "tool": params.get("name") if ctx.method == "tools/call" else None,
+            "tool": tool if isinstance(tool, str) else None,
+            "protocol_version": ctx.protocol_version,
         }
         try:
             request = {"method": ctx.method, "params": ctx.params}
@@ -301,9 +376,8 @@ class TraceCollector:
                     **base,
                     "event": "request_start",
                     "client_info": client_info,
-                    "protocol_version": ctx.protocol_version,
                     "entity_refs": entity_references(ctx.params),
-                    "request": capture(request, self.config.payload_bytes),
+                    "request": encoded_capture(json_bytes(request), self.config.payload_bytes),
                 }
             )
         except Exception:
@@ -350,14 +424,20 @@ class TraceCollector:
                 if isinstance(shaped, dict):
                     if shaped.get("isError"):
                         record["outcome"] = "tool_error"
-                    if "structuredContent" in shaped:
-                        record["structured_content_bytes"] = len(
-                            json_bytes(shaped["structuredContent"])
-                        )
-                    if "content" in shaped:
-                        record["content_bytes"] = len(json_bytes(shaped["content"]))
+                    fields = {key: json_bytes(value) for key, value in shaped.items()}
+                    if "structuredContent" in fields:
+                        record["structured_content_bytes"] = len(fields["structuredContent"])
+                    if "content" in fields:
+                        record["content_bytes"] = len(fields["content"])
                     record["entity_refs"] = entity_references(shaped)
-                record["result"] = capture(shaped, self.config.payload_bytes)
+                    encoded_result = (
+                        b"{"
+                        + b",".join(json_bytes(key) + b":" + value for key, value in fields.items())
+                        + b"}"
+                    )
+                else:
+                    encoded_result = json_bytes(shaped)
+                record["result"] = encoded_capture(encoded_result, self.config.payload_bytes)
             self.emit(record)
         except Exception:
             self._failed()

@@ -38,6 +38,7 @@ def analyze(directory, *, since=None, until=None, connection=None, tool=None, en
         raise ValueError("since must not be later than until")
     pending = {}
     runtimes = {}
+    limits = {}
     collection_failures = {}
     invalid = unsupported = records = 0
     for path in sorted(directory.glob("trace-*.jsonl")):
@@ -56,8 +57,9 @@ def analyze(directory, *, since=None, until=None, connection=None, tool=None, en
                         collection_failures.get(conn, 0),
                         record.get("collection_failures_before_record", 0),
                     )
-                    if record["event"] == "connection_start":
+                    if record["event"] in {"connection_start", "segment_start"}:
                         runtimes[conn] = record.get("runtime", {})
+                        limits[conn] = record.get("limits", {})
                     elif record["event"] in {"request_start", "request_finish"}:
                         key = (conn, record["call_id"])
                         call = pending.setdefault(
@@ -80,7 +82,12 @@ def analyze(directory, *, since=None, until=None, connection=None, tool=None, en
             invalid += 1
             continue
         refs = sorted(set(start.get("entity_refs", []) + finish.get("entity_refs", [])))
-        name = observed.get("tool") or observed.get("method")
+        name = observed.get("tool")
+        if not isinstance(name, str) or not name:
+            name = observed.get("method")
+        if not isinstance(name, str):
+            invalid += 1
+            continue
         if (
             (since and when < since)
             or (until and when > until)
@@ -132,6 +139,8 @@ def analyze(directory, *, since=None, until=None, connection=None, tool=None, en
         "resolve_unresolved",
         "set_disposition",
         "record_result",
+        "record_review",
+        "human_review",
     }
 
     def candidate(kind, first, second, note, task_id=None):
@@ -264,6 +273,11 @@ def analyze(directory, *, since=None, until=None, connection=None, tool=None, en
         "runtime_by_connection": {
             key: value
             for key, value in runtimes.items()
+            if key in {c["connection_id"] for c in calls}
+        },
+        "limits_by_connection": {
+            key: value
+            for key, value in limits.items()
             if key in {c["connection_id"] for c in calls}
         },
         "reported_collection_failures": {

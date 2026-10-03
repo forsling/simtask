@@ -25,7 +25,12 @@ bounded to two seconds; abrupt termination can leave incomplete calls.
 Exception messages have a separate 4,096-character cap with explicit truncation.
 The first implementation uses POSIX ownership and file-locking APIs.
 
-Retention removes old segments as new records arrive. Reports describe only
+Retention removes old segments as new records arrive, using their first
+observation time rather than their last write. Active segments also expire;
+regular appends cannot prolong the retention of earlier payloads. Each segment
+retains runtime/source identity and configured capture/retention limits so these
+remain available in reports after older segments are pruned. Metadata bytes
+count toward the shared storage budget. Reports describe only
 retained observations; absence of a record does not establish absence of a call.
 An inaccessible directory or process killed before any successful write may
 leave no diagnostic record. Keep any traces needed for longer comparisons in a
@@ -84,3 +89,7 @@ Viewer HTTP requests and direct Store/CLI operations are outside this MCP trace.
 
 For repeatable enabled/disabled overhead measurements on disposable synthetic
 data, run `python examples/trace_benchmark.py --output /tmp/trace-benchmark.json`.
+The benchmark interleaves modes with alternating call order across two fresh
+connection pairs. Local scheduling and background writes can affect either
+mode; negative differences are noise, not evidence that tracing makes calls
+faster.

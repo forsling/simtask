@@ -5,6 +5,7 @@ import asyncio
 import json
 import statistics
 import sys
+from contextlib import AsyncExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter_ns
@@ -66,30 +67,50 @@ async def benchmark(directory, samples):
     measurements = {
         mode: {name: [] for name in ["catalog", *methods]} for mode in ("enabled", "disabled")
     }
-    for mode in ("disabled", "enabled", "enabled", "disabled"):
-        args = ["-m", "task_mcp", "--db", str(database), "--trace-dir", str(directory / "traces")]
-        if mode == "disabled":
-            args.append("--no-trace")
-        params = StdioServerParameters(
-            command=sys.executable, args=args, env={"PYTHONPATH": str(root / "src")}
-        )
-        async with Client(params, read_timeout_seconds=30) as client:
-            await client.list_tools()
-            for tool_name, arguments in methods.values():
-                assert not (await client.call_tool(tool_name, arguments)).is_error
-            for name in measurements[mode]:
-                for _ in range(samples):
-                    started = perf_counter_ns()
-                    if name == "catalog":
-                        await client.list_tools()
-                    else:
-                        tool_name, arguments = methods[name]
-                        assert not (await client.call_tool(tool_name, arguments)).is_error
-                    measurements[mode][name].append((perf_counter_ns() - started) / 1e6)
+    for round_number in range(2):
+        async with AsyncExitStack() as stack:
+            clients = {}
+            setup_order = ("disabled", "enabled") if round_number == 0 else ("enabled", "disabled")
+            for mode in setup_order:
+                args = [
+                    "-m",
+                    "task_mcp",
+                    "--db",
+                    str(database),
+                    "--trace-dir",
+                    str(directory / "traces"),
+                ]
+                if mode == "disabled":
+                    args.append("--no-trace")
+                params = StdioServerParameters(
+                    command=sys.executable, args=args, env={"PYTHONPATH": str(root / "src")}
+                )
+                client = await stack.enter_async_context(Client(params, read_timeout_seconds=30))
+                clients[mode] = client
+                await client.list_tools()
+                for tool_name, arguments in methods.values():
+                    assert not (await client.call_tool(tool_name, arguments)).is_error
+            for name in measurements["enabled"]:
+                for number in range(samples):
+                    order = (
+                        ("disabled", "enabled")
+                        if (number + round_number) % 2 == 0
+                        else ("enabled", "disabled")
+                    )
+                    for mode in order:
+                        client = clients[mode]
+                        started = perf_counter_ns()
+                        if name == "catalog":
+                            await client.list_tools()
+                        else:
+                            tool_name, arguments = methods[name]
+                            assert not (await client.call_tool(tool_name, arguments)).is_error
+                        measurements[mode][name].append((perf_counter_ns() - started) / 1e6)
     report = {
         "boundary": (
-            "Real stdio round-trip; disposable synthetic data; counterbalanced modes. "
-            "Host approval delays are not measured."
+            "Real stdio round-trip; disposable synthetic data; interleaved modes with "
+            "alternating order and two fresh connection pairs. Shared local load and "
+            "background trace writes can affect either mode. Host approval delays are not measured."
         ),
         "samples_per_mode_per_operation": samples * 2,
         "operations": {},

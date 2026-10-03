@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -13,8 +14,9 @@ import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
+from task_mcp.runtime import RUNTIME_IDENTITY
 from task_mcp.trace_report import analyze, page_report, render
-from task_mcp.tracing import TraceCollector, TraceConfig, capture, json_bytes
+from task_mcp.tracing import TraceCollector, TraceConfig, capture, json_bytes, utc_now
 
 
 def records(directory):
@@ -55,6 +57,38 @@ def test_capture_snapshots_utf8_and_explicitly_caps_payload():
     assert truncated["bytes"] == measured["bytes"]
     assert truncated["sha256"] == measured["sha256"]
     assert len(truncated["json_prefix"].encode()) <= 25
+
+
+@pytest.mark.parametrize("payload_limit", [30, 10000])
+def test_middleware_capture_freezes_nested_payloads_and_exact_sizes(tmp_path, payload_limit):
+    collector = TraceCollector(TraceConfig(tmp_path / "traces", payload_bytes=payload_limit))
+    collector.start()
+    arguments = {"ids": ["tsk_a"], "note": "å🙂" * 20}
+    result = {
+        "content": [{"type": "text", "text": "å🙂" * 40}],
+        "structuredContent": {"id": "tsk_a", "nested": {"body": "å🙂" * 40}},
+    }
+    request_bytes = json_bytes({"method": "tools/call", "params": context(args=arguments).params})
+    result_bytes = json_bytes(result)
+    component_sizes = {key: len(json_bytes(value)) for key, value in result.items()}
+    assert asyncio.run(observe(collector, "get_tasks", arguments, result)) is result
+    arguments["ids"].append("tsk_changed")
+    result["structuredContent"]["nested"]["body"] = "changed after observation"
+    collector.close()
+    observed = records(collector.config.directory)
+    start = next(r for r in observed if r["event"] == "request_start")
+    finish = next(r for r in observed if r["event"] == "request_finish")
+    for captured, original in ((start["request"], request_bytes), (finish["result"], result_bytes)):
+        assert captured["bytes"] == len(original)
+        assert captured["sha256"] == hashlib.sha256(original).hexdigest()
+        if captured["truncated"]:
+            assert captured["json_prefix"] == original[:payload_limit].decode(
+                "utf-8", errors="ignore"
+            )
+        else:
+            assert captured["payload"] == json.loads(original)
+    assert finish["structured_content_bytes"] == component_sizes["structuredContent"]
+    assert finish["content_bytes"] == component_sizes["content"]
 
 
 def test_middleware_preserves_results_errors_cancellation_and_notifications(tmp_path):
@@ -113,7 +147,7 @@ def test_middleware_preserves_results_errors_cancellation_and_notifications(tmp_
 def test_failed_storage_and_full_queue_never_change_handler_result(tmp_path, monkeypatch):
     collector = TraceCollector(TraceConfig(tmp_path / "traces"))
 
-    def failed_write(encoded):
+    def failed_write(encoded, recorded_ns=None):
         raise OSError("disk full")
 
     monkeypatch.setattr(collector, "_append", failed_write)
@@ -129,7 +163,10 @@ def test_failed_storage_and_full_queue_never_change_handler_result(tmp_path, mon
     collector.config = replace(collector.config, queue_bytes=10000)
     collector.emit({"event": "recovered"})
     collector.close()
-    assert records(collector.config.directory)[0]["collection_failures_before_record"] >= 3
+    assert any(
+        r.get("collection_failures_before_record", 0) >= 3
+        for r in records(collector.config.directory)
+    )
 
 
 def test_writer_start_failure_does_not_gate_task(tmp_path, monkeypatch):
@@ -165,14 +202,119 @@ def test_concurrent_writers_enforce_shared_budget_and_retention(tmp_path):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(write, collectors))
+    # Thread scheduling may let one writer fill the final retained window.
+    # Give each connection a final observation before checking attribution.
+    for collector in collectors:
+        collector._append(
+            json_bytes({"connection": collector.connection_id, "final": True}) + b"\n"
+        )
     assert not old.exists()
     files = list(directory.glob("trace-*.jsonl"))
     assert sum(p.stat().st_size for p in files) <= 3000
     assert all(json.loads(line) for p in files for line in p.read_text().splitlines())
-    assert (
-        len({json.loads(line)["connection"] for p in files for line in p.read_text().splitlines()})
-        > 1
+    assert len({r["connection_id"] for r in records(directory) if "connection_id" in r}) > 1
+
+
+def test_daily_writes_expire_active_segments_by_observation_age(tmp_path, monkeypatch):
+    from task_mcp import tracing
+
+    collector = TraceCollector(TraceConfig(tmp_path / "traces"))
+    start_ns = time.time_ns() - 40 * 86400 * 10**9
+    clock = [start_ns]
+    monkeypatch.setattr(tracing.time, "time_ns", lambda: clock[0])
+    for day in range(41):
+        clock[0] = start_ns + day * 86400 * 10**9
+        for event in ("request_start", "request_finish"):
+            collector._append(
+                json_bytes(
+                    {
+                        "trace_format_revision": 1,
+                        "connection_id": collector.connection_id,
+                        "timestamp": utc_now(clock[0]),
+                        "event": event,
+                        "call_id": f"{collector.connection_id}:{day}",
+                        "sequence": day,
+                        "method": "tools/call",
+                        "tool": "runtime_info",
+                        "outcome": "success",
+                    }
+                )
+                + b"\n",
+                clock[0],
+            )
+            # Continuous writes make mtime recent, while the first observation
+            # in the active segment keeps its original age.
+            os.utime(collector._path, ns=(clock[0], clock[0]))
+    report = analyze(collector.config.directory)
+    assert 0 < report["call_count"] <= 31
+    assert report["observed_from"] >= utc_now(clock[0] - 30 * 86400 * 10**9)
+    assert report["sequence"][-1]["sequence"] == 40
+    with pytest.raises(ValueError, match="expired"):
+        collector._append(b"old queued observation\n", start_ns)
+
+
+def test_retained_segments_keep_runtime_and_limits_without_connection_start(tmp_path):
+    collector = TraceCollector(TraceConfig(tmp_path / "traces", max_bytes=5000, segment_bytes=1500))
+    collector.start()
+    for _ in range(20):
+        asyncio.run(observe(collector, "runtime_info", {}, {"body": "x" * 300}))
+    collector.close()
+    retained = records(collector.config.directory)
+    assert not any(r["event"] == "connection_start" for r in retained)
+    assert sum(p.stat().st_size for p in collector.config.directory.glob("*.jsonl")) <= 5000
+    report = analyze(collector.config.directory)
+    assert report["call_count"] > 0
+    assert report["runtime_by_connection"][collector.connection_id] == RUNTIME_IDENTITY
+    assert report["limits_by_connection"][collector.connection_id]["max_bytes"] == 5000
+    assert report["limits_by_connection"][collector.connection_id]["payload_bytes"] == 1024**2
+
+
+def test_older_invalid_tool_labels_are_reported_as_validation_failures(tmp_path):
+    collector = TraceCollector(TraceConfig(tmp_path / "traces"))
+    collector.start()
+    with pytest.raises(ValueError):
+        asyncio.run(observe(collector, ["bad"], {}, error=ValueError("invalid tool name")))
+    collector.close()
+    # Also cover files already written by the original format-1 collector.
+    for path in collector.config.directory.glob("*.jsonl"):
+        observed = [json.loads(line) for line in path.read_text().splitlines()]
+        for record in observed:
+            if record["event"] in {"request_start", "request_finish"}:
+                record["tool"] = ["bad"]
+        path.write_bytes(b"".join(json_bytes(r) + b"\n" for r in observed))
+    report = analyze(collector.config.directory)
+    assert report["per_tool"]["tools/call"]["outcomes"] == {"error": 1}
+    malformed = next(
+        r for r in records(collector.config.directory) if r["event"] == "request_start"
     )
+    assert malformed["request"]["payload"]["params"]["name"] == ["bad"]
+
+
+@pytest.mark.parametrize("tool", ["record_review", "human_review"])
+def test_review_ack_followup_reads_are_candidates(tmp_path, tool):
+    collector = TraceCollector(TraceConfig(tmp_path / "traces"))
+    collector.start()
+    asyncio.run(
+        observe(
+            collector,
+            tool,
+            {"attempt_id": "att_a", "expected_revision": 1},
+            {
+                "structuredContent": {
+                    "id": "att_a",
+                    "revision": 2,
+                    "task_id": "tsk_a",
+                    "task_revision": 4,
+                    "state": "passed",
+                }
+            },
+        )
+    )
+    asyncio.run(observe(collector, "get_tasks", {"ids": ["tsk_a"]}, {"structuredContent": {}}))
+    collector.close()
+    candidates = analyze(collector.config.directory)["candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["kind"] == "read_after_ack" and candidates[0]["task_id"] == "tsk_a"
 
 
 def test_report_patterns_filters_incomplete_and_bounded_details(tmp_path):
@@ -308,6 +450,13 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
                 await client.session.send_request(
                     types.Request(method="unknown/method", params={}), types.EmptyResult
                 )
+            with pytest.raises(MCPError):
+                await client.session.send_request(
+                    types.Request.model_construct(
+                        method="tools/call", params={"name": ["bad"], "arguments": {}}
+                    ),
+                    types.EmptyResult,
+                )
 
     asyncio.run(exercise())
     report = analyze(directory)
@@ -322,8 +471,11 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
     } <= set(report["per_tool"])
     assert report["per_tool"]["get_tasks"]["outcomes"] == {"tool_error": 1}
     assert report["per_tool"]["unknown/method"]["outcomes"] == {"error": 1}
+    assert report["per_tool"]["tools/call"]["outcomes"] == {"error": 1}
     assert report["incomplete_calls"] == 0 and not report["reported_collection_failures"]
     starts = [r for r in records(directory) if r["event"] == "request_start"]
+    malformed = next(r for r in starts if r["method"] == "tools/call" and r["tool"] is None)
+    assert malformed["request"]["payload"]["params"]["name"] == ["bad"]
     assert any(
         r.get("client_info", {}).get("name") == "trace-test"
         for r in starts
