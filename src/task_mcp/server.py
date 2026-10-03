@@ -1,7 +1,9 @@
 """MCP primitives for the local task service."""
 
 import argparse
+import json
 import os
+from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from task_mcp.reference import default_skills
 from task_mcp.runtime import RUNTIME_IDENTITY
 from task_mcp.store import Store, TaskError, default_database
+from task_mcp.tracing import TraceCollector, TraceConfig, default_trace_directory
 
 
 class TaskPatch(BaseModel):
@@ -43,7 +46,25 @@ def domain_errors(function):
     return wrapped
 
 
-def create_server(store: Store) -> MCPServer:
+def create_server(
+    store: Store, *, tracing: bool = True, trace_config: TraceConfig | None = None
+) -> MCPServer:
+    collector = (
+        TraceCollector(trace_config or TraceConfig(default_trace_directory(store.path)))
+        if tracing
+        else None
+    )
+
+    @asynccontextmanager
+    async def lifespan(server):
+        if collector:
+            collector.start()
+        try:
+            yield {}
+        finally:
+            if collector:
+                collector.close()
+
     server = MCPServer(
         "task-mcp",
         version=RUNTIME_IDENTITY["package_version"],
@@ -52,7 +73,10 @@ def create_server(store: Store) -> MCPServer:
             "revisions; reconcile conflicts. Record only actual user authority, independent "
             "review and informed human verdicts. Full specifications govern work."
         ),
+        lifespan=lifespan,
     )
+    if collector:
+        server.middleware.insert(0, collector.middleware)
     # Audited reads and append-only writes both change local state. A revision or
     # updated_at bump alone does not erase business content, so append-only tools
     # can truthfully declare destructive_hint=False.
@@ -632,14 +656,55 @@ def create_server(store: Store) -> MCPServer:
 
 def main():
     parser = argparse.ArgumentParser(description="Local Task MCP v1 server (stdio).")
-    parser.add_argument("command", nargs="?", choices=("ui",))
+    parser.add_argument("command", nargs="?", choices=("ui", "trace-report"))
     parser.add_argument("--stop", action="store_true", help="Stop the explicit local viewer")
     parser.add_argument("--db", type=Path, default=default_database())
     parser.add_argument("--actor", default=os.environ.get("TASK_MCP_ACTOR", "local-agent"))
     parser.add_argument("--export-workstream", metavar="WORKSTREAM_ID")
     parser.add_argument("--export-format", choices=("markdown", "legacy"))
     parser.add_argument("--exclude-closed", action="store_true", help="Omit done/dropped tasks")
+    parser.add_argument(
+        "--no-trace", action="store_true", help="Disable automatic MCP usage collection"
+    )
+    parser.add_argument(
+        "--trace-dir", type=Path, help="Private usage trace directory (default: <database>.traces)"
+    )
+    parser.add_argument("--trace-max-age-days", type=float, default=30)
+    parser.add_argument("--trace-max-bytes", type=int, default=256 * 1024 * 1024)
+    parser.add_argument("--trace-payload-bytes", type=int, default=1024 * 1024)
+    parser.add_argument("--since", help="Trace report start time, including timezone")
+    parser.add_argument("--until", help="Trace report end time, including timezone")
+    parser.add_argument("--connection", help="Trace report connection ID")
+    parser.add_argument("--tool", help="Trace report tool or MCP method")
+    parser.add_argument("--entity", help="Trace report explicit entity reference")
+    parser.add_argument("--json", action="store_true", help="Machine-readable trace report")
+    parser.add_argument(
+        "--limit", type=int, default=20, help="Trace report detail rows (default: 20)"
+    )
+    parser.add_argument("--offset", type=int, default=0, help="Trace report detail offset")
+    parser.add_argument("--all", action="store_true", help="Include all trace report details")
     args = parser.parse_args()
+    trace_directory = args.trace_dir or default_trace_directory(args.db)
+    if args.command == "trace-report":
+        from task_mcp.trace_report import analyze, page_report, render
+
+        try:
+            report = analyze(
+                trace_directory,
+                since=args.since,
+                until=args.until,
+                connection=args.connection,
+                tool=args.tool,
+                entity=args.entity,
+            )
+            report = page_report(report, args.limit, args.offset, args.all)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(
+            json.dumps(report, indent=2) if args.json else render(report),
+            end="\n" if args.json else "",
+        )
+        return
     if args.command == "ui":
         from task_mcp.viewer import launch_viewer, stop_viewer
 
@@ -665,4 +730,17 @@ def main():
             end="",
         )
     else:
-        create_server(store).run(transport="stdio")
+        try:
+            trace_config = TraceConfig(
+                trace_directory,
+                max_age_days=args.trace_max_age_days,
+                max_bytes=args.trace_max_bytes,
+                payload_bytes=args.trace_payload_bytes,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        create_server(
+            store,
+            tracing=not args.no_trace and os.environ.get("TASK_MCP_TRACE", "1") != "0",
+            trace_config=trace_config,
+        ).run(transport="stdio")

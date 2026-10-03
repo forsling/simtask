@@ -135,6 +135,10 @@ the workflow's required user decisions or human sign-off.
 
 ## Session init and workstreams
 
+The stdio server automatically collects bounded private usage traces for offline
+evaluation. See [usage traces](docs/usage-traces.md) for `task-mcp trace-report`,
+capture/retention settings and what the measurements can establish.
+
 Call `init` with the absolute path of the target checkout and its branch, or an
 explicit `workstream_name` for detached/non-Git work. The target is independent
 of the MCP server process cwd and the agent session cwd. For example, a session

@@ -6,6 +6,14 @@ It does not run agents or authenticate users. Reference workflow skills provide
 the recommended orchestration, while raw MCP calls and custom skills remain
 usable.
 
+The stdio boundary also collects bounded private operational traces outside the
+task database, enabled by default for early usage evaluation. Generated
+connection/call IDs, observed request/results, timestamps and defined JSON byte
+counts support offline reports without consumer tracking calls. Collection
+failures never change task outcomes. This observes MCP requests, not agent
+liveness, conversations, host delays or actual model-context tokens; see
+[usage traces](docs/usage-traces.md).
+
 ## Identity and scope
 
 Projects are initialized explicitly at a canonical path. A project may attach
