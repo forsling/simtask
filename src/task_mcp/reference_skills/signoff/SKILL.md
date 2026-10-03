@@ -5,8 +5,19 @@ description: Present reviewed implementation attempts for informed human sign-of
 
 # Sign-off
 
-Fetch the full task with `get_tasks(ids=[...])` and select its passed or
-explicitly human-reviewed current-spec attempt. Present the task's purpose,
+Use the scoped card's relevant attempt reference, or the known reviewed attempt ID,
+and request `get_tasks(ids=[...], specification=true, workstream_id=...,
+attempt_ids=[...])` once for the full specification and exactly that proof.
+Select its passed or explicitly human-reviewed current-spec attempt. Present
+one current task at a time with these explicit fields:
+
+- **Asked:** the approved goal and constraints.
+- **Built:** the actual delivered behavior and its difference from that goal.
+- Actual verification and independent review, with fitting inspection handles.
+- What the user should judge, material limitations and your recommendation.
+- A judgment question seeking the informed explicit verdict.
+
+Present the task's purpose,
 `acceptance_basis`, supporting `approval_decision` (actual note and decision
 reference), and whether it is currently accepted separately from the result,
 verification, independent review and material limitations. Specific approval
@@ -29,7 +40,7 @@ last-read task `expected_revision`, selected `attempt_id` and its
 
 - `approve`: accepts purpose and result and completes the task. Current
   acceptance, applicable passed/human-reviewed attempt and clear completion
-  gates are required. Completed tasks are immutable.
+  gates are required. Completed requirements and proof are immutable.
 - `rework`: purpose remains approved; repair this implementation, record a new
   result and obtain fresh review. The selected attempt goes to rework.
 - `revise`: withdraw approval and pass the actual concrete
@@ -59,30 +70,14 @@ drop deactivates approval, defer retains it, and leaving dropped status requires
 deferred work satisfies a prerequisite. Shared-group completion still needs all
 members human signed off across projects; there is no separate group sign-off.
 
-Task origin/request metadata never grants acceptance. Creation, amendment and standalone
-`accept_task` use the same `approval={"basis": "specific" | "delegated", "note":
-...}` payload: exact-scope user approval or real authority to select work within
-a stated goal, with the actual supporting instruction recorded. Omit approval
-for pending or design-first work, even with user origin. No approval clears
-other gates or starts implementation. `withdraw_acceptance` is revision-checked
-and records a reason without changing spec revision or deleting decisions/proof;
-reapproval of an unchanged spec may reuse applicable review. Completed tasks
-are immutable. Read full details after compact create/update/accept/withdraw ACKs when
-needed; use returned revisions to continue.
-
-Specification amendments use `update_task(..., approval=...)` to save and accept
-already-authorized resulting scope in one revision-checked transaction. Reuse
-the actual supporting instruction; do not ask for the same approval again.
-Omit approval for unsettled or explicitly pending amendments. Every real
-title/body/criteria edit changes the spec; no editorial exemption is inferred.
-Before replacing body or acceptance_criteria, read the full task once with
-`get_tasks(ids=[...])` and pass its `specification_etag` plus the current task
-revision. These fields are whole replacements; board rows carry no token.
-Title-only edits need no full body read. `get_tasks` currently returns complete
-specifications by default; no `specification=true` flag exists. On conflict,
-re-read the full spec, reconcile, and use its current revision/token.
-Unchanged patches are no-ops unless approval changes; approving an unchanged
-pending spec leaves spec revision unchanged. Compact update acknowledgements
-report `changed`, `spec_changed`, `approval_changed`, revisions and gates.
-Approval grants no scope, prerequisite satisfaction, review, completion or
-execution. Attempts and reviews remain proof only for their original spec.
+Use last returned entity revisions after user pauses and successful writes. No
+routine read-before-write or confirming read is needed. Fetch and reconcile for
+conflicts, uncertainty or missing information; inspect the board before retrying
+an uncertain creation. Cards never carry body previews or replacement tokens.
+For whole-field body/criteria replacements use the full-specification etag from
+your complete read or create/update acknowledgement. Valid token-bearing updates
+return a refreshed token; unchanged specifications retain it. Title/summary-only
+edits need no full read. Summary edits preserve spec acceptance and proof.
+Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
+or `get_attempt`; page deliberate history/membership with `list_task_attempts`
+and `list_group_members`. Never write a card or summary back as a specification.

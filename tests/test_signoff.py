@@ -169,7 +169,8 @@ def test_direction_decision_preserves_sound_result_without_inventing_quality(
         assert full(store, task)["attempts"] == task["attempts"]
     elif decision == "defer":
         resumed = store.set_disposition(task["id"], ack["revision"], "open", "Resume")
-        assert resumed["accepted"] and "signoff" in resumed["gate_diagnostics"]
+        assert resumed["accepted"] and "signoff" not in resumed["gate_diagnostics"]
+        assert store.read_tasks([task["id"]], workstream_id=ws)["items"][0]["view"] == "signoff"
 
 
 @pytest.mark.parametrize("decision", ["revise", "drop", "defer"])

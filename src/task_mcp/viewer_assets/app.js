@@ -25,7 +25,7 @@ const VIEWS = {
 };
 const SECTIONS = [
   { key: "you", title: "Needs you", views: ["signoff", "pending_acceptance", "unresolved_items"] },
-  { key: "active", title: "In progress", views: ["review", "ready", "prerequisites"] },
+  { key: "active", title: "In progress", views: ["review", "ready", "open", "prerequisites"] },
   { key: "later", title: "Later", views: ["deferred"], collapsible: true },
   { key: "closed", title: "Closed", views: ["done", "dropped"], collapsible: true },
 ];
@@ -418,7 +418,7 @@ async function chooseGroups(mode) {
   await reload();
 }
 function groupProjectCount(group) {
-  return Object.keys(group.progress?.by_project || {}).length;
+  return group.project_count ?? Object.keys(group.progress?.by_project || {}).length;
 }
 function groupKind(group) {
   const projects = groupProjectCount(group);
@@ -451,7 +451,7 @@ async function reload({ quiet = false } = {}) {
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
     const streams = state.groups ? state.streams : await pages("workstreams", { project });
     if (generation !== state.generation) return;
-    state.rows = rows;
+    state.rows = rows.map(r => ({ ...r, view: r.view || (r.object_type === "group" ? "group" : ["done", "deferred", "dropped"].includes(r.status) ? r.status : r.gate_diagnostics?.[0] || "open") }));
     state.streams = streams;
     state.loadedAt = Date.now();
     $("subheading").textContent = groups
@@ -493,7 +493,7 @@ async function reload({ quiet = false } = {}) {
 
 function filteredRows() {
   const query = $("search").value.trim().toLowerCase();
-  return state.rows.filter((r) => r.title.toLowerCase().includes(query));
+  return state.rows.filter((r) => `${r.title} ${r.summary || ""}`.toLowerCase().includes(query));
 }
 function orderedRows() {
   if (state.groups) return filteredRows();
@@ -523,6 +523,9 @@ function row(r) {
       node("span", r.title, "row-title"),
       node("span", v.short, "row-meta tone-" + v.tone),
     );
+  }
+  if (r.summary) {
+    b.querySelector(".row-title").append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
   }
   return b;
 }
@@ -621,7 +624,7 @@ function renderDetail(t) {
   const view = row?.view || t.status;
   const locked = t.status === "done";
 
-  const actions = [button("Move in project order", () => moveTask(t).catch((e) => toast(e.message, true)))];
+  const actions = [button("Move in project order", () => moveTask(t).catch((e) => toast(e.message, true))), button("Edit summary", () => editSummary(t))];
   if (!locked) {
     actions.push(iconButton("edit", "Edit (e)", () => editTask(t)));
     actions.push(iconButton("more", "More actions", (e) => moreMenu(e.currentTarget, t)));
@@ -646,6 +649,7 @@ function renderDetail(t) {
         : null,
     ),
   );
+  if (t.summary) head.append(node("p", t.summary, "muted"), node("p", t.summary_stale ? "Descriptive summary predates the current specification." : "Descriptive summary; read the specification below for requirements.", "muted"));
   d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, view), ...body(t)));
 }
 function currentAttempt(t, requiredStates = null) {
@@ -839,7 +843,7 @@ function renderGroup(t) {
   if (!t.included_workstreams.length)
     workstreams.append(node("p", "Not included as a group in any workstream. Member tasks may be scoped individually.", "empty-text"));
   d.replaceChildren(
-    topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], []),
+    topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], [button("Edit summary", () => editSummary(t))]),
     el(
       "div",
       "content",
@@ -850,6 +854,7 @@ function renderGroup(t) {
         el("div", "meta", pill(t.complete ? "done" : "review", t.complete ? "Complete" : "In progress"), node("span", `${p.done} of ${p.total} signed off · ${projects} project${projects === 1 ? "" : "s"}`, "meta-item")),
         progressBar(p.done, p.total),
       ),
+      t.summary ? section(t.summary_stale ? "Descriptive summary (predates current specification)" : "Descriptive summary", node("p", t.summary)) : null,
       section("Context", markdown(t.body)),
       section("Done when", markdown(t.acceptance_criteria, { checklist: true })),
       section("Included in workstreams", workstreams),
@@ -1270,6 +1275,15 @@ function signoff(t, a, initial = "approve") {
   });
 }
 function requestChanges(t, a) { signoff(t, a, "rework"); }
+function editSummary(t) {
+  openDialog("Edit descriptive summary", "Intent or settled constraints, up to 240 characters on one line. Requirements and acceptance stay in the specification.", "Save summary");
+  const summary = field("summary", "Summary (optional)", t.summary || "", "input", false);
+  summary.maxLength = 240;
+  submitAction = async values => api("edit", {
+    task_id: t.id, expected_revision: t.revision,
+    changes: { summary: values.get("summary") || null },
+  });
+}
 function editTask(t) {
   if (!t || t.object_type !== "task" || t.status === "done") return;
   let revision = t.revision;
@@ -1277,6 +1291,8 @@ function editTask(t) {
   openDialog("Edit task", "Save a draft, or approve the exact resulting specification. Other gates still apply.", "Save draft");
   $("dialog").classList.add("wide");
   field("title", "Title", t.title, "input");
+  const summary = field("summary", "Summary (optional descriptive intent)", t.summary || "", "input", false);
+  summary.maxLength = 240;
   field("body", "Specification", t.body, "tall", false, "Markdown is supported.");
   field("acceptance_criteria", "Acceptance criteria", t.acceptance_criteria, "textarea", false);
   const mode = node("select");
@@ -1310,7 +1326,7 @@ function editTask(t) {
   submitAction = async (values) => {
     const payload = {
       task_id: t.id, expected_revision: revision, specification_etag: etag,
-      changes: Object.fromEntries(["title", "body", "acceptance_criteria"].map(key => [key, values.get(key)])),
+      changes: { ...Object.fromEntries(["title", "body", "acceptance_criteria"].map(key => [key, values.get(key)])), summary: values.get("summary") || null },
     };
     if (values.get("save_mode") === "accepted") {
       if (!values.has("approve_exact_spec")) throw new Error("Confirm approval of the exact resulting specification.");
@@ -1357,6 +1373,8 @@ function createTask() {
   );
   $("dialog").classList.add("wide");
   field("title", "Title", "", "input");
+  const summary = field("summary", "Summary (optional descriptive intent)", "", "input", false);
+  summary.maxLength = 240;
   field("body", "What needs to happen?", "", "tall", false, "Markdown is supported.");
   field("acceptance_criteria", "How will you know it's done?", "", "textarea", false);
   field("user_request", "Your original request", "", "textarea", false, "Preserved independently of approval.");
@@ -1389,7 +1407,7 @@ function createTask() {
   mode.onchange();
   submitAction = async (values) => {
     const payload = {
-      title: values.get("title"), body: values.get("body"),
+      title: values.get("title"), body: values.get("body"), summary: values.get("summary") || null,
       acceptance_criteria: values.get("acceptance_criteria"),
       user_request: values.get("user_request"), source: "user",
       project: state.project,

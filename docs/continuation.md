@@ -7,7 +7,7 @@ the existing workstream and use the revision-checked, confirmed
 history; it does not move files or prove that a recorded result exists in the
 new checkout.
 
-Before relying on an attempt, read the current full task with `get_tasks` and
+Before relying on an attempt, read the current full task with `get_tasks(specification=true)` and
 inspect the actual checkout, working diff and relevant commits. For Git work,
 `git status --short`, `git rev-parse HEAD`, `git show <recorded-commit>` and
 inspection of the affected files are ordinary verification aids. Commit

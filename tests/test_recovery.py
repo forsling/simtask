@@ -263,7 +263,7 @@ def test_legacy_proof_and_audit_survive_factual_record_and_selector(tmp_path):
         assert (
             db.execute("SELECT * FROM events ORDER BY sequence").fetchall()[: len(events)] == events
         )
-        assert db.execute("PRAGMA user_version").fetchone() == schema == (3,)
+        assert db.execute("PRAGMA user_version").fetchone() == schema == (4,)
         raw = json.loads(
             db.execute("SELECT evidence FROM attempts WHERE id=?", (recovered["id"],)).fetchone()[0]
         )

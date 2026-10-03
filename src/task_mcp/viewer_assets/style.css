@@ -1327,3 +1327,5 @@ dialog footer {
     transition: none !important;
   }
 }
+
+.row-summary { display: block; font-weight: normal; margin-top: .25rem; }

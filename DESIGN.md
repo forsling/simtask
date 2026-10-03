@@ -69,7 +69,7 @@ delegated approval requires actual authority to select work within a stated
 goal. Explicit pending/design-first requests take precedence. Queueing starts
 no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
-state. Database schema revision 2 introduced this data; candidate protocol 6
+state. Database schema revision 2 introduced this data; candidate protocol 7
 retains the purpose/result signoff contract described below.
 
 Acceptance binds to the current specification. `update_task` atomically saves
@@ -80,8 +80,10 @@ are no-ops unless approval changes; unchanged pending specs can be approved
 without advancing their spec revision. Whole-field body/criteria replacement
 requires the `specification_etag` from a full detail read, tied to task ID,
 spec revision, body and criteria, alongside the expected task revision.
-`get_tasks` still returns full details in one call; compact cards and a separate
-descriptive summary field are deferred. Approval is committed with the resulting
+MCP `get_tasks` returns cards by default, or a complete current specification
+with `specification=true`. Bounded explicit `attempt_ids` retrieves exactly chosen
+proof in the same call; scoped summaries/gates use current-spec local evidence.
+Unscoped aggregate counts imply no branch readiness. Approval is committed with the resulting
 spec so no intermediate accepted state is exposed. Failed concurrency or audit
 writes roll back both together. Clearing an unresolved item or recording
 evidence does not. Revision-checked `withdraw_acceptance` audits its reason and
@@ -89,14 +91,14 @@ clears current acceptance without a dummy edit, preserving spec revision,
 decisions and proof history. It gates implementation and sign-off. Reapproval
 of the same spec may reuse applicable review; genuine spec changes retain old
 attempts on their old revision. Readiness also depends on unresolved items,
-prerequisites, disposition, scope and attempts. Completed tasks are immutable;
-a new requirement after completion is a new task.
+prerequisites, disposition, scope and attempts. Completed specifications/proof are immutable;
+a new requirement after completion is a new task. Summary-only corrections remain audited.
 
 Existing schemas migrate transactionally after a fresh verified SQLite online
 backup under the writer lock. Backup includes committed WAL data and remains
 available after success or rollback. Migration preserves all existing rows and
 history; it never infers origin or approval basis from prior notes. Fresh empty
-databases create schema 3 directly. Candidate code, databases and companion
+databases create schema 4 directly. Candidate code, databases and companion
 workflow updates must remain isolated until client rollout can happen together.
 Create/update/accept/withdraw acknowledgements return continuation IDs/revisions,
 acceptance and accurate gates without echoing specs or proof history.
@@ -156,8 +158,7 @@ workstream, actual source/target commits and target verification, followed by
 fresh independent review. Origin reviews are never inherited. Completed tasks
 retain selected human-approved proof; later integration is a new task. No
 adoption API, shared working state, schema expansion or routine checkpoints are
-needed. See [the focused workflow](docs/continuation.md); compact default task reads
-remain separately deferred.
+needed. See [the focused workflow](docs/continuation.md); full-spec and exact-proof reads are explicit.
 
 Protocol 6 treats `record_result` as factual recording for any mutable scoped
 concrete task, including pending, unresolved, prerequisite-blocked, deferred and
@@ -236,13 +237,13 @@ through `get_default_skills`, making them discoverable without client installati
 The database enforces the gates; interpreting language, researching choices and
 obtaining real user decisions remain agent workflow responsibilities.
 
-Canonical packaged skill files are returned verbatim
-with version and hash by a read-only catalog. Export is a versioned,
+The read-only skill index returns names, versions, hashes and descriptions;
+a named request returns exactly that canonical skill verbatim. Export is a versioned,
 deterministic workstream view, never an editable synchronized ledger. The server
 writes its private SQLite database; it does not edit project files, client
 configuration, or installed skills.
 
-The default `task-mcp/v2` export is human-readable Markdown with the same derived
+The default `task-mcp/v3` export is human-readable Markdown with the same derived
 workflow views as the scoped queue, readable specifications/gates/result history,
 and a separate global group summary. Stored disposition is labelled separately.
 Only local scoped concrete tasks receive full entries. Other-workstream and
@@ -258,8 +259,8 @@ rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
 
-Candidate purpose/result signoff (introduced in protocol 3; current protocol 6,
-schema 3) uses one human
+Candidate purpose/result signoff (introduced in protocol 3; current protocol 7,
+schema 4) uses one human
 `approve`/`rework`/`revise`/`drop`/`defer` decision. Specific current-scope purpose
 approval references its actual classified audit decision; delegated/unknown
 purpose is judged by the user's informed signoff decision. Direction-only
@@ -270,3 +271,23 @@ actual authority for revival; defer retains approval. Both remain unsatisfied
 prerequisites. Exact task/spec/attempt revisions and separate judgments live in
 immutable audit records, while full task reads deliberately expose proof and
 decision references. No additional DDL is needed for signoff judgments.
+
+Protocol 7 makes ordinary MCP calls compact and complete for their chosen action.
+Cards never expose partial specifications or replacement tokens. Specifications
+retain all requirements/proposals/parent context and at most three actionable-first
+current-spec attempt summaries; selected delivery ID is independent of that window.
+Paged attempt/member history and exact proof reads preserve provenance. Store/viewer
+full details and complete exports remain available. Every write acknowledgement
+identifies affected entities, their revisions, changed/no-op state and useful gates
+without echoing requirements/evidence/history. Continue from returned revisions;
+full-spec tokens may continue from authored creates and valid token-bearing updates.
+Conflicts reconcile against complete requirements before replacement.
+
+Schema 4 adds nullable task/group summary and summary_spec_revision, preserving all
+prior columns/rows without backfill. Summaries are optional, non-normative one-line
+intent/constraints up to 240 Unicode characters. Null clears; omitted values persist.
+Summary-only corrections change ordinary revision while preserving acceptance/spec/
+proof, even after completion. Later spec edits make summaries stale; explicitly
+reaffirmed or simultaneous edits stamp the current spec. Freshness tracks revisions,
+not descriptive accuracy. Init queues/candidates are bounded to ten; ordinary task/
+group/event pages to twenty; default scope/group/member expansions are bounded.

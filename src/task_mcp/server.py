@@ -21,6 +21,7 @@ class TaskPatch(BaseModel):
     title: str | None = None
     body: str | None = None
     acceptance_criteria: str | None = None
+    summary: str | None = None
 
 
 class Approval(BaseModel):
@@ -47,28 +48,9 @@ def create_server(store: Store) -> MCPServer:
         "task-mcp",
         version=RUNTIME_IDENTITY["package_version"],
         instructions=(
-            "Task MCP v1 is opt-in. Call init with an explicit target checkout and branch "
-            "or named workstream for each task-using session. Exact bindings resume without "
-            "confirmation; confirm an explicit action to create, attach or rebind. "
-            "A session may retain multiple returned project/workstream IDs. "
-            "Groups have one global ID; only local concrete members enter a workstream queue. "
-            "Use list_groups/get_tasks for whole-group progress and supply group revisions "
-            "when creating or attaching members. "
-            "Tasks have current user acceptance, unresolved items, prerequisites and scoped "
-            "attempts. get_next_action selects without claiming. A reviewer other than the "
-            "implementer records ordinary review; human_review requires an actual user "
-            "instruction. signoff_task requires the user's informed verdict. Actor labels and "
-            "human assertions are not authenticated. Reads append local audit events. "
-            "Origin is descriptive and never accepts a task. Supply approval={basis: specific or "
-            "delegated, note: actual supporting instruction} only for authorized exact scope. "
-            "Concrete 'add a task' requests can supply specific approval; explicit pending or "
-            "design-first requests take precedence. Delegation must actually cover the work. "
-            "Queueing does not start work. Approval clears no other gates. "
-            "For 'add a design task' or an exploratory feature idea, fetch get_default_skills "
-            "and follow feature-capture. For 'let's design X', 'review design tasks', or "
-            "designrev, fetch it and follow feature-design (not implementation review). "
-            "Exploratory briefs use pending tasks and unresolved design gates. "
-            "Catalog skills need no client installation."
+            "Init an explicit checkout/branch and retain its IDs. Continue with returned "
+            "revisions; reconcile conflicts. Record only actual user authority, independent "
+            "review and informed human verdicts. Full specifications govern work."
         ),
     )
     # Audited reads and append-only writes both change local state. A revision or
@@ -119,7 +101,7 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def list_projects(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    def list_projects(limit: int = 20, offset: int = 0) -> dict[str, Any]:
         """Discover initialized project IDs, names and canonical paths."""
         return store.list_projects(limit, offset)
 
@@ -162,13 +144,13 @@ def create_server(store: Store) -> MCPServer:
         confirmed: bool = False,
     ) -> dict[str, Any]:
         """Explicitly initialize a project and default workstream after user confirmation."""
-        return store.init_project(path, branch, workstream_name, confirmed)
+        return store.compact_call("init_project", path, branch, workstream_name, confirmed)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def attach_checkout(project: str, path: str, confirmed: bool = False) -> dict[str, Any]:
         """Attach another canonical checkout path to an existing project."""
-        return store.attach_checkout(project, path, confirmed)
+        return store.compact_call("attach_checkout", project, path, confirmed)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -181,35 +163,45 @@ def create_server(store: Store) -> MCPServer:
         confirmed: bool = False,
     ) -> dict[str, Any]:
         """Initialize a distinct workstream and explicit initial scope."""
-        return store.init_workstream(project, path, branch, name, scope_expression, confirmed)
+        return store.compact_call(
+            "init_workstream", project, path, branch, name, scope_expression, confirmed
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def list_workstreams(
-        project: str | None = None, limit: int = 50, offset: int = 0
+        project: str | None = None, limit: int = 20, offset: int = 0
     ) -> dict[str, Any]:
         """List workstreams globally or by project with task counts, not agent liveness."""
         return store.list_workstreams(project, limit, offset)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def workstream_status(workstream_id: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
-        """Inspect one workstream's scoped queue and counts without initializing or rebinding."""
-        return store.workstream_status(workstream_id, limit, offset)
+    def workstream_status(
+        workstream_id: str, limit: int = 20, offset: int = 0, include_scope: bool = False
+    ) -> dict[str, Any]:
+        """Read a paged local queue/counts; include_scope=true pages explicit scope."""
+        return store.workstream_status(workstream_id, limit, offset, include_scope)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def list_groups(project: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    def list_groups(project: str | None = None, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         """Discover shared groups globally or through a member/scoped project."""
         return store.list_groups(project, limit, offset)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def create_group(
-        workstream_id: str, title: str, body: str = "", acceptance_criteria: str = ""
+        workstream_id: str,
+        title: str,
+        body: str = "",
+        acceptance_criteria: str = "",
+        summary: str | None = None,
     ) -> dict[str, Any]:
         """Create an empty global group and include it in this workstream's scope."""
-        return store.create_group(workstream_id, title, body, acceptance_criteria)
+        return store.compact_call(
+            "create_group", workstream_id, title, body, acceptance_criteria, summary
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -217,7 +209,9 @@ def create_server(store: Store) -> MCPServer:
         group_id: str, expected_revision: int, task_id: str, expected_task_revision: int
     ) -> dict[str, Any]:
         """Atomically attach a local task to a shared group with revision checks."""
-        return store.add_group_member(group_id, expected_revision, task_id, expected_task_revision)
+        return store.compact_call(
+            "add_group_member", group_id, expected_revision, task_id, expected_task_revision
+        )
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -230,8 +224,8 @@ def create_server(store: Store) -> MCPServer:
         confirmed: bool = False,
     ) -> dict[str, Any]:
         """Preserve a workstream's identity/history when its branch or checkout changes."""
-        return store.rebind_workstream(
-            workstream_id, expected_revision, path, branch, name, confirmed
+        return store.compact_call(
+            "rebind_workstream", workstream_id, expected_revision, path, branch, name, confirmed
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -246,7 +240,7 @@ def create_server(store: Store) -> MCPServer:
     @domain_errors
     def set_scope(workstream_id: str, expected_revision: int, expression: str) -> dict[str, Any]:
         """Replace scope using auditable set expression: none, a workstream base, +/-task/group."""
-        return store.set_scope(workstream_id, expected_revision, expression)
+        return store.compact_call("set_scope", workstream_id, expected_revision, expression)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -262,6 +256,7 @@ def create_server(store: Store) -> MCPServer:
         group_id: str | None = None,
         group_expected_revision: int | None = None,
         approval: Approval | None = None,
+        summary: str | None = None,
     ) -> dict[str, Any]:
         """Persist origin/request; only supplied approval atomically accepts this exact spec.
 
@@ -269,7 +264,8 @@ def create_server(store: Store) -> MCPServer:
         or delegated user authority and its supporting instruction, and clears no
         other gates. Group membership requires the group's read revision.
         """
-        return store.create_task(
+        return store.compact_call(
+            "create_task",
             project,
             title,
             body,
@@ -281,6 +277,7 @@ def create_server(store: Store) -> MCPServer:
             group_id,
             group_expected_revision,
             approval.model_dump() if approval is not None else None,
+            summary,
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -289,7 +286,7 @@ def create_server(store: Store) -> MCPServer:
         project: str,
         workstream_id: str | None = None,
         state: str | None = None,
-        limit: int = 50,
+        limit: int = 20,
         offset: int = 0,
     ) -> dict[str, Any]:
         """Compact project or workstream queue in one project-level order."""
@@ -297,9 +294,48 @@ def create_server(store: Store) -> MCPServer:
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def get_tasks(ids: list[str]) -> dict[str, Any]:
-        """Fetch 1–20 full specifications with replacement etags, gates, proof and revisions."""
-        return store.get_tasks(ids)
+    def get_tasks(
+        ids: list[str],
+        specification: bool = False,
+        workstream_id: str | None = None,
+        attempt_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Read 1–20 cards; specification=true gives complete requirements and gates.
+
+        Add up to 20 attempt_ids to retrieve exactly those full proofs in this call.
+        Workstream scope filters current execution summaries, never proof provenance.
+        Cards carry no specification_etag; full specs do. No preliminary card read is needed.
+        """
+        return store.read_tasks(ids, specification, workstream_id, attempt_ids)
+
+    @server.tool(annotations=additive, structured_output=True)
+    @domain_errors
+    def list_task_attempts(
+        task_id: str,
+        workstream_id: str | None = None,
+        states: list[str] | None = None,
+        current_spec_only: bool = True,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Page attempt summaries with state/workstream filters; history is explicit."""
+        return store.list_task_attempts(
+            task_id, workstream_id, states, current_spec_only, limit, cursor
+        )
+
+    @server.tool(annotations=additive, structured_output=True)
+    @domain_errors
+    def get_attempt(attempt_id: str) -> dict[str, Any]:
+        """Read one complete proof/review with original task/workstream/spec provenance."""
+        return store.get_attempt(attempt_id)
+
+    @server.tool(annotations=additive, structured_output=True)
+    @domain_errors
+    def list_group_members(
+        group_id: str, limit: int = 20, cursor: str | None = None
+    ) -> dict[str, Any]:
+        """Page group member cards in creation order; ordinary group reads show three."""
+        return store.list_group_members(group_id, limit, cursor)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -312,13 +348,15 @@ def create_server(store: Store) -> MCPServer:
     ) -> dict[str, Any]:
         """Save edits and optional exact-scope approval atomically; return compact change flags.
 
-        Body/acceptance_criteria are whole-field replacements: first read get_tasks
-        and supply its specification_etag. Title-only edits need no full read.
+        Body/acceptance_criteria are whole-field replacements: supply the full-spec etag you
+        already read or authored. get_tasks(specification=true) supplies it if missing.
+        Use returned revisions/tokens; reconcile conflicts. Title/summary need no full read.
         Actual specific/delegated approval accepts the resulting spec; unapproved
         spec changes become pending. Other gates and old-spec proof stay intact.
         Unchanged patches are no-ops unless approval changes; still check revision.
         """
-        return store.update_task(
+        return store.compact_call(
+            "update_task",
             task_id,
             expected_revision,
             changes.model_dump(exclude_unset=True),
@@ -330,13 +368,13 @@ def create_server(store: Store) -> MCPServer:
     @domain_errors
     def accept_task(task_id: str, expected_revision: int, approval: Approval) -> dict[str, Any]:
         """Approve the exact current spec using classified actual authority; keep other gates."""
-        return store.accept_task(task_id, expected_revision, approval.model_dump())
+        return store.compact_call("accept_task", task_id, expected_revision, approval.model_dump())
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def withdraw_acceptance(task_id: str, expected_revision: int, note: str) -> dict[str, Any]:
         """Withdraw acceptance with an audited reason, preserving spec and delivery history."""
-        return store.withdraw_acceptance(task_id, expected_revision, note)
+        return store.compact_call("withdraw_acceptance", task_id, expected_revision, note)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -348,7 +386,9 @@ def create_server(store: Store) -> MCPServer:
         authorization: str | None = None,
     ) -> dict[str, Any]:
         """Pause preserving approval; drop revokes it. Revival needs actual authorization."""
-        return store.set_disposition(task_id, expected_revision, disposition, note, authorization)
+        return store.compact_call(
+            "set_disposition", task_id, expected_revision, disposition, note, authorization
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -359,7 +399,7 @@ def create_server(store: Store) -> MCPServer:
         handling: Literal["active", "observer", "user"] = "active",
     ) -> dict[str, Any]:
         """Add a blocking unresolved item; observers submit a nonblocking gate proposal."""
-        return store.add_unresolved(task_id, expected_revision, text, handling)
+        return store.compact_call("add_unresolved", task_id, expected_revision, text, handling)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -367,7 +407,9 @@ def create_server(store: Store) -> MCPServer:
         task_id: str, expected_revision: int, item_id: str, user_note: str
     ) -> dict[str, Any]:
         """Remove a resolved item after a user decision; acceptance remains valid."""
-        return store.resolve_unresolved(task_id, expected_revision, item_id, user_note)
+        return store.compact_call(
+            "resolve_unresolved", task_id, expected_revision, item_id, user_note
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -382,7 +424,9 @@ def create_server(store: Store) -> MCPServer:
         Completion requires human-signed-off done (all members for a group).
         The link changes only the dependent gate, never workstream scope or remote proof.
         """
-        return store.add_prerequisite(task_id, expected_revision, blocked_by_id, handling)
+        return store.compact_call(
+            "add_prerequisite", task_id, expected_revision, blocked_by_id, handling
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -395,15 +439,21 @@ def create_server(store: Store) -> MCPServer:
         workstream_id: str | None = None,
     ) -> dict[str, Any]:
         """Atomically create and link a pending prerequisite in this scope or inbox."""
-        return store.propose_prerequisite(
-            task_id, expected_revision, title, body, acceptance_criteria, workstream_id
+        return store.compact_call(
+            "propose_prerequisite",
+            task_id,
+            expected_revision,
+            title,
+            body,
+            acceptance_criteria,
+            workstream_id,
         )
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def accept_gate_proposal(proposal_id: str, expected_revision: int) -> dict[str, Any]:
         """Activate an observer gate, checking global task/group cycles for prerequisites."""
-        return store.accept_gate_proposal(proposal_id, expected_revision)
+        return store.compact_call("accept_gate_proposal", proposal_id, expected_revision)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -411,7 +461,7 @@ def create_server(store: Store) -> MCPServer:
         proposal_id: str, expected_revision: int, note: str
     ) -> dict[str, Any]:
         """Dismiss a pending observer gate with a recorded coordinator decision."""
-        return store.dismiss_gate_proposal(proposal_id, expected_revision, note)
+        return store.compact_call("dismiss_gate_proposal", proposal_id, expected_revision, note)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -419,7 +469,7 @@ def create_server(store: Store) -> MCPServer:
         task_id: str, expected_revision: int, members: list[dict[str, str]]
     ) -> dict[str, Any]:
         """Convert a task in place to a group and atomically create required pending members."""
-        return store.decompose_task(task_id, expected_revision, members)
+        return store.compact_call("decompose_task", task_id, expected_revision, members)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -436,8 +486,14 @@ def create_server(store: Store) -> MCPServer:
         Use only for actual scheduling intent; record its supporting instruction or
         authority. Shared ordering never changes requirements/proof or workstream gates.
         """
-        return store.reorder_tasks(
-            project, task_id, anchor_id, position, expected_order_revision, instruction
+        return store.compact_call(
+            "reorder_tasks",
+            project,
+            task_id,
+            anchor_id,
+            position,
+            expected_order_revision,
+            instruction,
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -472,7 +528,8 @@ def create_server(store: Store) -> MCPServer:
         actual verification and context evidence. Acceptance, disposition and blockers
         stay unchanged. The ACK omits proof; retrieve it deliberately with get_tasks.
         """
-        return store.record_result(
+        return store.compact_call(
+            "record_result",
             task_id,
             workstream_id,
             expected_revision,
@@ -494,13 +551,15 @@ def create_server(store: Store) -> MCPServer:
         note: str,
     ) -> dict[str, Any]:
         """Record a declared independent review verdict on an implementation attempt."""
-        return store.record_review(attempt_id, expected_revision, reviewer, verdict, note)
+        return store.compact_call(
+            "record_review", attempt_id, expected_revision, reviewer, verdict, note
+        )
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def human_review(attempt_id: str, expected_revision: int, user_note: str) -> dict[str, Any]:
         """Record an explicit user's review or instruction to skip further independent review."""
-        return store.human_review(attempt_id, expected_revision, user_note)
+        return store.compact_call("human_review", attempt_id, expected_revision, user_note)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -520,7 +579,8 @@ def create_server(store: Store) -> MCPServer:
         technical quality unjudged unless separately supplied with its actual note.
         Revise needs a concrete specification question. Read full proof with get_tasks.
         """
-        return store.signoff_task(
+        return store.compact_call(
+            "signoff_task",
             task_id,
             expected_revision,
             decision,
@@ -539,7 +599,7 @@ def create_server(store: Store) -> MCPServer:
         task_id: str | None = None,
         after_sequence: int = 0,
         through_sequence: int | None = None,
-        limit: int = 50,
+        limit: int = 20,
         include_details: bool = False,
     ) -> dict[str, Any]:
         """Read local audit history. Pass returned through_sequence for stable pagination."""
@@ -562,16 +622,10 @@ def create_server(store: Store) -> MCPServer:
         return store.export_workstream(workstream_id, include_closed, format)
 
     @server.tool(annotations=catalog, structured_output=True)
-    def get_default_skills() -> dict[str, Any]:
-        """Return canonical skill content with version/hash; read the matching entry to use it.
-
-        Concrete 'add a task' requests retain authorization without another approval.
-        Follow feature-capture for 'add a design task' or an exploratory feature idea;
-        feature-design for 'let's design X', 'review design tasks' or designrev.
-        Proposal review, implementation review and sign-off are separate workflows.
-        No client installation is needed.
-        """
-        return default_skills()
+    def get_default_skills(name: str | None = None) -> dict[str, Any]:
+        """Read a skill index, or one named workflow: feature-capture for briefs,
+        feature-design for design discussions; superdevloop/signoff for delivery."""
+        return default_skills(name)
 
     return server
 

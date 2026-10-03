@@ -728,22 +728,22 @@ def test_group_prerequisites_before_and_after_decomposition(store, tmp_path):
     assert store.list_tasks(project, ws, state="ready")["items"][0]["id"] == downstream["id"]
 
 
-def test_every_explicit_scope_write_bumps_revision_atomically(store, tmp_path):
+def test_scope_noops_keep_revision_and_changes_bump_atomically(store, tmp_path):
     project, ws, _ = setup(store, tmp_path)
     assert store.list_workstreams(project)["items"][0]["revision"] == 1
     included = task(store, project, ws, "Included")
     assert store.list_workstreams(project)["items"][0]["revision"] == 2
     store.create_task(project, "Inbox")
     assert store.list_workstreams(project)["items"][0]["revision"] == 2
-    store.set_scope(ws, 2, f"none +{included['id']}")
-    assert store.list_workstreams(project)["items"][0]["revision"] == 3
+    assert not store.set_scope(ws, 2, f"none +{included['id']}")["changed"]
+    assert store.list_workstreams(project)["items"][0]["revision"] == 2
     store.decompose_task(included["id"], 1, [{"title": "Child"}])
-    assert store.list_workstreams(project)["items"][0]["revision"] == 4
+    assert store.list_workstreams(project)["items"][0]["revision"] == 3
     child = store.get_tasks([included["id"]])["items"][0]["members"][0]
     store.propose_prerequisite(child, 1, "Needed", workstream_id=ws)
-    assert store.list_workstreams(project)["items"][0]["revision"] == 5
+    assert store.list_workstreams(project)["items"][0]["revision"] == 4
     with pytest.raises(TaskError, match="revision_conflict"):
-        store.set_scope(ws, 4, "none")
+        store.set_scope(ws, 3, "none")
 
 
 def test_scope_revision_and_membership_roll_back_with_failed_audit(store, tmp_path):
@@ -949,7 +949,7 @@ def test_order_and_deterministic_export(store, tmp_path):
     two = store.export_workstream(ws)
     assert one == two
     assert one["content"].index(second["id"]) < one["content"].index(first["id"])
-    assert one["format"] == "task-mcp/v2"
+    assert one["format"] == "task-mcp/v3"
 
 
 def test_current_schema_reopens_without_changing_task_or_audit(store, tmp_path):

@@ -4,7 +4,7 @@ import html
 import re
 from collections import Counter
 
-FORMAT = "task-mcp/v2"
+FORMAT = "task-mcp/v3"
 VIEWS = {
     "ready": "Ready",
     "pending_acceptance": "Pending acceptance",
@@ -100,6 +100,14 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                     "",
                 ]
             )
+            if group.get("summary") is not None:
+                _section(
+                    lines,
+                    "Descriptive summary (stale)"
+                    if group["summary_stale"]
+                    else "Descriptive summary",
+                    group["summary"],
+                )
             _section(lines, "Group context", group["body"])
             _section(lines, "Group acceptance criteria", group["acceptance_criteria"])
 
@@ -127,6 +135,12 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
         if task["selected_attempt_id"]:
             lines.append(f"- Selected signed-off attempt: `{task['selected_attempt_id']}`")
         lines.append("")
+        if task.get("summary") is not None:
+            _section(
+                lines,
+                "Descriptive summary (stale)" if task["summary_stale"] else "Descriptive summary",
+                task["summary"],
+            )
         _section(lines, "Specification", task["body"])
         _section(lines, "Acceptance criteria", task["acceptance_criteria"])
         if task["user_request"]:

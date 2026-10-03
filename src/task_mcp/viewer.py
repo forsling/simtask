@@ -213,6 +213,7 @@ def launch_viewer(database):
         return {
             "url": info["origin"] + "/#" + info["token"],
             "reused": reused,
+            "changed": not reused,
             "lifecycle": "Runs until Stop viewer or task-mcp ui --stop; no automatic startup.",
         }
 

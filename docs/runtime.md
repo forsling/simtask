@@ -1,7 +1,7 @@
 # Runtime identity and stale capabilities
 
 This document describes the isolated candidate's protocol
-revision `6` and database schema revision `3`. The protected live service remains
+revision `7` and database schema revision `4`. The protected live service remains
 on revision `1` until coordinated rollout; its runtime identity should still
 report `1` for both fields. During that protected period, use candidate code only with explicit disposable databases and
 prepare companion skills without installing or reloading them. Keep the live
@@ -18,11 +18,11 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`6` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Candidate 6 adds full-spec-bound structured durable proof and replaces `get_next_task` with `get_next_action`; the database stays at schema 3. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`7` in the candidate, `1` in the protected live service), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Candidate 7 adds compact defaults, paged proof/member access and summary freshness; schema 4 adds nullable summary columns. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`3` after candidate startup, `1` in the protected live database). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`4` after candidate startup, `1` in the protected live database). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is
@@ -33,11 +33,11 @@ version throughout development. The identifier detects changed resources but
 does not promise hot reload of resources or Python code.
 
 Existing unnumbered databases have revision `0`; the protected live service uses
-revision `1`. Candidate Store startup creates fresh databases at revision `3`
-directly. Before upgrading an existing revision `0`, `1` or `2` database, it creates
+revision `1`. Candidate Store startup creates fresh databases at revision `4`
+directly. Before upgrading an existing revision `0`, `1`, `2` or `3` database, it creates
 and verifies a fresh SQLite online backup under the writer lock, including
 committed WAL data. It then transactionally upgrades the schema, checks integrity
-and foreign keys, and sets revision `3` only after those checks pass. Existing
+and foreign keys, and sets revision `4` only after those checks pass. Existing
 task IDs, content and audit history survive; the backup remains available after
 success or rollback. A database with a higher revision is rejected rather than
 downgraded. Future storage migrations must advance the revision after their

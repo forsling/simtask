@@ -43,7 +43,7 @@ def test_amendment_saves_and_accepts_exact_result_in_one_revision(context, basis
     assert ack["changed"] and ack["spec_changed"] and ack["approval_changed"]
     assert ack["revision"] == 2 and ack["spec_revision"] == ack["accepted_spec_revision"] == 2
     assert ack["accepted"] and ack["acceptance_basis"] == basis
-    assert not {"body", "title", "attempts", "acceptance_note", "specification_etag"} & ack.keys()
+    assert not {"body", "title", "attempts", "acceptance_note"} & ack.keys()
     after = full(store, ack)
     assert all(after[key] == value for key, value in changes.items())
     assert store.get_next_action(ws)["task"]["specification_etag"] == after["specification_etag"]
@@ -232,7 +232,7 @@ def test_mcp_schema_and_handler_share_replacement_and_approval_contract(context)
     task = store.create_task(project, "Pending")
 
     async def run():
-        read = await server.call_tool("get_tasks", {"ids": [task["id"]]})
+        read = await server.call_tool("get_tasks", {"ids": [task["id"]], "specification": True})
         token = read.structured_content["items"][0]["specification_etag"]
         saved = await server.call_tool(
             "update_task",

@@ -175,6 +175,10 @@ expression term, pass that source's last read revision as `expected_revision`.
 globally or within one project, with binding, revision and derived scoped task
 counts. `workstream_status(workstream_id, limit?, offset?)` returns that
 workstream's compact scoped queue and count diagnostics without init or rebind.
+Init returns at most ten queue cards with total/next-page information. Task/group
+lists and status queues default to twenty; events default to twenty metadata entries.
+Workstream scope/group references are bounded; `workstream_status(include_scope=true)`
+pages explicit members, group references and exclusions using limit/offset.
 Its `counts` are disjoint task views (ready, pending acceptance, unresolved,
 prerequisites, review, sign-off, done, deferred, dropped). They count only
 concrete tasks owned by that workstream's project; `scoped_count` equals their
@@ -184,8 +188,8 @@ The separate
 `overlapping_gate_diagnostics` counts active gates on open/rework tasks and can overlap
 for tasks with several gates. Queue `gate_diagnostics` uses the same active-gate
 meaning: done, dropped and deferred tasks have an empty list. Deferred tasks'
-gates become active again when resumed. Full `get_tasks` details and audit events
-retain unresolved items, prerequisite links and attempt/review history; retained
+gates become active again when resumed. Explicit `get_tasks(specification=true)` retains full requirements/gates;
+`get_attempt`, paged `list_task_attempts` and audit events retain proof/history; retained
 history does not create actionable gates on inactive tasks.
 The single `view` shown in `list_tasks` and status drill-down prioritizes
 terminal disposition, then acceptance, review/sign-off and unresolved/
@@ -225,7 +229,7 @@ and exactly one complete current-spec local attempt for review or relevant rewor
 It follows shared order across action kinds. Pending local review precedes another
 implementation of that task; passed/human_review waits for the user. Newest pending
 local proof wins, then attempt ID ascending. Other-workstream and superseded proof
-stay accessible through deliberate full `get_tasks` reads. `action:null` returns
+stay accessible through explicit `get_attempt` or `get_tasks(specification=true, attempt_ids=[...])` reads. `action:null` returns
 bounded reason counts, including sign-off, without claiming or changing order.
 
 ## Task lifecycle
@@ -247,13 +251,35 @@ payload when an actual decision already covers the resulting exact scope. An
 unchanged patch is a no-op unless approval changes; approving an unchanged
 pending spec advances only the task revision. No edit is inferred to be editorial.
 
-Body and criteria are whole-field replacements. First call `get_tasks(ids=[...])`
-for the complete spec and pass its `specification_etag` with the current task
-revision. The token binds task ID, spec revision, full body and criteria; it is a
-stale-read/data-loss guard, not authority. Title-only edits need no full read.
-On conflict, re-read the full spec and reconcile before retrying. Full detail
-remains the `get_tasks` default; there is no `specification=true` flag. The planned
-summary-only field is separate future work and is not available in this version.
+`get_tasks(ids=[...])` returns bounded cards: title, optional summary, revisions,
+acceptance/disposition, gate counts and references. Cards contain no body preview,
+acceptance criteria or replacement token. Scoped cards expose a current-spec local
+attempt reference; unscoped cards label aggregate counts and imply no branch readiness.
+Call `get_tasks(ids=[...], specification=true, workstream_id=..., attempt_ids=[...])`
+when you need complete current requirements and exactly chosen proof together.
+No preliminary card read is needed. Pending proposals and parent context are complete;
+current-spec attempt summaries are limited to three, actionable first, with totals
+and `has_more`. Page additional attempts with `list_task_attempts(states=[...],
+current_spec_only=true)`; `get_attempt(attempt_id)` retrieves one complete proof.
+Explicit proof retains its original task, workstream and specification provenance.
+
+Body and criteria are whole-field replacements. Use the `specification_etag` from
+that full read or from a create acknowledgement for the complete specification you
+authored. A valid token-bearing update returns its refreshed token. Unchanged specs
+retain the same token. Other updates expose no token. Continue with the last returned
+entity revision, even after a user pause; successful writes need no confirming read.
+Fetch and reconcile only on conflicts, uncertainty or missing information. The token
+is a stale-read/data-loss guard. Title and summary-only edits need no full-spec read.
+
+Task/group `summary` is optional intent or settled constraints, at most 240 Unicode
+characters on one line. Overlong, multiline and whitespace-only values fail; no
+truncation or generated fallback exists. Omission preserves it; null clears it.
+Summary-only edits advance the entity revision while retaining spec revision,
+acceptance and proof, including completed tasks/groups. A later spec edit makes
+`summary_stale=true`; simultaneous summary edits stamp the resulting spec revision.
+Reaffirming the same stale text refreshes it; current identical text is a no-op.
+Summary freshness does not certify correctness; full requirements remain authority.
+
 Resolving an unresolved item,
 changing scope or order, or adding evidence does not invalidate acceptance.
 Unresolved items are live gates; resolve them after settling the matter and
@@ -269,8 +295,9 @@ complete. An empty group is incomplete and mutable. `create_group(workstream_id,
 title, ...)` creates the same kind of group directly, without selecting a home
 project; it is included in that workstream's explicit group scope. The group has
 one global ID and can hold concrete tasks from several projects. `list_groups`
-discovers it globally or through any member/scoped project; `get_tasks` on its ID
-shows every member's project and whole-group progress. All public group details
+discovers it globally or through any member/scoped project; `get_tasks(specification=true)` on its ID
+shows whole-group progress and at most three member references; `list_group_members`
+pages every member's card. All public group details
 show `project_id=null`; `origin_project_id` is optional legacy provenance for
 groups created before this storage change, not an ownership boundary.
 
@@ -397,8 +424,8 @@ gate; the design skill reads their details as well as tasks in `unresolved_items
 Ordinary proposals and unrelated blockers still use `proposal-review`.
 
 The canonical reference skill files are packaged under
-`src/task_mcp/reference_skills/`. `get_default_skills` returns their exact text,
-version and SHA-256 hashes. MCP startup instructions and the catalog tool route
+`src/task_mcp/reference_skills/`. `get_default_skills()` returns a names/versions/hashes/descriptions index;
+`get_default_skills(name="feature-design")` returns that complete skill in one call. MCP startup instructions and the catalog tool route
 these phrases to the matching skill, so a fresh connected session can fetch and
 follow it without prior chat history or installing client skills. Existing
 connections may need to reconnect to receive changed server instructions.
@@ -413,14 +440,14 @@ those rare workflows are deferred.
 | Area | Tools |
 | --- | --- |
 | Project and workstream | `init`, `list_projects`, `list_workstreams`, `workstream_status`; compatibility: `init_project`, `attach_checkout`, `init_workstream`, `rebind_workstream`, `preflight` |
-| Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `reorder_tasks`, `get_next_action` |
-| Groups | `create_group`, `list_groups`, `add_group_member`, `decompose_task` |
+| Scope and queue | `set_scope`, `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
+| Groups | `create_group`, `list_groups`, `list_group_members`, `add_group_member`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `accept_task`, `withdraw_acceptance`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
 | Inspection | `list_events`, `export_workstream`, `get_default_skills`, `runtime_info` |
 | Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
 
-Mutations that change a task or workstream require the last revision read.
+Mutations that change a task or workstream use the last returned entity revision, checked atomically; user pauses do not invalidate it.
 Board/queue responses (`list_tasks`, `workstream_status`, successful `init`,
 `get_next_action`) expose `project_order_revision`. Move one task immediately before
 or after a concrete task in the same project:
@@ -456,7 +483,7 @@ is not authenticated. `list_events` supports a stable pagination ceiling.
 ## Text exports
 
 `export_workstream(workstream_id, include_closed=true, format="markdown")`
-returns a human-readable Markdown snapshot (`task-mcp/v2`) and its SHA-256 hash.
+returns a human-readable Markdown snapshot (`task-mcp/v3`) and its SHA-256 hash.
 It starts with project/checkout identity and an ordered workflow overview, then
 shows specifications, acceptance criteria, questions, prerequisites, evidence
 and review history in text. Workflow labels match `list_tasks` for that
@@ -485,7 +512,7 @@ creation also returns changed workstream/group revisions for continuation.
 Amendments return `changed`, `spec_changed` and `approval_changed`; the latter
 includes activation/invalidation of current approval or a changed approval
 basis/note. No-op acknowledgements retain the current revisions.
-Fetch `get_tasks` for full specification and proof. Approval does not clear
+Fetch `get_tasks(specification=true, attempt_ids=[...])` for full specification and chosen proof. Approval does not clear
 unresolved/prerequisite/disposition/scope gates or begin implementation. Correct
 mistaken acceptance with `withdraw_acceptance(task_id, expected_revision, note)`:
 the reason is audited, the specification and its revision remain unchanged,
@@ -503,19 +530,22 @@ prerequisites and compact prerequisite references.
 Current candidate protocol 6 replaces the selector with `get_next_action` and
 requires full-spec-bound structured durable references/verification for factual
 result recording, with concise ACKs. There is no old selector alias or extra tool.
-Both changes use the existing schema 3 and require no new schema migration.
+These protocol 6 changes use schema 3. Protocol 7 adds compact default cards,
+one-call chosen proof, complete compact acknowledgements, paged attempts/members
+and the named skill index. Schema 4 adds nullable summary/source-revision columns
+without backfill. The surface now advertises 41 tools.
 Protocol 3's purpose/result signoff
 judgments continue to use existing immutable audit records.
 Migration preserves all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
 and unclassified approval are `unknown`; old audit text is never parsed to infer
-authority. Before upgrading an existing schema 0/1/2 database, the service takes a
+authority. Before upgrading an existing schema 0/1/2/3 database, the service takes a
 fresh SQLite online backup under the migration writer lock and verifies its
 integrity, foreign keys and source revision. The private adjacent
-`*.pre-schema-3.*.sqlite3` backup is retained; failure aborts the transaction.
+`*.pre-schema-4.*.sqlite3` backup is retained; failure aborts the transaction.
 An empty new database needs no migration backup. For rollback, stop all writers
 before restoring a verified backup with SQLite's backup API, including WAL
 state; reconnect clients only to the matching protocol/schema revision. Do not
-run an older server against schema 3 or overlay a backup onto active writers.
+run an older server against schema 4 or overlay a backup onto active writers.
 Test candidate upgrades on disposable copies and keep incompatible code, client
 workflows and databases isolated until every serving client can be refreshed.
 
@@ -532,9 +562,10 @@ review remains distinct. `revise` requires a concrete `specification_question`
 and advances no spec revision until a real edit. Approval needs current
 acceptance, current-spec passed/human-reviewed result and clear completion gates.
 
-Signoff and `set_disposition` return compact continuation state; use `get_tasks`
-for complete proof, approval decision references and structured
-`signoff_decisions`, or detailed audit reads for historical snapshots. Drop
+Signoff and `set_disposition` return compact continuation state; use
+`get_tasks(specification=true, attempt_ids=[...])` for current requirements, chosen
+proof and approval decision references, or detailed audit reads for signoff history.
+Store/viewer full-detail access retains complete `signoff_decisions`. Drop
 clears active approval and preserves proof; defer keeps approval. Ordinary
 status changes need no reviewed result. Leaving dropped status requires actual
 `authorization`; restoration leaves approval inactive until explicitly accepted.

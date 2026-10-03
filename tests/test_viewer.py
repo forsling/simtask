@@ -221,10 +221,7 @@ def test_scope_and_global_group_progress_remain_distinct(viewer, tmp_path):
     ]
     assert {g["id"] for g in project_groups} == {group["id"], local_group["id"]}
     assert empty_remote["id"] not in {g["id"] for g in project_groups}
-    assert (
-        len(next(g for g in project_groups if g["id"] == group["id"])["progress"]["by_project"])
-        == 2
-    )
+    assert next(g for g in project_groups if g["id"] == group["id"])["project_count"] == 2
 
 
 def test_remote_prerequisites_transport_is_compact_and_completion_is_signed_off(viewer, tmp_path):

@@ -6,7 +6,7 @@ from task_mcp.reference import default_skills
 
 def test_catalog_is_exact_canonical_on_disk_content():
     catalog = default_skills()
-    assert catalog["version"] == "1.10.0"
+    assert catalog["version"] == "1.11.0"
     assert {item["name"] for item in catalog["items"]} == {
         "init",
         "feature-capture",
@@ -18,6 +18,9 @@ def test_catalog_is_exact_canonical_on_disk_content():
     root = files("task_mcp").joinpath("reference_skills")
     for item in catalog["items"]:
         contents = root.joinpath(item["path"]).read_bytes()
-        assert item["content"].encode() == contents
+        assert "content" not in item and item["description"]
+        named = default_skills(item["name"])
+        assert len(named["items"]) == 1
+        assert named["items"][0]["content"].encode() == contents
         assert item["sha256"] == hashlib.sha256(contents).hexdigest()
         assert item["version"] == catalog["version"]

@@ -15,7 +15,7 @@ for that exact specification without a separate acceptance keyword.
 ## Find and resume the design
 
 Run `init` for the explicit checkout and branch/name. Find a named task with
-`list_tasks` and fetch it by ID with `get_tasks`. For "review design tasks",
+`list_tasks` and fetch it by ID with `get_tasks(specification=true)`. For "review design tasks",
 default to the project queue, including inbox ideas saved by `feature-capture`;
 respect an explicitly narrower workstream scope. Page through `list_tasks`
 and fetch relevant bodies in batches of at most 20. Include both
@@ -29,7 +29,7 @@ unresolved item or an equivalent explicit request/brief in an older task.
 Generic unresolved blockers, credentials and ordinary pending proposals are
 not automatically feature design. Present a compact candidate list when needed,
 then work through one feature at a time. If no task exists, load `feature-capture`
-from `get_default_skills` and capture it first. Ensure an active design gate is
+from `get_default_skills(name="feature-capture")` and capture it first. Ensure an active design gate is
 present before revising a mutable task, using the last read revision.
 
 Read the brief, gates, prerequisites, earlier decisions and any implementation
@@ -100,7 +100,7 @@ Use `withdraw_acceptance(task_id, expected_revision, note)` to correct mistaken
 acceptance without editing the specification. Proof and decisions survive;
 reapproval of the unchanged spec can reuse applicable review. Completed work
 remains immutable. Compact create/update/accept/withdraw acknowledgements provide IDs,
-revisions, acceptance and gates; read `get_tasks` for specification/history.
+revisions, acceptance and gates; request `get_tasks(specification=true)` for missing requirements and exact proof.
 
 Split a larger feature only when concrete, independently deliverable members
 improve execution. Present their boundaries, acceptance criteria and dependencies
@@ -125,13 +125,13 @@ specification; if attempts or a parent group prevent conversion, retain the
 existing task and discuss a suitable follow-up structure instead of forcing it.
 
 Acceptance does not place an inbox task into an executable workstream. When the
-agreed plan includes implementation in the current or a named workstream, read
-its revision with `workstream_status` and use `set_scope` to add the task/group,
+agreed plan includes implementation in the current or a named workstream, use
+its last returned revision and `set_scope` to add the task/group,
 preserving existing scope (for example, `<workstream-id> +<task-or-group-id>`).
 Respect explicit exclusions and narrower placement decisions; otherwise retain
 the inbox placement and report that workstream placement remains outstanding.
 Do not ask again when the intended workstream is already clear from the user's
-request. Check its scoped queue before reporting readiness.
+request. Use the successful acknowledgement to continue; inspect the queue only when placement is uncertain.
 
 Re-read and reconcile revision conflicts. Inspect the board after uncertain
 mutations before retrying creation or decomposition. Report the saved task/group
@@ -140,44 +140,15 @@ Use the normal implementation workflow only when requested and eligible. Design
 agreement is neither an implementation result nor independent review or human
 sign-off; do not create delivery records for this conversation.
 
-Specification amendments use `update_task(..., approval=...)` to save and accept
-already-authorized resulting scope in one revision-checked transaction. Reuse
-the actual supporting instruction; do not ask for the same approval again.
-Omit approval for unsettled or explicitly pending amendments. Every real
-title/body/criteria edit changes the spec; no editorial exemption is inferred.
-Before replacing body or acceptance_criteria, read the full task once with
-`get_tasks(ids=[...])` and pass its `specification_etag` plus the current task
-revision. These fields are whole replacements; board rows carry no token.
-Title-only edits need no full body read. `get_tasks` currently returns complete
-specifications by default; no `specification=true` flag exists. On conflict,
-re-read the full spec, reconcile, and use its current revision/token.
-Unchanged patches are no-ops unless approval changes; approving an unchanged
-pending spec leaves spec revision unchanged. Compact update acknowledgements
-report `changed`, `spec_changed`, `approval_changed`, revisions and gates.
-Approval grants no scope, prerequisite satisfaction, review, completion or
-execution. Attempts and reviews remain proof only for their original spec.
 
-Signoff judges task purpose and delivered quality separately. Present the
-approval basis and actual supporting decision beside review evidence. One
-informed user decision covers both when appropriate: `approve`, `rework`,
-`revise`, `drop` or `defer`. Revise withdraws approval and adds a concrete
-question without changing spec revision; drop withdraws approval; defer keeps
-it. Direction changes default to human technical quality not judged and preserve
-sound proof. Ordinary drop/defer requires no reviewed attempt. Leaving dropped
-status requires actual `authorization`; reactivation also needs current spec
-approval. Read the packaged `signoff` workflow before recording a verdict.
-
-Shared project order is scheduling metadata, filtered by each workstream's explicit
-scope and local eligibility. New tasks append at the end. Reorder only for an
-actual scheduling decision: read `list_tasks`/`workstream_status` or `init` for
-`project_order_revision`, then call `reorder_tasks(project, task_id, anchor_id,
-position="before"|"after", expected_order_revision=..., instruction=...)` to move
-one task immediately beside a concrete project anchor. Record the actual
-supporting instruction/authority; the configured audit actor is attribution,
-not authenticated identity. The compact ACK returns project/task/anchor IDs,
-`project_order_revision` and `changed`. A stale order revision requires a fresh
-board read and reconciliation; an already-satisfied move changes nothing.
-Completed task positions may shift without changing specifications, acceptance,
-results or reviews. Reads and selection never reorder work. Do not repeatedly
-normalize queues, add automatic priority rules or routine reporting calls;
-evaluate excessive reordering after rollout through existing audit events.
+Use last returned entity revisions after user pauses and successful writes. No
+routine read-before-write or confirming read is needed. Fetch and reconcile for
+conflicts, uncertainty or missing information; inspect the board before retrying
+an uncertain creation. Cards never carry body previews or replacement tokens.
+For whole-field body/criteria replacements use the full-specification etag from
+your complete read or create/update acknowledgement. Valid token-bearing updates
+return a refreshed token; unchanged specifications retain it. Title/summary-only
+edits need no full read. Summary edits preserve spec acceptance and proof.
+Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
+or `get_attempt`; page deliberate history/membership with `list_task_attempts`
+and `list_group_members`. Never write a card or summary back as a specification.

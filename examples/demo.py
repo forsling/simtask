@@ -19,10 +19,8 @@ async def exercise(database: Path):
     )
     async with Client(server, read_timeout_seconds=60) as client:
         assert client.instructions
-        for entrypoint in ("get_default_skills", "feature-capture", "feature-design"):
-            assert entrypoint in client.instructions
         tools = (await client.list_tools()).tools
-        assert len(tools) == 38
+        assert len(tools) == 41
         assert "runtime_info" in {tool.name for tool in tools}
         assert "open_task_viewer" in {tool.name for tool in tools}
         assert "dismiss_gate_proposal" in {tool.name for tool in tools}
@@ -47,8 +45,8 @@ async def exercise(database: Path):
         assert not {"ordered_ids", "expected_order"} & move_schema["properties"].keys()
         print(f"Connected over stdio; discovered {len(tools)} tools.")
 
-        async def call(name, **arguments):
-            result = await client.call_tool(name, arguments)
+        async def call(tool_name, **arguments):
+            result = await client.call_tool(tool_name, arguments)
             assert not result.is_error, result.content
             return result.structured_content
 
@@ -101,11 +99,11 @@ async def exercise(database: Path):
         )
         dismissed = await call(
             "dismiss_gate_proposal",
-            proposal_id=proposal["id"],
+            proposal_id=proposal["proposal_id"],
             expected_revision=1,
             note="Synthetic coordinator decision: concern does not apply",
         )
-        assert dismissed["gate_proposals"] == [] and dismissed["revision"] == 2
+        assert "gate_proposals" not in dismissed and dismissed["revision"] == 2
         result = await call(
             "record_result",
             task_id=task_id,
@@ -116,9 +114,9 @@ async def exercise(database: Path):
             evidence="Synthetic demonstration passed.",
             artifacts=[{"kind": "artifact", "reference": "examples/demo.py"}],
             verification="Synthetic demonstration checks",
-            specification_etag=(await call("get_tasks", ids=[task_id]))["items"][0][
-                "specification_etag"
-            ],
+            specification_etag=(await call("get_tasks", specification=True, ids=[task_id]))[
+                "items"
+            ][0]["specification_etag"],
         )
         assert not {"evidence", "summary", "artifacts", "verification"} & result.keys()
         resumed_action = await call("get_next_action", workstream_id=workstream_id)
@@ -140,7 +138,7 @@ async def exercise(database: Path):
         assert reviewed["state"] == "passed"
         waiting = await call("get_next_action", workstream_id=workstream_id)
         assert waiting["action"] is None and waiting["diagnostics"]["signoff"] == 1
-        current = (await call("get_tasks", ids=[task_id]))["items"][0]
+        current = (await call("get_tasks", specification=True, ids=[task_id]))["items"][0]
         signed = await call(
             "signoff_task",
             task_id=task_id,
@@ -151,8 +149,8 @@ async def exercise(database: Path):
             user_note="Synthetic demo approval, not a real user verdict.",
         )
         assert signed["status"] == "done"
-        signed_full = (await call("get_tasks", ids=[task_id]))["items"][0]
-        assert signed_full["signoff_decisions"][0]["decision_ref"] == signed["decision_ref"]
+        signed_full = (await call("get_tasks", specification=True, ids=[task_id]))["items"][0]
+        assert signed_full["selected_attempt_id"] == result["id"]
         prioritized = await call(
             "create_task",
             project=project_id,
@@ -178,7 +176,7 @@ async def exercise(database: Path):
         assert not (await call("reorder_tasks", **move_args))["changed"]
         selected = await call("get_next_action", workstream_id=workstream_id)
         assert selected["task"]["id"] == prioritized["id"]
-        done_after = (await call("get_tasks", ids=[task_id]))["items"][0]
+        done_after = (await call("get_tasks", specification=True, ids=[task_id]))["items"][0]
         assert {k: v for k, v in signed_full.items() if k != "order_key"} == {
             k: v for k, v in done_after.items() if k != "order_key"
         }
@@ -202,9 +200,9 @@ async def exercise(database: Path):
                 evidence="Synthetic proof",
                 artifacts=[{"kind": "artifact", "reference": "examples/demo.py"}],
                 verification="Synthetic demonstration checks",
-                specification_etag=(await call("get_tasks", ids=[item["id"]]))["items"][0][
-                    "specification_etag"
-                ],
+                specification_etag=(await call("get_tasks", specification=True, ids=[item["id"]]))[
+                    "items"
+                ][0]["specification_etag"],
             )
             await call(
                 "record_review",
@@ -229,8 +227,10 @@ async def exercise(database: Path):
                 user_note="Synthetic actual user decision",
                 **extras,
             )
-            details = (await call("get_tasks", ids=[item["id"]]))["items"][0]
-            record = details["signoff_decisions"][0]
+            details = (await call("get_tasks", specification=True, ids=[item["id"]]))["items"][0]
+            events = await call("list_events", task_id=item["id"], include_details=True, limit=100)
+            event = next(e for e in events["items"] if e["sequence"] == judged["decision_ref"])
+            record = {"decision_ref": event["sequence"], **event["after"]["signoff_decision"]}
             assert record["decision_ref"] == judged["decision_ref"]
             assert record["result_judgment"] == ("rework" if decision == "rework" else "not_judged")
             assert details["spec_revision"] == 1
@@ -265,7 +265,7 @@ async def exercise(database: Path):
             user_request="Synthetic design-first request; leave pending",
         )
         assert not draft["accepted"] and "body" not in draft and "attempts" not in draft
-        details = (await call("get_tasks", ids=[draft["id"]]))["items"][0]
+        details = (await call("get_tasks", specification=True, ids=[draft["id"]]))["items"][0]
         assert details["source"] == "user" and details["user_request"]
         accepted = await call(
             "accept_task",
@@ -292,7 +292,7 @@ async def exercise(database: Path):
             approval={"basis": "specific", "note": "Synthetic exact-scope approval"},
         )
         assert approved_again["revision"] == withdrawn["revision"] + 1
-        full_spec = (await call("get_tasks", ids=[draft["id"]]))["items"][0]
+        full_spec = (await call("get_tasks", specification=True, ids=[draft["id"]]))["items"][0]
         unsafe = await client.call_tool(
             "update_task",
             {
@@ -349,7 +349,9 @@ async def exercise(database: Path):
             )
         members = []
         for context, title in ((setup, "Service A"), (second, "Service B"), (third, "Service C")):
-            current_group = (await call("get_tasks", ids=[group["id"]]))["items"][0]
+            current_group = (await call("get_tasks", specification=True, ids=[group["id"]]))[
+                "items"
+            ][0]
             member = await call(
                 "create_task",
                 project=context["project"]["id"],
@@ -361,7 +363,7 @@ async def exercise(database: Path):
                 group_expected_revision=current_group["revision"],
             )
             members.append(member)
-        detail = (await call("get_tasks", ids=[group["id"]]))["items"][0]
+        detail = (await call("get_tasks", specification=True, ids=[group["id"]]))["items"][0]
         assert detail["progress"]["total"] == 3 and not detail["complete"]
         for context, member in zip((setup, second, third), members, strict=True):
             status = await call("workstream_status", workstream_id=context["workstream"]["id"])
@@ -397,11 +399,15 @@ async def exercise(database: Path):
             expected_revision=1,
             blocked_by_id=remote_blocker["id"],
         )
-        reference = linked["prerequisites"][0]
+        assert linked["blocked_by_id"] == remote_blocker["id"]
+        linked_full = (await call("get_tasks", ids=[dependent["id"]], specification=True))["items"][
+            0
+        ]
+        reference = linked_full["prerequisites"][0]
         assert reference["project_id"] == second["project"]["id"] and reference["blocking"]
         assert reference["project_name"] == second["project"]["name"]
         assert linked["accepted"] and linked["spec_revision"] == 1 and linked["revision"] == 2
-        assert linked["attempts"] == [] and "Remote full requirements" not in str(linked)
+        assert "attempts" not in linked and "Remote full requirements" not in str(linked)
         proposal = await call(
             "add_prerequisite",
             task_id=dependent["id"],
@@ -411,10 +417,14 @@ async def exercise(database: Path):
         )
         accepted_gate = await call(
             "accept_gate_proposal",
-            proposal_id=proposal["id"],
+            proposal_id=proposal["proposal_id"],
             expected_revision=2,
         )
-        assert accepted_gate["revision"] == 3 and len(accepted_gate["prerequisites"]) == 2
+        assert accepted_gate["revision"] == 3 and accepted_gate["changed"]
+        accepted_full = (await call("get_tasks", ids=[dependent["id"]], specification=True))[
+            "items"
+        ][0]
+        assert len(accepted_full["prerequisites"]) == 2
         cycle = await client.call_tool(
             "add_prerequisite",
             {
@@ -434,9 +444,9 @@ async def exercise(database: Path):
             evidence="Remote evidence deliberately retrieved only",
             artifacts=[{"kind": "artifact", "reference": "examples/demo.py"}],
             verification="Synthetic demonstration checks",
-            specification_etag=(await call("get_tasks", ids=[remote_blocker["id"]]))["items"][0][
-                "specification_etag"
-            ],
+            specification_etag=(
+                await call("get_tasks", specification=True, ids=[remote_blocker["id"]])
+            )["items"][0]["specification_etag"],
         )
         await call(
             "record_review",
@@ -446,7 +456,7 @@ async def exercise(database: Path):
             verdict="pass",
             note="Synthetic review",
         )
-        pending = (await call("get_tasks", ids=[dependent["id"]]))["items"][0]
+        pending = (await call("get_tasks", specification=True, ids=[dependent["id"]]))["items"][0]
         assert next(p for p in pending["prerequisites"] if p["id"] == remote_blocker["id"])[
             "blocking"
         ]
@@ -467,7 +477,7 @@ async def exercise(database: Path):
         assert completed_ref["complete"] and not completed_ref["blocking"]
         assert remote_blocker["id"] not in {row["id"] for row in queue["items"]}
         exported = await call("export_workstream", workstream_id=workstream_id)
-        assert exported["format"] == "task-mcp/v2" and task_id in exported["content"]
+        assert exported["format"] == "task-mcp/v3" and task_id in exported["content"]
         assert "- Workflow: Done (done)" in exported["content"]
         assert "```json" not in exported["content"]
         open_export = await call(
@@ -481,7 +491,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.10.0"
+        assert catalog["version"] == "1.11.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",
@@ -492,7 +502,9 @@ async def exercise(database: Path):
         }
         for item in catalog["items"]:
             canonical = (root / "src/task_mcp/reference_skills" / item["path"]).read_bytes()
-            assert item["content"].encode() == canonical
+            named = await call("get_default_skills", name=item["name"])
+            assert named["items"][0]["content"].encode() == canonical
+            assert "content" not in item
             assert item["sha256"] == hashlib.sha256(canonical).hexdigest()
             assert item["version"] == catalog["version"]
     async with Client(server, read_timeout_seconds=60) as restarted:

@@ -96,7 +96,7 @@ async function test() {
   assert.equal(context.captured.action, "edit");
   assert.equal(context.captured.payload.expected_revision, 9);
   assert.equal(context.captured.payload.specification_etag, "original-token");
-  assert.deepEqual(Object.keys(context.captured.payload.changes).sort(), ["acceptance_criteria", "body", "title"]);
+  assert.deepEqual(Object.keys(context.captured.payload.changes).sort(), ["acceptance_criteria", "body", "summary", "title"]);
   assert.equal("approval" in context.captured.payload, false);
   saveMode.value = "accepted"; saveMode.onchange();
   assert.equal(get("field-approval_note").required, true);
@@ -107,6 +107,15 @@ async function test() {
   await run("submitAction(values)");
   assert.equal(context.captured.payload.approval.note, "I approve this amended exact scope");
   assert.equal(context.captured.payload.approval.basis, "specific");
+  context.task.summary = "Current intent"; context.task.status = "done";
+  run("editSummary(task);");
+  context.values = new Map([["summary", "Corrected completed intent"]]);
+  await run("submitAction(values)");
+  assert.deepEqual(Object.keys(context.captured.payload.changes), ["summary"]);
+  assert.equal("specification_etag" in context.captured.payload, false);
+  assert.equal(context.captured.payload.changes.summary, "Corrected completed intent");
+  context.task.status = "open"; run("editTask(task);");
+  context.values = new Map([["title", "Amended"], ["body", "Full amended scope"], ["acceptance_criteria", "Proof"], ["summary", "Current intent"], ["save_mode", "accepted"], ["approve_exact_spec", "on"], ["approval_note", "Informed approval"]]);
   run(`api = async (action, payload) => {
     if (action === "details") return {items: [{...task, revision: 10, specification_etag: "latest-token"}]};
     captured = {action, payload};

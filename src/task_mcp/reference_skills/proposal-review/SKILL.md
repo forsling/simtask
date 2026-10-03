@@ -6,12 +6,12 @@ description: Review ordinary pending proposals and unresolved items with the use
 # Proposal and unresolved-item review
 
 For a feature awaiting design discussion, load `feature-design` from
-`get_default_skills` and follow it for research, alternatives and recommendations.
+`get_default_skills(name="feature-design")` and follow it for research and decisions.
 An explicit design brief or `Feature design required (feature-design):` gate
 identifies that work; a generic blocker alone does not. Capturing an exploratory
 feature (including "add a design task") uses `feature-capture` first.
 
-Use `list_tasks` and `get_tasks` to present each pending task's goal, boundaries,
+Use `list_tasks` and `get_tasks(specification=true)` to present each pending task's goal, boundaries,
 acceptance criteria, scope, and open unresolved items. Agent-discovered work
 starts pending through `create_task(source="agent")`; capturing it never grants
 authorization. After an informed decision, use
@@ -62,31 +62,17 @@ and identify it in the note. Explicit pending/design-first requests take
 precedence. Approval clears no other gates and queueing starts no implementation.
 Use `withdraw_acceptance` with the last revision and a reason to correct mistaken
 acceptance while retaining spec revision, decisions and proof. Reapproval of the
-same spec may reuse current review; completed tasks remain immutable.
+same spec may reuse current review; completed requirements and proof remain immutable.
 
-Specification amendments use `update_task(..., approval=...)` to save and accept
-already-authorized resulting scope in one revision-checked transaction. Reuse
-the actual supporting instruction; do not ask for the same approval again.
-Omit approval for unsettled or explicitly pending amendments. Every real
-title/body/criteria edit changes the spec; no editorial exemption is inferred.
-Before replacing body or acceptance_criteria, read the full task once with
-`get_tasks(ids=[...])` and pass its `specification_etag` plus the current task
-revision. These fields are whole replacements; board rows carry no token.
-Title-only edits need no full body read. `get_tasks` currently returns complete
-specifications by default; no `specification=true` flag exists. On conflict,
-re-read the full spec, reconcile, and use its current revision/token.
-Unchanged patches are no-ops unless approval changes; approving an unchanged
-pending spec leaves spec revision unchanged. Compact update acknowledgements
-report `changed`, `spec_changed`, `approval_changed`, revisions and gates.
-Approval grants no scope, prerequisite satisfaction, review, completion or
-execution. Attempts and reviews remain proof only for their original spec.
 
-Signoff judges task purpose and delivered quality separately. Present the
-approval basis and actual supporting decision beside review evidence. One
-informed user decision covers both when appropriate: `approve`, `rework`,
-`revise`, `drop` or `defer`. Revise withdraws approval and adds a concrete
-question without changing spec revision; drop withdraws approval; defer keeps
-it. Direction changes default to human technical quality not judged and preserve
-sound proof. Ordinary drop/defer requires no reviewed attempt. Leaving dropped
-status requires actual `authorization`; reactivation also needs current spec
-approval. Read the packaged `signoff` workflow before recording a verdict.
+Use last returned entity revisions after user pauses and successful writes. No
+routine read-before-write or confirming read is needed. Fetch and reconcile for
+conflicts, uncertainty or missing information; inspect the board before retrying
+an uncertain creation. Cards never carry body previews or replacement tokens.
+For whole-field body/criteria replacements use the full-specification etag from
+your complete read or create/update acknowledgement. Valid token-bearing updates
+return a refreshed token; unchanged specifications retain it. Title/summary-only
+edits need no full read. Summary edits preserve spec acceptance and proof.
+Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
+or `get_attempt`; page deliberate history/membership with `list_task_attempts`
+and `list_group_members`. Never write a card or summary back as a specification.

@@ -56,14 +56,15 @@ async def exercise(call, samples, project, workstream):
             workstream_id=workstream,
             scope="workstream",
         )
-        full = await timed("get_tasks", ids=[task["id"]])
+        token = task["specification_etag"]
         task = await timed(
             "update_task",
             task_id=task["id"],
             expected_revision=task["revision"],
             changes={"body": "Synthetic benchmark specification"},
-            specification_etag=full["items"][0]["specification_etag"],
+            specification_etag=token,
         )
+        token = task["specification_etag"]
         task = await timed(
             "accept_task",
             task_id=task["id"],
@@ -83,9 +84,7 @@ async def exercise(call, samples, project, workstream):
             evidence="Synthetic benchmark evidence",
             artifacts=[{"kind": "artifact", "reference": "examples/benchmark.py"}],
             verification="Synthetic demonstration checks",
-            specification_etag=(await timed("get_tasks", ids=[task["id"]]))["items"][0][
-                "specification_etag"
-            ],
+            specification_etag=token,
         )
     return summarize(timings)
 
@@ -123,7 +122,7 @@ async def run(args):
                 startup = (perf_counter_ns() - start) / 1e6
 
                 async def call(name, _store=store, **arguments):
-                    return getattr(_store, name)(**arguments)
+                    return _store.compact_call(name, **arguments)
 
                 operations = await exercise(call, args.samples, project, workstream)
             else:

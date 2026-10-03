@@ -136,7 +136,7 @@ def test_withdrawal_retains_spec_decisions_proof_and_reapproval_reuses_review(co
         created["id"], before["revision"], "Mistaken scope approval"
     )
     assert not withdrawn["accepted"] and withdrawn["spec_revision"] == before["spec_revision"]
-    assert withdrawn["gate_diagnostics"] == ["pending_acceptance", "signoff"]
+    assert withdrawn["gate_diagnostics"] == ["pending_acceptance"]
     after = detail(store, withdrawn)
     for key in (
         "title",
@@ -174,7 +174,8 @@ def test_withdrawal_retains_spec_decisions_proof_and_reapproval_reuses_review(co
     reapproved = store.accept_task(
         created["id"], after["revision"], approve("Synthetic renewed approval", "delegated")
     )
-    assert reapproved["gate_diagnostics"] == ["signoff"]
+    assert reapproved["gate_diagnostics"] == []
+    assert store.read_tasks([created["id"]], workstream_id=ws)["items"][0]["view"] == "signoff"
     assert detail(store, created)["attempts"] == before["attempts"]
     done = store.signoff_task(
         created["id"],

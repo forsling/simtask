@@ -70,7 +70,10 @@ def legacy_database(database, version):
     # rather than assuming a copy of just the main file is sufficient.
     db = sqlite3.connect(database)
     db.execute("PRAGMA foreign_keys=OFF")
-    db.execute("ALTER TABLE projects DROP COLUMN order_revision")
+    if version < 3:
+        db.execute("ALTER TABLE projects DROP COLUMN order_revision")
+    for name in ("summary", "summary_spec_revision"):
+        db.execute(f"ALTER TABLE tasks DROP COLUMN {name}")
     for name in PROVENANCE_COLUMNS if version < 2 else ():
         db.execute(f"ALTER TABLE tasks DROP COLUMN {name}")
     if version == 0:
@@ -98,7 +101,7 @@ def legacy_database(database, version):
     return db, (pending["id"], accepted["id"], done["id"])
 
 
-@pytest.mark.parametrize("version", [0, 1, 2])
+@pytest.mark.parametrize("version", [0, 1, 2, 3])
 def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_path, version):
     database = tmp_path / "legacy.sqlite3"
     writer, identities = legacy_database(database, version)
@@ -111,7 +114,7 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
         assert stat.S_IMODE(backup.stat().st_mode) == 0o600
         assert snapshot(backup) == (columns, before)
         assert snapshot(database, columns)[1] == before
-        assert store.database_schema_revision() == 3
+        assert store.database_schema_revision() == 4
         with closing(sqlite3.connect(backup)) as db:
             assert db.execute("PRAGMA user_version").fetchone()[0] == version
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -126,10 +129,13 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
         else:
             assert details[0]["source"] == "user" and details[0]["user_request"] == "Design first"
             assert details[1]["acceptance_basis"] == "specific"
-        assert store.list_tasks(details[0]["project_id"])["project_order_revision"] == 0
+        assert store.list_tasks(details[0]["project_id"])["project_order_revision"] == (
+            3 if version == 3 else 0
+        )
+        assert all(item["summary"] is None and item["summary_stale"] is None for item in details)
         assert details[1]["acceptance_note"] == "Legacy accepted"
         assert Store(database).migration_backup_path is None
-        assert len(list(tmp_path.glob("*.pre-schema-3.*.sqlite3"))) == 1
+        assert len(list(tmp_path.glob("*.pre-schema-4.*.sqlite3"))) == 1
         # Restore into a disposable target using SQLite online backup, not a
         # file copy over the still-open source/WAL. This proves rollback content.
         restored = tmp_path / "restored.sqlite3"
@@ -227,7 +233,7 @@ def test_legacy_disposition_restore_does_not_reactivate_dropped_acceptance(
     assert final_rows["events"][: len(original_rows["events"])] == original_rows["events"]
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [0, 1, 2, 3])
 def test_migration_failure_rolls_back_ddl_revision_and_data_retains_backup(
     tmp_path, monkeypatch, version
 ):
@@ -249,7 +255,7 @@ def test_migration_failure_rolls_back_ddl_revision_and_data_retains_backup(
         assert snapshot(database) == before
         with closing(sqlite3.connect(database)) as db:
             assert db.execute("PRAGMA user_version").fetchone()[0] == version
-        backups = list(tmp_path.glob("*.pre-schema-3.*.sqlite3"))
+        backups = list(tmp_path.glob("*.pre-schema-4.*.sqlite3"))
         assert len(backups) == 1 and snapshot(backups[0]) == before
     finally:
         writer.close()
@@ -277,6 +283,6 @@ def test_backup_failure_aborts_before_any_schema_upgrade(tmp_path, monkeypatch):
 def test_fresh_empty_database_needs_no_backup(tmp_path):
     database = tmp_path / "fresh.sqlite3"
     store = Store(database)
-    assert store.database_schema_revision() == 3 and store.migration_backup_path is None
+    assert store.database_schema_revision() == 4 and store.migration_backup_path is None
     assert snapshot(database)[1]["tasks"] == []
-    assert list(tmp_path.glob("*.pre-schema-3.*.sqlite3")) == []
+    assert list(tmp_path.glob("*.pre-schema-4.*.sqlite3")) == []

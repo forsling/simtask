@@ -273,7 +273,7 @@ def test_global_edges_and_audit_survive_reopen_without_schema_change(context):
             table: db.execute(f"SELECT * FROM {table}").fetchall()
             for table in ("tasks", "prerequisites", "events")
         }
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     restored = Store(store.path, actor="resumed coordinator")
     with sqlite3.connect(store.path) as db:
