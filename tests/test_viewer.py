@@ -242,7 +242,7 @@ def test_group_inclusion_scope_can_be_paged_beyond_workstream_preview(viewer):
     assert set(groups["ids"] + rest["scope"]["groups"]["ids"]) == included
 
 
-def test_remote_prerequisites_transport_is_compact_and_completion_is_signed_off(viewer, tmp_path):
+def test_remote_prerequisites_transport_is_compact_and_review_clears_default_link(viewer, tmp_path):
     server, store, context = viewer
     other = store.init_project(str(tmp_path / "remote"), branch="main", confirmed=True)
     dependent = create(server, context, title="Dependent")
@@ -270,7 +270,8 @@ def test_remote_prerequisites_transport_is_compact_and_completion_is_signed_off(
     query = {"project": context["project"]["id"], "workstream_id": context["workstream"]["id"]}
     status, queue = request(server, "/api/tasks", query)
     assert status == 200 and [row["id"] for row in queue["items"]] == [dependent["id"]]
-    assert queue["items"][0]["prerequisites"] == [ref]
+    assert queue["items"][0]["prerequisites"] == [{**ref, "satisfied": True, "blocking": False}]
+    assert queue["items"][0]["view"] == "ready"
     status, signed_off = request(
         server,
         "/api/signoff",

@@ -308,7 +308,9 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
     blocker_id = Store._insert_task(
         db, "prj_legacy", "Blocker", "", "", {"basis": "specific", "note": "Accepted"}
     )
-    db.execute("INSERT INTO prerequisites VALUES (?,?)", (blocker_id, group_id))
+    db.execute(
+        "INSERT INTO prerequisites (task_id,blocked_by_id) VALUES (?,?)", (blocker_id, group_id)
+    )
     db.execute(
         "INSERT INTO attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (

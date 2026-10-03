@@ -70,6 +70,11 @@ drop deactivates approval, defer retains it, and leaving dropped status requires
 `authorization` with the actual revival instruction. Neither dropped nor
 deferred work satisfies a prerequisite. Shared-group completion still needs all
 members human signed off across projects; there is no separate group sign-off.
+Default `review` prerequisite links may already be satisfied by a current-spec
+passed/human-reviewed attempt before sign-off, for every group member. Explicit
+`signoff` links are rare exceptions for work very likely wasted without the
+user's verdict. Rework or a spec change can block review links again without
+erasing dependent results. Satisfaction proves no local code integration.
 
 Use last returned entity revisions after user pauses and successful writes. No
 routine read-before-write or confirming read is needed. Fetch and reconcile for

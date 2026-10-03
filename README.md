@@ -288,8 +288,10 @@ Resolving an unresolved item,
 changing scope or order, or adding evidence does not invalidate acceptance.
 Unresolved items are live gates; resolve them after settling the matter and
 record any material decision in the task description. A `blocked_by` prerequisite
-clears as an eligibility constraint when its prerequisite is signed off. A task
-may depend on a group; that gate clears after every required member completes.
+clears by default once the blocker is done or has a current-spec passed
+independent review (`passed`) or recorded human review (`human_review`). A task
+may depend on a group; every member of a nonempty group must satisfy the
+link's required milestone.
 
 Use `decompose_task` to turn a task into a first-class group while retaining its
 ID, description, acceptance history and audit history. The call atomically
@@ -313,11 +315,16 @@ implementation, review and sign-off. A group becomes complete only when it has
 at least one member and every member is signed off; pending, deferred or dropped
 members keep it incomplete. Completed groups cannot gain members or be edited.
 A concrete task may depend on a canonical task or group in any project, without
-shared-group membership. Concrete blockers clear only when human-signed-off
-done; a group clears only when every member is done. Review alone, deferred and
-dropped work do not satisfy completion. This is ledger completion, not proof
-that another branch's code was integrated. Links never expand workstream scope
-or transfer attempts, reviews or code. Self-edges and cycles through prerequisites
+shared-group membership. `add_prerequisite` and `propose_prerequisite` default
+to `milestone="review"`, satisfied by done or any current-spec passed/human-reviewed
+attempt, including another workstream. Use `milestone="signoff"` only as a rare
+exception when proceeding before the user's verdict would very likely waste work;
+it waits for done (every member for a group). Dropped/deferred work remains
+unsatisfied, even with a retained passed review. Satisfaction is computed: rework
+or a spec change with no current-spec satisfying attempt blocks review links
+again; existing dependent results are retained. A canonical milestone does not
+prove that another branch's code was integrated. Links never expand workstream
+scope or transfer attempts, reviews or code. Self-edges and cycles through prerequisites
 and implicit group-to-member completion edges fail atomically, including during
 observer-proposal acceptance and membership changes. Linking changes the
 dependent task revision, leaving both specifications and their acceptance intact.
@@ -331,16 +338,19 @@ project inbox. The service records the asserted handling role but does not
 authenticate agent identity.
 
 Full task reads, scoped queues and project lists include compact `prerequisites`
-references with ID, title, project ID/name, canonical `state`, `complete` and
-`blocking` facts. A global group's project identity is null and its state is
-complete/incomplete. These references do not expand remote specifications,
+references with ID, title, project ID/name, canonical `state`/`complete`, required
+`milestone`, computed `satisfied` and `blocking` facts. `complete` still means
+human-signed-off completion; `satisfied` can become true earlier. Workstream
+diagnostics include the same link facts. Duplicate links with a different
+milestone fail rather than silently replacing it. A global group's project
+identity is null and its state is complete/incomplete. These references do not
+expand remote specifications,
 attempts, evidence, history or queues; use explicit task reads to inspect them.
 The viewer renders these references directly and opens remote details only on
 deliberate navigation. Verify actual IDs and meaning before replacing a known
 prose gate: add the real links first, then resolve the old unresolved item.
-There is no automatic prose parsing. Evaluate the retained human-sign-off
-milestone after rollout through existing usage/audit evidence, without routine
-reporting calls or a new completion milestone.
+There is no automatic prose parsing. Review milestone satisfaction does not
+expand execution scope or inherit review proof into a local attempt.
 
 An active-session coordinator can accept a gate proposal, or dismiss it with a
 decision note when the proposal is stale or unwanted. Dismissal removes the
@@ -531,25 +541,27 @@ adds `projects.order_revision` for shared-order concurrency, with a default of 0
 on existing projects. Protocol revision 4 replaces whole-order
 replacement with the atomic move contract. Protocol 5 adds global concrete
 prerequisites and compact prerequisite references.
-Current candidate protocol 6 replaces the selector with `get_next_action` and
+Protocol 6 replaces the selector with `get_next_action` and
 requires full-spec-bound structured durable references/verification for factual
 result recording, with concise ACKs. There is no old selector alias or extra tool.
 These protocol 6 changes use schema 3. Protocol 7 adds compact default cards,
 one-call chosen proof, complete compact acknowledgements, paged attempts/members
 and the named skill index. Schema 4 adds nullable summary/source-revision columns
-without backfill. The surface now advertises 41 tools.
+without backfill. Protocol 8/schema 5 add `review`/`signoff` prerequisite
+milestones and computed satisfaction; all existing links and observer proposals
+migrate to `review`. The surface now advertises 41 tools.
 Protocol 3's purpose/result signoff
 judgments continue to use existing immutable audit records.
 Migration preserves all existing rows, IDs, notes, acceptance/completion and history. Legacy origin
 and unclassified approval are `unknown`; old audit text is never parsed to infer
-authority. Before upgrading an existing schema 0/1/2/3 database, the service takes a
+authority. Before upgrading an existing schema 0/1/2/3/4 database, the service takes a
 fresh SQLite online backup under the migration writer lock and verifies its
 integrity, foreign keys and source revision. The private adjacent
-`*.pre-schema-4.*.sqlite3` backup is retained; failure aborts the transaction.
+`*.pre-schema-5.*.sqlite3` backup is retained; failure aborts the transaction.
 An empty new database needs no migration backup. For rollback, stop all writers
 before restoring a verified backup with SQLite's backup API, including WAL
 state; reconnect clients only to the matching protocol/schema revision. Do not
-run an older server against schema 4 or overlay a backup onto active writers.
+run an older server against schema 5 or overlay a backup onto active writers.
 Test candidate upgrades on disposable copies and keep incompatible code, client
 workflows and databases isolated until every serving client can be refreshed.
 
@@ -573,8 +585,8 @@ Store/viewer full-detail access retains complete `signoff_decisions`. Drop
 clears active approval and preserves proof; defer keeps approval. Ordinary
 status changes need no reviewed result. Leaving dropped status requires actual
 `authorization`; restoration leaves approval inactive until explicitly accepted.
-Dropped/deferred tasks never satisfy done prerequisites. Completed work remains
-immutable.
+Dropped/deferred tasks never satisfy either prerequisite milestone. Completed
+work remains immutable.
 
 ## Deferred work
 

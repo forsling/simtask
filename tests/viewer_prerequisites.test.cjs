@@ -27,9 +27,9 @@ context.task = {id: "local", status: "open", spec_revision: 1, body: "Local requ
   acceptance_criteria: "Observable", attempts: [], unresolved_items: [], gate_proposals: [],
   blocked_by: ["remote", "global-group"], prerequisites: [
     {id: "remote", title: "Remote task <script>", object_type: "task", project_id: "p2",
-      project_name: "Second project", state: "deferred", complete: false, blocking: true},
+      project_name: "Second project", state: "deferred", complete: false, milestone: "signoff", satisfied: false, blocking: true},
     {id: "global-group", title: "Global feature", object_type: "group", project_id: null,
-      project_name: null, state: "complete", complete: true, blocking: false},
+      project_name: null, state: "complete", complete: true, milestone: "review", satisfied: true, blocking: false},
   ]};
 let reads = 0, navigated, openedGroup;
 context.apiMock = async () => {reads++; throw Error("Rendering must not fetch remote proof");};
@@ -39,8 +39,8 @@ run('api = apiMock; navigateMember = navigateMock; openGroup = groupMock;');
 async function main() {
   const section = run('body(task)').find(n => text(n).includes("Prerequisites"));
   assert.equal(reads, 0);
-  assert.match(text(section), /Remote task <script>.*remote.*Second project.*p2.*Blocking · deferred/);
-  assert.match(text(section), /Global feature.*global-group.*Global group.*Complete/);
+  assert.match(text(section), /Remote task <script>.*remote.*Second project.*p2.*Sign-off required.*Blocking · deferred/);
+  assert.match(text(section), /Global feature.*global-group.*Global group.*Review required.*Satisfied · complete/);
   const links = descendants(section).filter(n => n.onclick);
   assert.equal(links.length, 2);
   await links[0].onclick();
@@ -53,6 +53,12 @@ async function main() {
   context.task.prerequisites[0].state = "done";
   context.task.prerequisites[0].complete = true;
   context.task.prerequisites[0].blocking = false;
+  context.task.prerequisites[0].satisfied = true;
+  assert.match(run('body(task)').map(text).join(" "), /Satisfied · complete/);
+  context.task.prerequisites[0].milestone = "review";
+  context.task.prerequisites[0].complete = false;
+  context.task.prerequisites[0].state = "open";
+  assert.match(run('body(task)').map(text).join(" "), /Satisfied · reviewed/);
   assert.doesNotMatch(run('body(task)').map(text).join(" "), /Blocking · deferred/);
 }
 main().catch(e => {console.error(e); process.exitCode = 1;});

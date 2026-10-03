@@ -21,11 +21,15 @@ and returns the link. No browser is launched automatically.
 - Each task opens with a single “next step” panel stating what, if anything,
   you can do now, with its buttons. A review/sign-off state does not remove
   open questions or prerequisites; Store still validates every decision.
-- Prerequisites show compact ID/title, project name/ID and blocking/completion
+- Prerequisites show compact ID/title, project name/ID, the required review or
+  sign-off milestone, satisfaction and canonical blocking/completion
   state, including blockers from any project. Rendering these rows fetches no
   remote attempts, evidence or queue; click a link to deliberately open its task
-  or global group. A concrete blocker clears only after human sign-off, a group
-  after every member is done. Review alone, dropped and deferred work still block.
+  or global group. Default review links clear on done or a current-spec passed
+  independent review/recorded human review; every member must satisfy a group
+  link. Explicit sign-off links are rare exceptions for work very likely wasted
+  before the human verdict. Dropped/deferred work still blocks, and rework/spec
+  changes can block review links again. Satisfaction proves no local integration.
 - Shared groups show all members across all projects and global completion.
   Opening a member moves to its own project's queue. A group's completion does
   not mean a particular local workstream delivered all of its members.

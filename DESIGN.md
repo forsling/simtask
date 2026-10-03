@@ -77,7 +77,7 @@ delegated approval requires actual authority to select work within a stated
 goal. Explicit pending/design-first requests take precedence. Queueing starts
 no implementation; approval clears no other gates. Legacy origin and approvals
 are unknown without guessing from historic text or changing accepted/completed
-state. Database schema revision 2 introduced this data; candidate protocol 7
+state. Database schema revision 2 introduced this data; candidate protocol 8
 retains the purpose/result signoff contract described below.
 
 Acceptance binds to the current specification. `update_task` atomically saves
@@ -106,7 +106,7 @@ Existing schemas migrate transactionally after a fresh verified SQLite online
 backup under the writer lock. Backup includes committed WAL data and remains
 available after success or rollback. Migration preserves all existing rows and
 history; it never infers origin or approval basis from prior notes. Fresh empty
-databases create schema 4 directly. Candidate code, databases and companion
+databases create schema 5 directly. Candidate code, databases and companion
 workflow updates must remain isolated until client rollout can happen together.
 Create/update/accept/withdraw acknowledgements return continuation IDs/revisions,
 acceptance and accurate gates without echoing specs or proof history.
@@ -129,18 +129,28 @@ An empty group remains incomplete and mutable. A nonempty group completes only
 when every member is signed off; completed groups are immutable. Each member
 keeps its own accepted specification, attempt, review and sign-off. A concrete
 task may depend on any canonical task or whole-group completion in any project,
-without requiring shared membership. Concrete blockers require human-signed-off
-done; reviewed, dropped or deferred work remains unsatisfied. The link changes
+without requiring shared membership. The default `review` prerequisite milestone
+is satisfied by done or any current-spec `passed`/`human_review` attempt across
+workstreams; every member must satisfy it for a nonempty group. Explicit
+`milestone="signoff"` links require done for every member. Reserve that exception
+for cases where proceeding before the human verdict would very likely waste work.
+Dropped/deferred blockers remain unsatisfied regardless of retained reviews.
+Satisfaction is computed from current state: rework or a genuine specification
+change can block a review link again, while dependent results survive. Canonical
+completion still requires human sign-off; passing a prerequisite is no proof of
+code integration into the dependent checkout. The link changes
 only the dependent gate revision, never specification acceptance, local scope,
 attempts, reviews or code integration. Compact prerequisite references expose
-ID, title, project identity and canonical blocking/completion facts in full
+ID, title, project identity, required milestone, satisfaction and canonical
+blocking/completion facts in full
 details and queues, without fetching remote proof/history. Cycle checks include
 prerequisite links and implicit group-to-member completion edges for additions,
 observer acceptance and membership/decomposition changes. SQLite write
 serialization and revision checks protect a race between membership changes and
-last-member sign-off. Global foreign keys already support these links; protocol
-5 changes no schema or migration. Evaluate the human-sign-off milestone after
-rollout using existing audit/workflow evidence, without routine progress calls.
+last-member sign-off. Protocol 8/schema 5 persist link milestones, including
+observer proposals, and migrate every existing link/proposal to `review`. A
+duplicate link with a different milestone fails rather than silently changing
+the gate. Decomposition preserves each inherited milestone.
 Replace known prose gates only after verifying actual IDs/meaning and adding
 real links before resolving the old item; no automatic parsing or state repair.
 
@@ -267,8 +277,8 @@ rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
 
-Candidate purpose/result signoff (introduced in protocol 3; current protocol 7,
-schema 4) uses one human
+Candidate purpose/result signoff (introduced in protocol 3; current protocol 8,
+schema 5) uses one human
 `approve`/`rework`/`revise`/`drop`/`defer` decision. Specific current-scope purpose
 approval references its actual classified audit decision; delegated/unknown
 purpose is judged by the user's informed signoff decision. Direction-only

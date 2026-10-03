@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from task_mcp.store import Store, TaskError
+from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
 from task_mcp.viewer import dispatch
 
 
@@ -263,7 +263,7 @@ def test_legacy_proof_and_audit_survive_factual_record_and_selector(tmp_path):
         assert (
             db.execute("SELECT * FROM events ORDER BY sequence").fetchall()[: len(events)] == events
         )
-        assert db.execute("PRAGMA user_version").fetchone() == schema == (4,)
+        assert db.execute("PRAGMA user_version").fetchone() == schema == (DATABASE_SCHEMA_REVISION,)
         raw = json.loads(
             db.execute("SELECT evidence FROM attempts WHERE id=?", (recovered["id"],)).fetchone()[0]
         )

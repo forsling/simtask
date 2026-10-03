@@ -46,14 +46,17 @@ Preserve deferred context and audit history.
 
 Prerequisites use canonical task/group IDs across any projects; shared membership
 is not required. Links do not add remote work to local scope or share attempts,
-reviews or code. Human-signed-off done clears a concrete blocker; every member
-must be done for a group. Review alone, dropped and deferred work still block.
-Use compact prerequisite references to inspect identity/completion, and explicit
-full task reads for requirements or proof. Verify IDs and meaning before
+reviews or code. Default `milestone="review"` clears on done or any current-spec
+`passed`/`human_review` attempt; every member of a nonempty group must satisfy it.
+Reserve explicit `milestone="signoff"` for rare cases where proceeding before
+the user's verdict would very likely waste work. Dropped/deferred work still
+blocks. Rework/spec changes can block review links again; dependent results stay.
+Use compact prerequisite references to inspect identity/milestone/satisfaction,
+and explicit full task reads for requirements or proof. Verify IDs and meaning before
 replacing a known prose gate: add real links first, then resolve the old item.
 Never infer dependencies by parsing prose or claim another branch is integrated.
-Evaluate the retained milestone after rollout through existing audit/workflow
-evidence, without routine progress calls.
+Milestone satisfaction is canonical state, not proof of integration into the
+dependent checkout; inspect actual code and commits before relying on it.
 
 Origin (`source`) and `user_request` describe where a task came from, including
 pending tasks; they never accept it. Use delegated approval only when the user's

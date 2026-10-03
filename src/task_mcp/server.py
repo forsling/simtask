@@ -71,7 +71,11 @@ def create_server(
         instructions=(
             "Init an explicit checkout/branch and retain its IDs. Continue with returned "
             "revisions; reconcile conflicts. Record only actual user authority, independent "
-            "review and informed human verdicts. Full specifications govern work."
+            "review and informed human verdicts. Full specifications govern work. "
+            "Prerequisites clear on current-spec passed/human review by default; "
+            "signoff links are rare exceptions for work very likely wasted "
+            "without a human verdict. "
+            "A satisfied canonical milestone does not prove integration into this checkout."
         ),
         lifespan=lifespan,
     )
@@ -442,14 +446,18 @@ def create_server(
         expected_revision: int,
         blocked_by_id: str,
         handling: Literal["active", "observer", "user"] = "active",
+        milestone: Literal["review", "signoff"] = "review",
     ) -> dict[str, Any]:
         """Link a canonical task/group in any project, or propose a nonblocking observer gate.
 
-        Completion requires human-signed-off done (all members for a group).
+        Default review clears on done or current-spec passed/human_review (every group member).
+        Use signoff only exceptionally when proceeding before the user's verdict would very
+        likely waste work. Dropped/deferred blockers stay unsatisfied; rework/spec changes can
+        block review links again. A different milestone on an existing link is rejected.
         The link changes only the dependent gate, never workstream scope or remote proof.
         """
         return store.compact_call(
-            "add_prerequisite", task_id, expected_revision, blocked_by_id, handling
+            "add_prerequisite", task_id, expected_revision, blocked_by_id, handling, milestone
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -461,8 +469,14 @@ def create_server(
         body: str = "",
         acceptance_criteria: str = "",
         workstream_id: str | None = None,
+        milestone: Literal["review", "signoff"] = "review",
     ) -> dict[str, Any]:
-        """Atomically create and link a pending prerequisite in this scope or inbox."""
+        """Create and link a pending prerequisite in this scope or inbox.
+
+        Default review clears on done or current-spec passed/human_review. Use signoff only
+        exceptionally when work would very likely be wasted without the user's verdict.
+        Satisfaction is reversible; it neither grants approval nor proves code integration.
+        """
         return store.compact_call(
             "propose_prerequisite",
             task_id,
@@ -471,6 +485,7 @@ def create_server(
             body,
             acceptance_criteria,
             workstream_id,
+            milestone,
         )
 
     @server.tool(annotations=editing, structured_output=True)

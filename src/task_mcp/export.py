@@ -161,9 +161,10 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                     else "global group"
                 )
                 lines.append(
-                    f"- {'Satisfied' if dependency['complete'] else 'Not satisfied'}: "
+                    f"- {'Satisfied' if dependency['satisfied'] else 'Not satisfied'}: "
                     f"{_inline(dependency['title'])} (`{dependency['id']}`; "
-                    f"{dependency['object_type']}; {project_ref}; {_inline(dependency['state'])})"
+                    f"{dependency['object_type']}; {project_ref}; {_inline(dependency['state'])}; "
+                    f"{dependency['milestone']} required)"
                 )
             if task["prerequisites"]:
                 lines.append("")
@@ -173,7 +174,12 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                 _section(
                     lines,
                     f"`{proposal['id']}`: {_inline(proposal['gate_type'])} "
-                    f"by {_inline(proposal['proposer'])}",
+                    + (
+                        f"({proposal['milestone']} required) "
+                        if proposal["gate_type"] == "prerequisite"
+                        else ""
+                    )
+                    + f"by {_inline(proposal['proposer'])}",
                     proposal["detail"],
                     level=5,
                 )

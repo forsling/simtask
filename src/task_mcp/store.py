@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 4
+DATABASE_SCHEMA_REVISION = 5
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
 
 SCHEMA = (
@@ -57,11 +57,13 @@ SCHEMA = (
     """CREATE TABLE IF NOT EXISTS prerequisites (
         task_id TEXT NOT NULL REFERENCES tasks(id),
         blocked_by_id TEXT NOT NULL REFERENCES tasks(id),
+        milestone TEXT NOT NULL DEFAULT 'review' CHECK(milestone IN ('review','signoff')),
         PRIMARY KEY(task_id, blocked_by_id))""",
     """CREATE TABLE IF NOT EXISTS gate_proposals (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
         gate_type TEXT NOT NULL, detail TEXT NOT NULL, proposer TEXT NOT NULL,
-        created_at TEXT NOT NULL)""",
+        created_at TEXT NOT NULL,
+        milestone TEXT NOT NULL DEFAULT 'review' CHECK(milestone IN ('review','signoff')))""",
     """CREATE TABLE IF NOT EXISTS attempts (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
         workstream_id TEXT NOT NULL REFERENCES workstreams(id),
@@ -144,6 +146,13 @@ class Store:
         project_columns = {row["name"] for row in db.execute("PRAGMA table_info(projects)")}
         if "order_revision" not in project_columns:
             db.execute("ALTER TABLE projects ADD COLUMN order_revision INTEGER NOT NULL DEFAULT 0")
+        for table in ("prerequisites", "gate_proposals"):
+            columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            if "milestone" not in columns:
+                db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN milestone TEXT NOT NULL DEFAULT 'review' "
+                    "CHECK(milestone IN ('review','signoff'))"
+                )
         columns = {row["name"]: row for row in db.execute("PRAGMA table_info(tasks)")}
         for name, definition in (
             ("source", "TEXT NOT NULL DEFAULT 'unknown'"),
@@ -2396,7 +2405,14 @@ class Store:
         return self._run("task.disposition_changed", request, operation)
 
     def propose_prerequisite(
-        self, task_id, expected_revision, title, body="", acceptance_criteria="", workstream_id=None
+        self,
+        task_id,
+        expected_revision,
+        title,
+        body="",
+        acceptance_criteria="",
+        workstream_id=None,
+        milestone="review",
     ):
         """Atomically create and link a pending prerequisite in this scope or inbox."""
         request = dict(
@@ -2406,9 +2422,11 @@ class Store:
             body=body,
             acceptance_criteria=acceptance_criteria,
             workstream_id=workstream_id,
+            milestone=milestone,
         )
 
         def operation(db, scope):
+            self._validate_prerequisite_milestone(milestone)
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
             self._require_mutable(db, before)
@@ -2419,7 +2437,7 @@ class Store:
             proposed_id = self._insert_task(
                 db, before["project_id"], title, body, acceptance_criteria
             )
-            db.execute("INSERT INTO prerequisites VALUES (?, ?)", (task_id, proposed_id))
+            self._insert_prerequisite(db, task_id, proposed_id, milestone)
             if workstream_id:
                 db.execute("INSERT INTO scope_members VALUES (?, ?)", (workstream_id, proposed_id))
                 self._touch_workstream(db, workstream_id)
@@ -2454,7 +2472,8 @@ class Store:
                     created_at=timestamp(),
                 )
                 db.execute(
-                    "INSERT INTO gate_proposals VALUES "
+                    "INSERT INTO gate_proposals "
+                    "(id,task_id,gate_type,detail,proposer,created_at) VALUES "
                     "(:id,:task_id,:gate_type,:detail,:proposer,:created_at)",
                     proposal,
                 )
@@ -2504,15 +2523,19 @@ class Store:
 
         return self._run("gate.unresolved_resolved", request, operation)
 
-    def add_prerequisite(self, task_id, expected_revision, blocked_by_id, handling="active"):
+    def add_prerequisite(
+        self, task_id, expected_revision, blocked_by_id, handling="active", milestone="review"
+    ):
         request = dict(
             task_id=task_id,
             expected_revision=expected_revision,
             blocked_by_id=blocked_by_id,
             handling=handling,
+            milestone=milestone,
         )
 
         def operation(db, scope):
+            self._validate_prerequisite_milestone(milestone)
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
             self._require_mutable(db, before)
@@ -2529,10 +2552,12 @@ class Store:
                     detail=blocked_by_id,
                     proposer=self.actor,
                     created_at=timestamp(),
+                    milestone=milestone,
                 )
                 db.execute(
-                    "INSERT INTO gate_proposals VALUES "
-                    "(:id,:task_id,:gate_type,:detail,:proposer,:created_at)",
+                    "INSERT INTO gate_proposals "
+                    "(id,task_id,gate_type,detail,proposer,created_at,milestone) VALUES "
+                    "(:id,:task_id,:gate_type,:detail,:proposer,:created_at,:milestone)",
                     proposal,
                 )
                 scope["after"] = proposal
@@ -2541,12 +2566,7 @@ class Store:
                 raise TaskError("invalid_handling")
             if self._would_cycle(db, task_id, blocked_by_id):
                 raise TaskError("prerequisite_cycle")
-            changed = (
-                db.execute(
-                    "INSERT OR IGNORE INTO prerequisites VALUES (?, ?)", (task_id, blocked_by_id)
-                ).rowcount
-                > 0
-            )
+            changed = self._insert_prerequisite(db, task_id, blocked_by_id, milestone)
             after = {
                 **before,
                 "revision": before["revision"] + int(changed),
@@ -2580,10 +2600,7 @@ class Store:
                     raise TaskError("invalid_prerequisite")
                 if self._would_cycle(db, row["task_id"], row["detail"]):
                     raise TaskError("prerequisite_cycle")
-                db.execute(
-                    "INSERT OR IGNORE INTO prerequisites VALUES (?, ?)",
-                    (row["task_id"], row["detail"]),
-                )
+                self._insert_prerequisite(db, row["task_id"], row["detail"], row["milestone"])
                 after = dict(before)
             after.update(revision=before["revision"] + 1, updated_at=timestamp())
             self._save_task(db, after)
@@ -2619,6 +2636,31 @@ class Store:
         return self._run("gate.proposal_dismissed", request, operation)
 
     @staticmethod
+    def _validate_prerequisite_milestone(milestone):
+        if not isinstance(milestone, str) or milestone not in {"review", "signoff"}:
+            raise TaskError("invalid_prerequisite_milestone: use review or signoff")
+
+    @staticmethod
+    def _insert_prerequisite(db, task_id, blocked_by_id, milestone):
+        changed = (
+            db.execute(
+                "INSERT OR IGNORE INTO prerequisites (task_id,blocked_by_id,milestone) "
+                "VALUES (?,?,?)",
+                (task_id, blocked_by_id, milestone),
+            ).rowcount
+            > 0
+        )
+        existing = db.execute(
+            "SELECT milestone FROM prerequisites WHERE task_id=? AND blocked_by_id=?",
+            (task_id, blocked_by_id),
+        ).fetchone()
+        if existing["milestone"] != milestone:
+            raise TaskError(
+                "prerequisite_milestone_conflict: the existing link has another milestone"
+            )
+        return changed
+
+    @staticmethod
     def _would_cycle(db, task_id, blocked_by_id):
         # A group needs every member to complete, so it has implicit edges to
         # those members in the effective dependency graph.
@@ -2648,11 +2690,11 @@ class Store:
         # Fresh members inherit the parent's edges inside the same transaction.
         # Check the effective graph, including membership already inserted above.
         for row in db.execute(
-            "SELECT blocked_by_id FROM prerequisites WHERE task_id=?", (source_id,)
+            "SELECT blocked_by_id,milestone FROM prerequisites WHERE task_id=?", (source_id,)
         ).fetchall():
             if Store._would_cycle(db, task_id, row["blocked_by_id"]):
                 raise TaskError("prerequisite_cycle")
-            db.execute("INSERT INTO prerequisites VALUES (?, ?)", (task_id, row["blocked_by_id"]))
+            Store._insert_prerequisite(db, task_id, row["blocked_by_id"], row["milestone"])
 
     def decompose_task(self, task_id, expected_revision, members):
         request = dict(task_id=task_id, expected_revision=expected_revision, members=members)
@@ -2792,12 +2834,36 @@ class Store:
         return self._run("tasks.reordered", request, operation)
 
     @staticmethod
+    def _prerequisite_satisfied(db, dependency, milestone):
+        """Canonical milestone across workstreams; never implies local code integration."""
+        if dependency["object_type"] == "group":
+            members = db.execute(
+                "SELECT id,object_type,status,spec_revision FROM tasks WHERE parent_group_id=?",
+                (dependency["id"],),
+            ).fetchall()
+            return bool(members) and all(
+                Store._prerequisite_satisfied(db, member, milestone) for member in members
+            )
+        if dependency["status"] == "done":
+            return True
+        if milestone == "signoff" or dependency["status"] in {"dropped", "deferred"}:
+            return False
+        return bool(
+            db.execute(
+                "SELECT 1 FROM attempts WHERE task_id=? AND spec_revision=? "
+                "AND state IN ('passed','human_review') LIMIT 1",
+                (dependency["id"], dependency["spec_revision"]),
+            ).fetchone()
+        )
+
+    @staticmethod
     def _prerequisite_references(db, task_id):
-        """Canonical completion facts, without remote attempts, evidence or scope."""
+        """Canonical milestones and completion, without remote proof or scope."""
         references = []
         for row in db.execute(
             "SELECT dependency.id,dependency.title,dependency.object_type,dependency.status,"
-            "dependency.project_id,project.name AS project_name "
+            "dependency.project_id,dependency.spec_revision,p.milestone,"
+            "project.name AS project_name "
             "FROM prerequisites p JOIN tasks dependency ON dependency.id=p.blocked_by_id "
             "LEFT JOIN projects project ON project.id=dependency.project_id "
             "WHERE p.task_id=? ORDER BY dependency.id",
@@ -2805,6 +2871,7 @@ class Store:
         ):
             group = row["object_type"] == "group"
             complete = Store._group_complete(db, row["id"]) if group else row["status"] == "done"
+            satisfied = Store._prerequisite_satisfied(db, row, row["milestone"])
             references.append(
                 {
                     "id": row["id"],
@@ -2814,26 +2881,23 @@ class Store:
                     "project_name": None if group else row["project_name"],
                     "state": ("complete" if complete else "incomplete") if group else row["status"],
                     "complete": complete,
-                    "blocking": not complete,
+                    "milestone": row["milestone"],
+                    "satisfied": satisfied,
+                    "blocking": not satisfied,
                 }
             )
         return references
 
     @staticmethod
     def _unsatisfied_prerequisite(db, task_id):
-        return bool(
-            db.execute(
-                """SELECT 1 FROM prerequisites p JOIN tasks dependency
-            ON dependency.id=p.blocked_by_id WHERE p.task_id=? AND (
-                (dependency.object_type='task' AND dependency.status!='done') OR
-                (dependency.object_type='group' AND EXISTS (
-                    SELECT 1 FROM tasks child WHERE child.parent_group_id=dependency.id
-                    AND child.status!='done')) OR
-                (dependency.object_type='group' AND NOT EXISTS (
-                    SELECT 1 FROM tasks child WHERE child.parent_group_id=dependency.id)))
-            LIMIT 1""",
+        return any(
+            not Store._prerequisite_satisfied(db, row, row["milestone"])
+            for row in db.execute(
+                "SELECT dependency.id,dependency.object_type,dependency.status,"
+                "dependency.spec_revision,p.milestone FROM prerequisites p JOIN tasks dependency "
+                "ON dependency.id=p.blocked_by_id WHERE p.task_id=?",
                 (task_id,),
-            ).fetchone()
+            )
         )
 
     @staticmethod

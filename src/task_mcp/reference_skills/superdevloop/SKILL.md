@@ -34,7 +34,15 @@ progress separately with `get_tasks(ids=[group_id])` or `workstream_status`.
 Continue using the durable workstream ID and its retained scope/history.
 Ordinary selection and execution gates use only its current-spec attempts;
 other-workstream or older-spec attempts are attributed history and do not block
-competing local implementations. Before relying on recorded proof, inspect the
+competing local implementations. Prerequisites are a separate canonical milestone:
+default `review` links clear on done or any current-spec `passed`/`human_review`
+attempt, across workstreams. Every member of a nonempty group must satisfy it.
+Explicit `milestone="signoff"` is a rare exception only when proceeding before
+the user's verdict would very likely waste work. Dropped/deferred blockers remain
+unsatisfied. Rework/spec changes can block review links again; dependent results
+survive. Inspect `milestone`, `satisfied` and `blocking` in prerequisite references
+to explain waits. A cleared milestone proves no integration into this checkout.
+Before relying on recorded proof, inspect the
 actual checkout, working diff and relevant commits against the current full
 specification, particularly after rebinding. Reuse applicable work as part of
 normal implementation; do not add routine checkpoints or repeated repository

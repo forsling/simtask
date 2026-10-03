@@ -204,8 +204,13 @@ def test_direction_decision_preserves_sound_result_without_inventing_quality(
     assert judgment["disposition"] == status
     assert judgment["resulting_task_revision"] == ack["revision"]
     assert judgment["resulting_attempt_revision"] == ack["attempt_revision"] == 2
-    assert store.get_next_action(ws)["task"] is None
-    assert "prerequisites" in store.workstream_status(ws)["items"][-1]["gate_diagnostics"]
+    if decision == "revise":
+        # A direction-only verdict retains the sound current-spec review until a real edit.
+        assert store.get_next_action(ws)["task"]["id"] == dependent["id"]
+        assert full(store, dependent)["prerequisites"][0]["satisfied"]
+    else:
+        assert store.get_next_action(ws)["task"] is None
+        assert "prerequisites" in store.workstream_status(ws)["items"][-1]["gate_diagnostics"]
     if decision == "revise":
         assert ack["unresolved_id"] == saved["unresolved_items"][-1]["id"]
         assert saved["unresolved_items"][-1]["text"] == extra["specification_question"]
@@ -220,6 +225,7 @@ def test_direction_decision_preserves_sound_result_without_inventing_quality(
         )
         assert edited["spec_revision"] == 2 and not edited["accepted"]
         assert full(store, task)["attempts"] == task["attempts"]
+        assert full(store, dependent)["prerequisites"][0]["blocking"]
     elif decision == "defer":
         resumed = store.set_disposition(task["id"], ack["revision"], "open", "Resume")
         assert resumed["accepted"] and "signoff" not in resumed["gate_diagnostics"]

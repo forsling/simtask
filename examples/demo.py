@@ -37,6 +37,12 @@ async def exercise(database: Path):
         ]
         assert "expected_attempt_revision" in signoff_schema["required"]
         assert not {"verdict", "rejection"} & signoff_schema["properties"].keys()
+        for name in ("add_prerequisite", "propose_prerequisite"):
+            descriptor = next(tool for tool in tools if tool.name == name)
+            milestone = descriptor.input_schema["properties"]["milestone"]
+            assert milestone["default"] == "review"
+            assert milestone["enum"] == ["review", "signoff"]
+            assert "exceptionally" in descriptor.description
         move_schema = next(tool.input_schema for tool in tools if tool.name == "reorder_tasks")
         assert move_schema["properties"]["position"]["enum"] == ["before", "after"]
         assert {"task_id", "anchor_id", "expected_order_revision", "instruction"} <= set(
@@ -457,9 +463,9 @@ async def exercise(database: Path):
             note="Synthetic review",
         )
         pending = (await call("get_tasks", specification=True, ids=[dependent["id"]]))["items"][0]
-        assert next(p for p in pending["prerequisites"] if p["id"] == remote_blocker["id"])[
-            "blocking"
-        ]
+        reviewed_ref = next(p for p in pending["prerequisites"] if p["id"] == remote_blocker["id"])
+        assert reviewed_ref["milestone"] == "review" and reviewed_ref["satisfied"]
+        assert not reviewed_ref["blocking"] and not reviewed_ref["complete"]
         await call(
             "signoff_task",
             task_id=remote_blocker["id"],
@@ -491,7 +497,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.11.0"
+        assert catalog["version"] == "1.12.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

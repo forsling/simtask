@@ -57,7 +57,8 @@ def signoff(store, task, context):
 
 
 @pytest.mark.parametrize("remote", [False, True], ids=["local", "remote"])
-def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(context, remote):
+@pytest.mark.parametrize("milestone", ["review", "signoff"])
+def test_link_milestone_clears_blocker_without_moving_proof_or_scope(context, remote, milestone):
     store, (a, b, _) = context
     owner = b if remote else a
     dependent = create(store, a, "Dependent")
@@ -75,7 +76,7 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
         verification="Remote evidence stays remote",
         specification_etag=store.get_tasks([blocker["id"]])["items"][0]["specification_etag"],
     )
-    linked = store.add_prerequisite(dependent["id"], 1, blocker["id"])
+    linked = store.add_prerequisite(dependent["id"], 1, blocker["id"], milestone=milestone)
     ref = linked["prerequisites"][0]
     assert ref == {
         "id": blocker["id"],
@@ -85,6 +86,8 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
         "project_name": owner["project"]["name"],
         "state": "open",
         "complete": False,
+        "milestone": milestone,
+        "satisfied": False,
         "blocking": True,
     }
     assert linked["revision"] == 2
@@ -109,8 +112,13 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
     assert scoped["gate_diagnostics"] == ["prerequisites"]
     assert "Remote evidence stays remote" not in str(linked)
     store.record_review(attempt["id"], 1, "fresh reviewer", "pass", "Checked remote artifact")
-    assert detail(store, dependent["id"])["prerequisites"] == [ref]
-    assert store.get_next_action(ws)["task"] is None
+    reviewed = {**ref, "satisfied": milestone == "review", "blocking": milestone != "review"}
+    assert detail(store, dependent["id"])["prerequisites"] == [reviewed]
+    action = store.get_next_action(ws)
+    if milestone == "review":
+        assert action["action"] == "implement" and action["task"]["id"] == dependent["id"]
+    else:
+        assert action["task"] is None
     store.signoff_task(
         blocker["id"],
         2,
@@ -121,7 +129,9 @@ def test_only_human_signed_off_done_clears_blocker_and_no_proof_or_scope_moves(c
     )
     now = detail(store, dependent["id"])
     assert now["revision"] == 2 and now["accepted"]
-    assert now["prerequisites"] == [{**ref, "state": "done", "complete": True, "blocking": False}]
+    assert now["prerequisites"] == [
+        {**ref, "state": "done", "complete": True, "satisfied": True, "blocking": False}
+    ]
     assert store.get_next_action(ws)["task"]["id"] == dependent["id"]
     assert now["attempts"] == []
     if remote:
@@ -250,7 +260,10 @@ def test_decomposition_rejects_cyclic_legacy_edges_without_partial_members_or_sc
     store.add_prerequisite(parent["id"], 1, blocker["id"])
     # Simulate a preexisting invalid edge, unavailable through the guarded API.
     with sqlite3.connect(store.path) as db:
-        db.execute("INSERT INTO prerequisites VALUES (?, ?)", (blocker["id"], parent["id"]))
+        db.execute(
+            "INSERT INTO prerequisites (task_id,blocked_by_id) VALUES (?, ?)",
+            (blocker["id"], parent["id"]),
+        )
         before = {
             table: db.execute(f"SELECT * FROM {table}").fetchall()
             for table in ("tasks", "prerequisites", "projects", "scope_groups", "workstreams")
@@ -273,10 +286,168 @@ def test_global_edges_and_audit_survive_reopen_without_schema_change(context):
             table: db.execute(f"SELECT * FROM {table}").fetchall()
             for table in ("tasks", "prerequisites", "events")
         }
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     restored = Store(store.path, actor="resumed coordinator")
     with sqlite3.connect(store.path) as db:
         assert schema == db.execute("SELECT name,sql FROM sqlite_master ORDER BY name").fetchall()
         assert prior == {table: db.execute(f"SELECT * FROM {table}").fetchall() for table in prior}
     assert detail(restored, parent["id"])["prerequisites"][0]["id"] == blocker["id"]
+
+
+def review_result(store, task_id, owner, human=False):
+    task = detail(store, task_id)
+    attempt = store.record_result(
+        task_id,
+        owner["workstream"]["id"],
+        task["revision"],
+        "builder",
+        "Durable result",
+        "Actual synthetic proof",
+        artifacts=[{"kind": "artifact", "reference": "tests/test_cross_project_prerequisites.py"}],
+        verification="Checked synthetic fixture",
+        specification_etag=task["specification_etag"],
+    )
+    if human:
+        return store.human_review(attempt["id"], 1, "Actual synthetic human review")
+    return store.record_review(attempt["id"], 1, "fresh reviewer", "pass", "Checked proof")
+
+
+def prerequisite(store, task_id):
+    return detail(store, task_id)["prerequisites"][0]
+
+
+@pytest.mark.parametrize("human", [False, True], ids=["independent", "human"])
+def test_current_spec_review_is_reversible_and_keeps_dependent_results(context, human):
+    store, (a, b, _) = context
+    dependent = create(store, a, "Dependent")
+    blocker = create(store, b, "Remote blocker")
+    store.add_prerequisite(dependent["id"], 1, blocker["id"])
+    attempt = review_result(store, blocker["id"], b, human)
+    assert prerequisite(store, dependent["id"])["satisfied"]
+    assert not prerequisite(store, dependent["id"])["complete"]
+    ws = a["workstream"]["id"]
+    assert store.get_next_action(ws)["task"]["id"] == dependent["id"]
+    saved = review_result(store, dependent["id"], a)
+    # The real human rework verdict invalidates the previously satisfying attempt.
+    store.signoff_task(
+        blocker["id"],
+        2,
+        "rework",
+        "Synthetic actual rework verdict",
+        attempt["id"],
+        expected_attempt_revision=2,
+    )
+    assert prerequisite(store, dependent["id"])["blocking"]
+    assert store.get_next_action(ws)["action"] is None
+    assert detail(store, dependent["id"])["attempts"][0]["id"] == saved["id"]
+    assert store.workstream_status(ws)["items"][0]["gate_diagnostics"] == [
+        "prerequisites",
+        "signoff",
+    ]
+    fresh = review_result(store, blocker["id"], b)
+    assert prerequisite(store, dependent["id"])["satisfied"]
+    changed = store.update_task(
+        blocker["id"],
+        detail(store, blocker["id"])["revision"],
+        {"body": "Changed complete requirements"},
+        approval={"basis": "specific", "note": "Synthetic exact amended requirements"},
+        specification_etag=detail(store, blocker["id"])["specification_etag"],
+    )
+    assert changed["spec_revision"] == 2
+    assert prerequisite(store, dependent["id"])["blocking"]
+    assert store.get_next_action(ws)["action"] is None
+    assert store.get_attempt(fresh["id"])["state"] == "passed"
+    review_result(store, blocker["id"], b)
+    assert prerequisite(store, dependent["id"])["satisfied"]
+    assert detail(store, dependent["id"])["attempts"][0]["id"] == saved["id"]
+
+
+@pytest.mark.parametrize("disposition", ["dropped", "deferred"])
+def test_retained_passed_review_does_not_satisfy_inactive_blocker(context, disposition):
+    store, (a, b, _) = context
+    dependent, blocker = create(store, a, "Dependent"), create(store, b, "Blocker")
+    store.add_prerequisite(dependent["id"], 1, blocker["id"])
+    attempt = review_result(store, blocker["id"], b)
+    assert prerequisite(store, dependent["id"])["satisfied"]
+    store.set_disposition(blocker["id"], 2, disposition, "Actual synthetic pause/drop")
+    assert prerequisite(store, dependent["id"])["blocking"]
+    assert store.get_attempt(attempt["id"])["state"] == "passed"
+    assert store.get_next_action(a["workstream"]["id"])["action"] is None
+
+
+@pytest.mark.parametrize("milestone", ["review", "signoff"])
+def test_nonempty_group_uses_each_members_required_milestone(context, milestone):
+    store, (a, b, c) = context
+    group = store.create_group(a["workstream"]["id"], "Shared milestone")
+    first, second = create(store, b, "First"), create(store, c, "Second")
+    store.add_group_member(group["id"], 1, first["id"], 1)
+    store.add_group_member(group["id"], 2, second["id"], 1)
+    dependent = create(store, a, "Dependent")
+    store.add_prerequisite(dependent["id"], 1, group["id"], milestone=milestone)
+    first_review = review_result(store, first["id"], b)
+    assert prerequisite(store, dependent["id"])["blocking"]
+    second_review = review_result(store, second["id"], c, human=True)
+    ref = prerequisite(store, dependent["id"])
+    assert ref["milestone"] == milestone and not ref["complete"]
+    assert ref["satisfied"] == (milestone == "review")
+    assert detail(store, group["id"])["complete"] is False
+    if milestone == "review":
+        assert store.get_next_action(a["workstream"]["id"])["task"]["id"] == dependent["id"]
+        store.set_disposition(second["id"], 3, "deferred", "Synthetic pause")
+        assert prerequisite(store, dependent["id"])["blocking"]
+        store.set_disposition(second["id"], 4, "open", "Synthetic resume")
+        assert prerequisite(store, dependent["id"])["satisfied"]
+    for task, attempt in ((first, first_review), (second, second_review)):
+        store.signoff_task(
+            task["id"],
+            detail(store, task["id"])["revision"],
+            "approve",
+            "Synthetic actual approval",
+            attempt["id"],
+            expected_attempt_revision=2,
+        )
+    assert prerequisite(store, dependent["id"])["satisfied"]
+    assert prerequisite(store, dependent["id"])["complete"]
+
+
+@pytest.mark.parametrize("milestone", ["review", "signoff"])
+def test_proposals_and_decomposition_preserve_milestone(context, milestone):
+    store, (a, b, _) = context
+    blocker = create(store, b, "Remote blocker")
+    parent = create(store, a, "Parent")
+    observer = store.add_prerequisite(
+        parent["id"], 1, blocker["id"], handling="observer", milestone=milestone
+    )
+    assert observer["milestone"] == milestone
+    assert detail(store, parent["id"])["gate_proposals"][0]["milestone"] == milestone
+    accepted = store.accept_gate_proposal(observer["id"], 1)
+    assert prerequisite(store, parent["id"])["milestone"] == milestone
+    assert not store.add_prerequisite(parent["id"], 2, blocker["id"], milestone=milestone)[
+        "changed"
+    ]
+    opposite = "signoff" if milestone == "review" else "review"
+    with pytest.raises(TaskError, match="prerequisite_milestone_conflict"):
+        store.add_prerequisite(parent["id"], 2, blocker["id"], milestone=opposite)
+    assert detail(store, parent["id"])["revision"] == 2
+    group = store.decompose_task(parent["id"], accepted["revision"], [{"title": "Child"}])
+    child = group["members"][0]
+    assert prerequisite(store, child)["milestone"] == milestone
+    proposed = store.propose_prerequisite(
+        child, 1, "Needed work", workstream_id=a["workstream"]["id"], milestone=milestone
+    )
+    assert {ref["milestone"] for ref in proposed["task"]["prerequisites"]} == {milestone}
+    assert not proposed["proposal"]["accepted"]
+
+
+@pytest.mark.parametrize("value", ["done", None, [], 1])
+def test_invalid_milestone_fails_before_creating_or_linking_work(context, value):
+    store, (a, b, _) = context
+    dependent, blocker = create(store, a, "Dependent"), create(store, b, "Blocker")
+    before = store.list_tasks(a["project"]["id"])["total"]
+    with pytest.raises(TaskError, match="invalid_prerequisite_milestone"):
+        store.add_prerequisite(dependent["id"], 1, blocker["id"], milestone=value)
+    with pytest.raises(TaskError, match="invalid_prerequisite_milestone"):
+        store.propose_prerequisite(dependent["id"], 1, "Needed", milestone=value)
+    assert detail(store, dependent["id"])["revision"] == 1
+    assert store.list_tasks(a["project"]["id"])["total"] == before

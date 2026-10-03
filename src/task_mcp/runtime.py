@@ -9,7 +9,7 @@ from pathlib import Path
 
 # Bump when the public Task MCP tool/result contract changes incompatibly.
 # This is the application schema, independent of the negotiated MCP wire version.
-PROTOCOL_SCHEMA_REVISION = 7
+PROTOCOL_SCHEMA_REVISION = 8
 PROCESS_STARTED_AT = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 

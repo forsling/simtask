@@ -704,7 +704,7 @@ function nextStep(t, view) {
     text = "Autonomous implementation and review wait until each question is resolved.";
   } else if (t.prerequisites?.some((p) => p.blocking) || view === "prerequisites") {
     title = "Waiting on prerequisites";
-    text = "Autonomous implementation and review wait for human sign-off of the prerequisites below.";
+    text = "Autonomous implementation and review wait for the required milestones below: review by default, or explicit sign-off.";
   } else if (view === "signoff" && a) {
     title = "Ready for your sign-off";
     text = `${a.implementer}'s result has been reviewed. Judge the task purpose and the result below; one informed decision can cover both.`;
@@ -720,7 +720,7 @@ function nextStep(t, view) {
     text = "Work is blocked until each is resolved.";
   } else if (view === "prerequisites") {
     title = "Waiting on prerequisites";
-    text = "It becomes ready once the tasks below are done.";
+    text = "It becomes ready once the required prerequisite milestones below are satisfied.";
   } else if (view === "ready") {
     title = "Next agent action: implement";
     text = "Accepted and unblocked. An implementer can use the current checkout and relevant existing work.";
@@ -760,8 +760,8 @@ function body(t) {
       }, "link-row");
       const project = p.object_type === "group" ? "Global group" : `${p.project_name} · ${p.project_id}`;
       b.append(
-        el("span", "grow prerequisite-ref", node("span", p.title), node("small", `${p.id} · ${project}`, "muted")),
-        pill(p.complete ? "done" : "open", p.complete ? "Complete" : `Blocking · ${p.state}`),
+        el("span", "grow prerequisite-ref", node("span", p.title), node("small", `${p.id} · ${project} · ${p.milestone === "signoff" ? "Sign-off required" : "Review required"}`, "muted")),
+        pill(p.satisfied ? "done" : "open", p.satisfied ? (p.complete ? "Satisfied · complete" : "Satisfied · reviewed") : `Blocking · ${p.state}`),
         icon("link", 14),
       );
       list.append(b);
@@ -799,7 +799,7 @@ function body(t) {
   if (t.gate_proposals.length) {
     const list = el("div", "proposals");
     t.gate_proposals.forEach((p) =>
-      list.append(el("div", "proposal", pill("open", p.state || p.status || "proposed"), markdown(p.text || p.kind || "Gate proposal"))),
+      list.append(el("div", "proposal", pill("open", p.state || p.status || "proposed"), markdown(p.gate_type === "prerequisite" ? `${p.detail} · ${p.milestone === "signoff" ? "Sign-off required" : "Review required"} (nonblocking proposal)` : (p.text || p.kind || "Gate proposal")))),
     );
     out.push(el("details", "fold", node("summary", `Gate proposals (${t.gate_proposals.length})`), list));
   }
