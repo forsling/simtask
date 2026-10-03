@@ -7,14 +7,16 @@ const vm = require("node:vm");
 const all = [];
 const roots = new Map();
 function element(tag = "div") {
-  const node = {tag, children: [], textContent: "", disabled: false, hidden: false,
+  const node = {tag, children: [], textContent: "", disabled: false, hidden: false, open: false,
     value: "", checked: false, required: false, dataset: {},
     classList: {add() {}, remove() {}, toggle() {}},
     append(...children) { for (const child of children) {
       this.children.push(child); if (child && typeof child === "object") child.parentElement = this;
     } },
     replaceChildren(...children) { this.children = []; this.append(...children); },
-    setAttribute() {}, querySelector() { return null; }, showModal() {}, close() {}, remove() {},
+    setAttribute() {}, querySelector() { return null; },
+    showModal() { this.open = true; },
+    close() { this.open = false; this.onclose?.(); }, remove() {},
   };
   all.push(node);
   return node;
@@ -87,5 +89,48 @@ async function test() {
   await run("submitAction(values)");
   assert.equal(context.captured.payload.expected_revision, 9);
   assert.equal(context.captured.payload.workstream_id, "feature");
+
+  // An empty queue picker must not disable the next use of the shared dialog.
+  run("pages = async () => []; state.stream = null;");
+  for (const [open, title] of [
+    [() => run("createTask()"), "New task"],
+    [() => run("editTask(task)"), "Edit task"],
+    [() => run("askQuestion(task)"), "Ask a question"],
+    [() => get("stop").onclick(), "Stop the viewer?"],
+  ]) {
+    await run("queueTask(task)");
+    assert.equal(get("submit").disabled, true, "Empty picker cannot queue a task");
+    assert.match(descendants(get("fields")).map(node => node.textContent).join(" "), /Initialize a branch/);
+    get("cancel").onclick();
+    assert.equal(get("dialog").open, false);
+    open();
+    assert.equal(get("dialog-title").textContent, title);
+    assert.equal(get("submit").disabled, false, `${title} must be saveable after canceling the picker`);
+    assert.equal(get("cancel").disabled, false);
+    assert.equal(get("close").disabled, false);
+    get("close").onclick();
+  }
+
+  // Fetch failures leave subsequent dialogs usable; save failures preserve the
+  // new draft and release the controls so the real submit handler can retry.
+  run('pages = async () => { throw new Error("Synthetic picker failure"); };');
+  await assert.rejects(run("queueTask(task)"), /Synthetic picker failure/);
+  run("createTask(); api = async () => { throw new Error('Synthetic save failure'); };");
+  context.values = new Map([["title", "Retryable task"], ["body", "Scope"], ["acceptance_criteria", "Proof"]]);
+  get("field-title").value = "Retryable task";
+  run("FormData = class extends Map { constructor() { super(values); } };");
+  assert.equal(get("submit").disabled, false);
+  await get("form").onsubmit({preventDefault() {}});
+  assert.equal(get("dialog").open, true, "Failed save keeps the new-task draft open");
+  assert.equal(get("field-title").value, "Retryable task");
+  assert.match(get("form-error").textContent, /Synthetic save failure/);
+  assert.equal(get("submit").disabled, false);
+  assert.equal(get("cancel").disabled, false);
+  assert.equal(get("close").disabled, false);
+  run("api = async (action, payload) => {captured = {action, payload}; return {id: 'recovered', revision: 1, stopped: true};};");
+  await get("form").onsubmit({preventDefault() {}});
+  assert.equal(context.captured.action, "create");
+  assert.equal(context.captured.payload.title, "Retryable task");
+  assert.equal(get("dialog").open, false, "Retry can save and close the dialog");
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});

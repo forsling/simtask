@@ -1034,6 +1034,7 @@ function field(name, label, value = "", kind = "textarea", required = true, hint
 function openDialog(title, description, saveLabel, danger = false) {
   if (submissionPending) return;
   closeMenu();
+  $("submit").disabled = $("cancel").disabled = $("close").disabled = false;
   $("dialog-title").textContent = title;
   $("dialog-description").textContent = description;
   $("dialog-description").hidden = !description;

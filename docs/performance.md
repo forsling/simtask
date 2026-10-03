@@ -7,11 +7,13 @@ approval stage before Task MCP executes the mutation. It is not the measured
 SQLite/stdio execution cost. Two legitimate calls on 2026-09-26 were timed in
 the actual client and correlated with the live task audit and host approval
 logs; no synthetic tasks were added to the live database.
+The second call used the retired specification-acceptance mutation. These
+historical timings do not measure the current `queue_task` operation.
 
 | Call | Client start (UTC) | Approval starts (UTC) | Task audit (UTC) | Client end (UTC) | Elapsed |
 | --- | --- | --- | --- | --- | --- |
 | `update_task` | 11:02:16.723 | 11:02:16.727603 | 11:02:24.912778 | 11:02:24.924 | 8,201 ms |
-| `queue_task` | 11:02:46.158 | 11:02:46.164589 | 11:02:52.227132 | 11:02:52.250 | 6,092 ms |
+| Retired specification-acceptance mutation | 11:02:46.158 | 11:02:46.164589 | 11:02:52.227132 | 11:02:52.250 | 6,092 ms |
 
 Host policy-review logs show execution resuming at 11:02:24.904 and
 11:02:52.218 respectively, immediately before the task audit writes. Only
@@ -99,13 +101,15 @@ operation using `examples/benchmark.py --samples 20 --source ... --project ...
 --workstream ... --work-dir ...`. No live task or approval setting was changed
 by the benchmark. This verifies the earlier Sol investigation with the bundled
 reproducer below.
+The acceptance row records the same retired mutation; these historical baseline
+measurements also predate `queue_task`.
 
 | Operation | Direct Store median | Local stdio MCP median |
 | --- | ---: | ---: |
 | List tasks | 3.01 ms | 7.30 ms |
 | Create proposed task | 2.72 ms | 7.02 ms |
 | Edit specification | 2.59 ms | 6.35 ms |
-| Accept specification | 2.54 ms | 5.66 ms |
+| Retired specification-acceptance mutation | 2.54 ms | 5.66 ms |
 | Record result | 3.00 ms | 7.24 ms |
 
 All 80 stdio mutation samples were below 14.6 ms. Process initialization was
