@@ -7,7 +7,8 @@ the existing workstream and use the revision-checked, confirmed
 history; it does not move files or prove that a recorded result exists in the
 new checkout.
 
-Before relying on an attempt, read the current full task with `get_tasks(specification=true)` and
+Before relying on an attempt, read the current specification and chosen proof in
+one `get_tasks(ids=[...], specification=true, workstream_id=..., attempt_ids=[...])` call and
 inspect the actual checkout, working diff and relevant commits. For Git work,
 `git status --short`, `git rev-parse HEAD`, `git show <recorded-commit>` and
 inspection of the affected files are ordinary verification aids. Commit
@@ -18,10 +19,14 @@ is required at every step.
 
 Selection and execution gates use only the target workstream's current-spec
 attempts. A pending or passed attempt on another workstream does not prevent
-a competing implementation locally. Explicit full task reads expose attempt
-history with `workstream_id` and `spec_revision`; treat other-workstream and
-older-spec proof as attributed history. Shared project order and human-signed-off
-prerequisites do not prove that code was integrated into a branch.
+a competing implementation locally. Specification reads include bounded current-spec
+attempt summaries and exactly requested proof, retaining `workstream_id` and
+`spec_revision` provenance. Use `get_attempt` for a known proof, paged
+`list_task_attempts(current_spec_only=false)` for deliberate older-spec history,
+and `list_events(task_id=..., include_details=true)` for historical decisions.
+Treat other-workstream and older-spec proof as attributed history. Shared project
+order and human-signed-off prerequisites do not prove that code was integrated
+into a branch.
 
 For an **open task** whose implementation is deliberately merged or
 cherry-picked into another workstream:
@@ -64,7 +69,8 @@ inheritance is involved.
 A **completed task** keeps its selected human-approved attempt and immutable
 proof. A later integration requirement is a new task with its own specification,
 authorization, result and review. Historical example reports do not authorize
-repairing another project's ledger. Compact default task reads remain deferred.
+repairing another project's ledger. Ordinary task reads return compact cards;
+full specifications and chosen proof are explicit.
 
 When an interrupted session left durable implementation unrecorded, inspect the
 current full spec and actual checkout/commits before one factual `record_result`.

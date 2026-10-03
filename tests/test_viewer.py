@@ -224,6 +224,24 @@ def test_scope_and_global_group_progress_remain_distinct(viewer, tmp_path):
     assert next(g for g in project_groups if g["id"] == group["id"])["project_count"] == 2
 
 
+def test_group_inclusion_scope_can_be_paged_beyond_workstream_preview(viewer):
+    server, store, context = viewer
+    ws = context["workstream"]["id"]
+    included = {store.create_group(ws, f"Group {i}")["id"] for i in range(4)}
+    ordinary = request(server, "/api/workstreams")[1]["items"][0]
+    assert len(ordinary["groups"]) == 3 and ordinary["groups_has_more"]
+    omitted = included - set(ordinary["groups"])
+    assert len(omitted) == 1
+    args = {"workstream_id": ws, "include_scope": True, "limit": 2}
+    status, first = request(server, "/api/workstream-status", args)
+    assert status == 200
+    groups = first["scope"]["groups"]
+    assert groups["total"] == 4 and groups["next_offset"] == 2
+    status, rest = request(server, "/api/workstream-status", {**args, "offset": 2})
+    assert status == 200 and rest["scope"]["groups"]["next_offset"] is None
+    assert set(groups["ids"] + rest["scope"]["groups"]["ids"]) == included
+
+
 def test_remote_prerequisites_transport_is_compact_and_completion_is_signed_off(viewer, tmp_path):
     server, store, context = viewer
     other = store.init_project(str(tmp_path / "remote"), branch="main", confirmed=True)

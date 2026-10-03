@@ -36,7 +36,9 @@ const group = (id, projects) => ({id, title: id, object_type: "group", body: "",
 const groups = [group("local", ["p1"]), group("remote", ["p2"]),
   group("shared", ["p1", "p2"]), group("empty-local", []), group("empty-remote", [])];
 const streams = [
-  {id: "w1", project_id: "p1", project_name: "First", branch: "main", name: "main", checkout_path: "/first", groups: ["shared", "local"]},
+  {id: "w1", project_id: "p1", project_name: "First", branch: "main", name: "main", checkout_path: "/first",
+    groups: ["local", "empty-local", "unrelated"], groups_has_more: true,
+    full_groups: ["local", "empty-local", "unrelated", "shared"]},
   {id: "w2", project_id: "p2", project_name: "Second", branch: null, name: "Release", checkout_path: "/second", groups: ["shared", "empty-remote"]},
   {id: "member-only", project_id: "p1", project_name: "First", branch: "member-only", groups: [], scope: ["shared-member"]},
 ];
@@ -52,6 +54,12 @@ context.apiMock = async (action, data) => {
   if (action === "workstreams") {
     const items = streams.filter(w => !data.project || w.project_id === data.project);
     return {items: items.slice(data.offset, data.offset + 1), next_offset: data.offset + 1 < items.length ? data.offset + 1 : null};
+  }
+  if (action === "workstream-status") {
+    assert.equal(data.include_scope, true);
+    const ids = streams.find(w => w.id === data.workstream_id).full_groups;
+    return {scope: {groups: {ids: ids.slice(data.offset, data.offset + 2),
+      next_offset: data.offset + 2 < ids.length ? data.offset + 2 : null}}};
   }
   if (action === "tasks") return {items: [], next_offset: null};
   if (action === "details") return {items: [groups.find(g => g.id === data.ids[0])]};
@@ -87,6 +95,10 @@ async function main() {
   assert.match(text(get("detail")), /First.*main/);
   assert.match(text(get("detail")), /Second.*Release/);
   assert.doesNotMatch(text(get("detail")), /member-only/);
+  assert.ok(requests.some(r => r.action === "workstream-status" && r.workstream_id === "w1" && r.offset === 2),
+    "A group omitted from the preview is found through deliberate scope paging");
+  assert.ok(requests.filter(r => r.action === "workstream-status").every(r => r.workstream_id === "w1"),
+    "Complete previews need no scope expansion");
   const streamLink = descendants(get("detail")).find(n => n.onclick && /Second.*Release/.test(text(n)));
   await streamLink.onclick();
   assert.equal(run('state.project'), "p2");

@@ -342,6 +342,7 @@ class Store:
                 "task": self._task_ack(db, result["task"]),
                 "proposal": self._task_ack(db, result["proposal"]),
                 "changed": True,
+                "project_order_revision": self._order_revision(db, scope["project_id"]),
             }
             if request["workstream_id"]:
                 ack.update(
@@ -3262,9 +3263,21 @@ class Store:
             return self._task_ack(db, after) | {
                 "attempt_id": attempt_id,
                 "attempt_revision": judged["resulting_attempt_revision"],
+                "attempt_state": "rework" if quality == "rework" else attempt["state"],
                 "selected_attempt_id": after["selected_attempt_id"],
                 "decision": decision,
                 "unresolved_id": unresolved_id,
+                **{
+                    key: judged[key]
+                    for key in (
+                        "purpose_judgment",
+                        "purpose_source",
+                        "approval_basis",
+                        "approval_decision_ref",
+                        "reused_approval_decision_ref",
+                        "result_judgment",
+                    )
+                },
             }
 
         return self._run("task.signoff", request, operation)

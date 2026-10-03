@@ -62,9 +62,10 @@ independence. Do not sign off on behalf of the user.
 
 Signoff and ordinary `set_disposition` return compact IDs, revisions, disposition
 and any new `unresolved_id`; signoff also returns `decision_ref` and selected
-attempt continuation state. Use deliberate `get_tasks` reads for proof,
-`approval_decision` and structured `signoff_decisions`, or detailed `list_events`
-for original audit snapshots. Ordinary drop/defer needs no reviewed attempt;
+attempt continuation state and the recorded purpose/result judgments. The full
+specification request above includes `approval_decision`; `get_attempt` retrieves
+one known proof. Use paged `list_events(task_id=..., include_details=true)` for
+historical signoff audit snapshots. Ordinary drop/defer needs no reviewed attempt;
 drop deactivates approval, defer retains it, and leaving dropped status requires
 `authorization` with the actual revival instruction. Neither dropped nor
 deferred work satisfies a prerequisite. Shared-group completion still needs all
@@ -78,6 +79,5 @@ For whole-field body/criteria replacements use the full-specification etag from
 your complete read or create/update acknowledgement. Valid token-bearing updates
 return a refreshed token; unchanged specifications retain it. Title/summary-only
 edits need no full read. Summary edits preserve spec acceptance and proof.
-Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
-or `get_attempt`; page deliberate history/membership with `list_task_attempts`
+Page deliberate attempt history/membership with `list_task_attempts`
 and `list_group_members`. Never write a card or summary back as a specification.

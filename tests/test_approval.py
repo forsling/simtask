@@ -270,7 +270,8 @@ def test_acceptance_and_withdrawal_race_has_one_revision_winner(context):
         try:
             if withdraw:
                 return store.withdraw_acceptance(created["id"], 1, "Withdraw")
-            return store.accept_task(created["id"], 1, approve())
+            # Both contenders must change state: identical acceptance is a no-op.
+            return store.accept_task(created["id"], 1, approve("Synthetic renewed approval"))
         except TaskError as exc:
             return str(exc)
 

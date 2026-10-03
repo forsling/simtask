@@ -366,6 +366,17 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             body=submitted,
             workstream_id=ws,
         )
+        reordered = await call(
+            "reorder_tasks",
+            project=project,
+            task_id=proposed["proposal"]["id"],
+            anchor_id=task["id"],
+            position="before",
+            expected_order_revision=proposed["project_order_revision"],
+            instruction="Synthetic request to schedule the prerequisite first",
+        )
+        assert reordered["changed"]
+        assert reordered["project_order_revision"] == proposed["project_order_revision"] + 1
         duplicate = await call(
             "add_prerequisite",
             task_id=task["id"],
@@ -474,7 +485,7 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             project=project,
             task_id=proposed["proposal"]["id"],
             anchor_id=task["id"],
-            position="before",
+            position="after",
             expected_order_revision=split["project_order_revision"],
             instruction="Synthetic requested order",
         )

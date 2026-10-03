@@ -25,6 +25,7 @@ def dispatch(store, action, data):
     operations = {
         "projects": store.list_projects,
         "workstreams": store.list_workstreams,
+        "workstream-status": store.workstream_status,
         "groups": store.list_groups,
         "tasks": store.list_tasks,
         "details": store.get_tasks,

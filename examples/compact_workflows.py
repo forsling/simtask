@@ -291,7 +291,10 @@ async def exercise(database):
             decision="approve",
             user_note="Synthetic informed verdict, never a real user decision",
         )
-        assert signed["status"] == "done"
+        assert signed["status"] == "done" and signed["attempt_state"] == "passed"
+        assert signed["purpose_judgment"] == "approved" and signed["result_judgment"] == "accepted"
+        assert signed["purpose_source"] == "reused_specific_approval"
+        report["signoff_acknowledgements"] = [signed]
         report["queue_informed_signoff_verdict"] = {
             "call_count": len(trace) - start,
             "calls": trace[start:],
@@ -345,6 +348,99 @@ async def exercise(database):
             "proof_characters_per_attempt": len(proof),
             "task_attempts": 16,
             "members": 24,
+        }
+        # Every verdict returns its actual state/judgments without repeating notes.
+        cases = [("rework", None)] + [
+            (decision, quality)
+            for decision in ("revise", "drop", "defer")
+            for quality in (None, "accepted", "rework")
+        ]
+        for decision, quality in cases:
+            purpose = {"basis": "delegated", "note": "Synthetic delegated goal"}
+            judged_task = await ok(
+                "create_task",
+                project=project,
+                title=f"Synthetic {decision}/{quality}",
+                body=body,
+                approval=purpose,
+                scope="workstream",
+                workstream_id=ws,
+            )
+            result = await ok(
+                "record_result",
+                task_id=judged_task["id"],
+                workstream_id=ws,
+                expected_revision=judged_task["revision"],
+                implementer="synthetic worker",
+                summary="Synthetic durable result",
+                evidence=proof,
+                artifacts=[{"kind": "artifact", "reference": "synthetic/signoff-proof"}],
+                verification="Synthetic actual checks",
+                specification_etag=judged_task["specification_etag"],
+            )
+            reviewed = await ok(
+                "record_review",
+                attempt_id=result["attempt_id"],
+                expected_revision=result["attempt_revision"],
+                reviewer="synthetic fresh reviewer",
+                verdict="pass",
+                note=proof,
+            )
+            extra = (
+                {"specification_question": "Which required behavior should change?"}
+                if decision == "revise"
+                else {}
+            )
+            if quality is not None:
+                extra.update(result_judgment=quality, result_note=proof)
+            ack = await ok(
+                "signoff_task",
+                task_id=judged_task["id"],
+                expected_revision=reviewed["task_revision"],
+                attempt_id=result["attempt_id"],
+                expected_attempt_revision=reviewed["attempt_revision"],
+                decision=decision,
+                user_note=proof,
+                **extra,
+            )
+            expected_quality = quality or ("rework" if decision == "rework" else "not_judged")
+            assert (
+                ack["result_judgment"] == expected_quality
+                and ack["purpose_source"] == "user_verdict"
+            )
+            assert ack["attempt_state"] == ("rework" if expected_quality == "rework" else "passed")
+            assert ack["attempt_revision"] == 2 + (expected_quality == "rework")
+            assert proof not in json.dumps(ack) and body not in json.dumps(ack)
+            report["signoff_acknowledgements"].append(ack)
+        # A prerequisite insertion returns order continuation for a direct move.
+        start = len(trace)
+        proposed = await ok(
+            "propose_prerequisite",
+            task_id=member["id"],
+            expected_revision=member["revision"],
+            title="Synthetic prerequisite",
+            body=body,
+            workstream_id=ws,
+        )
+        moved = await ok(
+            "reorder_tasks",
+            project=project,
+            task_id=proposed["proposal"]["id"],
+            anchor_id=member["id"],
+            position="before",
+            expected_order_revision=proposed["project_order_revision"],
+            instruction="Synthetic request to put this prerequisite immediately first",
+        )
+        assert (
+            moved["changed"]
+            and moved["project_order_revision"] == proposed["project_order_revision"] + 1
+        )
+        report["prerequisite_order_continuation"] = {
+            "call_count": len(trace) - start,
+            "calls": trace[start:],
+            "confirmation_reads": 0,
+            "proposal": proposed,
+            "move": moved,
         }
         report["proof_write_sizes"] = [
             row

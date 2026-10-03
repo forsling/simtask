@@ -582,6 +582,25 @@ function emptyState(title, text, action) {
 
 /* ---------- detail ---------- */
 
+async function includedWorkstreams(groupId) {
+  const included = [];
+  for (const w of await pages("workstreams")) {
+    let found = w.groups.includes(groupId);
+    if (!found && w.groups_has_more) {
+      let offset = 0;
+      do {
+        const p = await api("workstream-status", {
+          workstream_id: w.id, include_scope: true, limit: 100, offset,
+        });
+        found = p.scope.groups.ids.includes(groupId);
+        offset = p.scope.groups.next_offset;
+      } while (!found && offset !== null);
+    }
+    if (found) included.push(w);
+  }
+  return included;
+}
+
 async function selectTask(id, { open = false, quiet = false } = {}) {
   const generation = ++state.generation;
   state.selected = id;
@@ -597,7 +616,7 @@ async function selectTask(id, { open = false, quiet = false } = {}) {
     const t = (await api("details", { ids: [id] })).items[0];
     if (state.selected !== id || generation !== state.generation) return;
     if (t.object_type === "group") {
-      t.included_workstreams = (await pages("workstreams")).filter((w) => w.groups.includes(t.id));
+      t.included_workstreams = await includedWorkstreams(t.id);
       if (state.selected !== id || generation !== state.generation) return;
     }
     state.task = t;

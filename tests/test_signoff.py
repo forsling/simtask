@@ -69,6 +69,55 @@ def decide(store, task, attempt, decision, **extra):
     )
 
 
+@pytest.mark.parametrize(
+    ("decision", "judgment"),
+    [("approve", None), ("rework", None)]
+    + [
+        (decision, quality)
+        for decision in ("revise", "drop", "defer")
+        for quality in (None, "accepted", "rework")
+    ],
+)
+@pytest.mark.parametrize("human", [False, True])
+def test_compact_signoff_ack_returns_recorded_facts_without_notes(
+    context, decision, judgment, human
+):
+    store, _, _ = context
+    task, attempt = delivered(context, basis="delegated", human=human)
+    secret = "Actual synthetic user note and separate judgment. " * 1000
+    extra = (
+        {"specification_question": "Which required behavior should change?"}
+        if decision == "revise"
+        else {}
+    )
+    if judgment is not None:
+        extra.update(result_judgment=judgment, result_note=secret)
+    ack = store.compact_call(
+        "signoff_task", task["id"], task["revision"], decision, secret, attempt["id"], 2, **extra
+    )
+    saved = full(store, task)
+    recorded = saved["signoff_decisions"][-1]
+    resulting_attempt = store.get_attempt(attempt["id"])
+    assert ack["attempt_state"] == resulting_attempt["state"]
+    assert ack["attempt_revision"] == resulting_attempt["revision"]
+    assert ack["attempt_revision"] == 2 + (recorded["result_judgment"] == "rework")
+    for key in (
+        "purpose_judgment",
+        "purpose_source",
+        "approval_basis",
+        "approval_decision_ref",
+        "reused_approval_decision_ref",
+        "result_judgment",
+    ):
+        assert ack[key] == recorded[key]
+    assert ack["result_judgment"] == (
+        judgment or {"approve": "accepted", "rework": "rework"}.get(decision, "not_judged")
+    )
+    assert ack["spec_revision"] == task["spec_revision"]
+    assert not {"user_note", "result_note", "signoff_decisions", "attempts", "body"} & ack.keys()
+    assert secret not in json.dumps(ack) and len(json.dumps(ack)) < 1600
+
+
 @pytest.mark.parametrize("basis", ["specific", "delegated", "unknown"])
 @pytest.mark.parametrize("human", [False, True])
 def test_one_approve_covers_purpose_and_result_with_truthful_approval_reference(
@@ -93,6 +142,10 @@ def test_one_approve_covers_purpose_and_result_with_truthful_approval_reference(
     ack = decide(store, task, attempt, "approve")
     assert ack["status"] == "done" and ack["selected_attempt_id"] == attempt["id"]
     assert ack["attempt_revision"] == 2 and ack["spec_revision"] == 1
+    assert ack["attempt_state"] == ("human_review" if human else "passed")
+    assert ack["purpose_source"] == (
+        "reused_specific_approval" if basis == "specific" else "user_verdict"
+    )
     assert not {"body", "attempts", "signoff_decisions", "user_note"} & ack.keys()
     saved = full(Store(store.path), task)
     judgment = saved["signoff_decisions"][-1]
