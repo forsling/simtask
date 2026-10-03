@@ -18,11 +18,11 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`10` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Candidate 10/schema 6 add single-owner queues, queue/unqueue and removal of the separate purpose-decision surface; its catalog has 42 tools. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`11` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Candidate 10/schema 6 add single-owner queues. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`5` after candidate startup). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`7` after candidate startup). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is

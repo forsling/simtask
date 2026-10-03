@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from task_mcp.store import Store, TaskError
+from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
 
 
 @pytest.fixture
@@ -287,7 +287,7 @@ def test_global_edges_and_audit_survive_reopen_without_schema_change(context):
             table: db.execute(f"SELECT * FROM {table}").fetchall()
             for table in ("tasks", "prerequisites", "events")
         }
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_REVISION
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     restored = Store(store.path, actor="resumed coordinator")
     with sqlite3.connect(store.path) as db:

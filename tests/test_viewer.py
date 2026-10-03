@@ -151,7 +151,7 @@ def test_review_and_signoff_use_separate_revisions_and_store_gates(viewer):
         "attempt_id": attempt["id"],
         "decision": "approve",
         "expected_attempt_revision": 2,
-        "user_note": "I approve",
+        "reasons": "I approve",
     }
     assert request(server, "/api/signoff", signoff)[0] == 400
     assert (
@@ -272,7 +272,7 @@ def test_remote_prerequisites_transport_is_compact_and_review_clears_default_lin
             "expected_attempt_revision": 2,
             "attempt_id": attempt["id"],
             "decision": "approve",
-            "user_note": "Synthetic informed approval",
+            "reasons": "Synthetic informed approval",
         },
     )
     assert status == 200 and signed_off["status"] == "done"
@@ -549,7 +549,6 @@ def test_creation_edits_queue_and_inbox_form_handlers():
         ("rework", "rework"),
         ("revise", "open"),
         ("drop", "dropped"),
-        ("defer", "deferred"),
     ],
 )
 def test_purpose_result_decisions_over_real_viewer_transport(viewer, decision, disposition):
@@ -573,22 +572,20 @@ def test_purpose_result_decisions_over_real_viewer_transport(viewer, decision, d
         "attempt_id": attempt["id"],
         "expected_attempt_revision": 1,
         "decision": decision,
-        "user_note": "Actual synthetic verdict",
+        "reasons": "Actual synthetic verdict",
     }
     assert request(server, "/api/signoff", data)[0] == 409
     data["expected_attempt_revision"] = 2
-    if decision == "revise":
-        data["specification_question"] = "Which behavior should replace this?"
     status, ack = request(server, "/api/signoff", data)
     assert status == 200 and ack["status"] == disposition
     assert not {"attempts", "body", "signoff_decisions"} & ack.keys()
     saved = request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
     judgment = saved["signoff_decisions"][0]
     assert judgment["decision_ref"] == ack["decision_ref"]
-    assert judgment["purpose_source"] == "user_verdict"
-    assert judgment["result_judgment"] == {"approve": "accepted", "rework": "rework"}.get(
-        decision, "not_judged"
-    )
+    assert judgment["reasons"] == "Actual synthetic verdict"
+    assert not {"purpose_source", "result_judgment"} & judgment.keys()
+    if decision in {"rework", "revise"}:
+        assert saved["latest_rejection"]["reasons"] == judgment["reasons"]
     assert saved["attempts"][0]["review_note"] == "Independent review"
 
 

@@ -364,12 +364,13 @@ on the same task. An independent reviewer named differently from the implementer
 returns a verdict; the coordinator records it with `record_review`. A recorded
 `human_review` can satisfy the review gate when the user actually reviews the
 result or explicitly directs that further review is unnecessary. Agents must
-not self-issue it. One informed `signoff_task` decision judges task purpose and
-result and selects the exact reviewed attempt. `approve` completes it; `rework`
-requests repair and fresh review; `revise` opens a concrete specification question;
-`drop`/`defer` preserve context and proof. Queue placement survives all these
-verdicts. Direction-only decisions leave human technical quality unjudged unless
-separately supplied. New purpose judgments record the actual human verdict.
+not self-issue it. One informed `signoff_task` decision selects the exact reviewed attempt.
+`approve` completes it; `rework` requests repair and fresh review; `revise` returns
+to design with the reasons as an open question; `drop` closes without approval.
+The single `reasons` field is required for rework/revise and optional for
+approve/drop. Queue placement and factual history survive every verdict.
+Deferral is an ordinary status change. The service stores the actual verdict and
+reasons, without separate agent or quality judgments.
 Completed tasks are immutable; changed requirements
 become new tasks. The service records assertions and cannot authenticate
 reviewer independence or the actual human verdict. Workflows must obtain and
@@ -477,7 +478,7 @@ is not authenticated. `list_events` supports a stable pagination ceiling.
 ## Text exports
 
 `export_workstream(workstream_id, include_closed=true, format="markdown")`
-returns a human-readable Markdown snapshot (`task-mcp/v4`) and its SHA-256 hash.
+returns a human-readable Markdown snapshot (`task-mcp/v5`) and its SHA-256 hash.
 It starts with project/checkout identity and an ordered workflow overview, then
 shows specifications, acceptance criteria, questions, prerequisites, evidence
 and review history in text. Workflow labels match `list_tasks` for that
@@ -522,7 +523,7 @@ advance every changed task and affected workstream revision once.
 
 Protocol 10/schema 6 replace the separate purpose-decision tools and payloads
 with `queue_task`/`unqueue_task`; the catalog advertises 42 tools. The reference
-catalog is 1.14.0, and Markdown export is `task-mcp/v4`. Schema 6 uses
+catalog is 1.14.0, and Markdown export is `task-mcp/v5`. Schema 6 uses
 `queue_members` with unique task ownership. Migration moves scoped mutable work
 without a current-spec legacy decision into the inbox. Multiple eligible scopes
 choose the most recent attempt's workstream, then oldest workstream creation time
@@ -541,17 +542,30 @@ backup with SQLite's backup API; reconnect only matching protocol/schema clients
 Never run an older server against schema 6 or overwrite active writers. Test on
 copied/disposable databases and coordinate code/client/schema rollout together.
 
-Signoff keeps the current `decision` values (`approve`, `rework`, `revise`, `drop`,
-`defer`). Send the actual user's `user_note`, exact reviewed `attempt_id`, and last
-returned task/attempt revisions. It requires current-spec passed/human-reviewed
-proof, without a separate purpose-decision gate. Approve needs clear unresolved
-and prerequisite gates. Every new purpose judgment records the human verdict;
-older audit judgments remain historical. Direction changes leave human technical
-quality `not_judged` unless the user supplies `result_judgment` and `result_note`.
-`revise` requires a concrete `specification_question`, without inventing a spec
-revision. Queue placement and proof survive rework/revise/drop/defer. Leaving
-`dropped` needs actual revival `authorization`. Dropped/deferred work remains
-unsatisfied for either prerequisite milestone. Completed work stays immutable.
+`signoff_task` accepts exactly `approve`, `rework`, `revise` and `drop`. Send the
+actual user's `reasons`, exact reviewed `attempt_id`, and last returned task and
+attempt revisions. Reasons are required for rework/revise, optional for
+approve/drop. Current-spec passed/human-reviewed proof is required; approve also
+needs clear unresolved and prerequisite gates. Rework returns the attempt to
+implementation and requires fresh review. Revise copies the reasons into an open
+question without inventing a specification revision. Drop closes without approval;
+creating a removal task when delivered code must go is a workflow decision.
+Deferring uses `set_disposition`, rather than a signoff verdict. Leaving `dropped`
+needs actual revival `authorization`. Completed work stays immutable.
+
+Protocol 11/schema 7 simplify that contract and expose `latest_rejection` on full
+task reads and `get_next_action`: source (`review`/`signoff`), verdict, reasons,
+originating attempt/workstream/specification, timestamp and decision reference.
+Each actual reviewer rework or signoff rework/revise replaces that context; later
+passes and approvals do not fabricate a new rejection. Compact cards omit the
+reasons and retain the provenance flag. Current execution/proof remains local to
+its branch. Earlier rejection rounds remain in audit/signoff history, including
+old defer decisions and judgment fields unchanged. Schema 7 adds only an indexed
+projection over factual audit records, with no business-row rewrite. Existing
+databases use the same verified online backup/transactional migration mechanism,
+now with a `*.pre-schema-7.*.sqlite3` backup. Markdown export v5 includes latest
+rejection context and signoff history. The reference workflow skill update is a
+separate change.
 
 ## Deferred work
 

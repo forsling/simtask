@@ -612,28 +612,22 @@ def create_server(
         expected_revision: int,
         attempt_id: str,
         expected_attempt_revision: int,
-        decision: Literal["approve", "rework", "revise", "drop", "defer"],
-        user_note: str,
-        result_judgment: Literal["accepted", "rework", "not_judged"] | None = None,
-        result_note: str | None = None,
-        specification_question: str | None = None,
+        decision: Literal["approve", "rework", "revise", "drop"],
+        reasons: str | None = None,
     ) -> dict[str, Any]:
-        """Record one actual human decision on purpose and result. Approve covers both.
-        Direction-only decisions leave human
-        technical quality unjudged unless separately supplied with its actual note.
-        Revise needs a concrete specification question. Read full proof with get_tasks.
+        """Record the actual user's verdict and reasons on an exact reviewed result.
+        Approve completes; rework returns to implementation; revise opens a design
+        question with the reasons; drop closes without approval. Reasons are required
+        for rework/revise and optional for approve/drop. Read full proof with get_tasks.
         """
         return store.compact_call(
             "signoff_task",
             task_id,
             expected_revision,
             decision,
-            user_note,
+            reasons,
             attempt_id,
             expected_attempt_revision,
-            result_judgment,
-            result_note,
-            specification_question,
         )
 
     @server.tool(annotations=additive, structured_output=True)

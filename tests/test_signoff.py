@@ -1,4 +1,4 @@
-"""An actual user decision judges purpose separately from delivered technical quality."""
+"""Actual verdicts hand factual rejection reasons to the next scoped agent."""
 
 import json
 import sqlite3
@@ -23,316 +23,306 @@ def full(store, task):
     return store.get_tasks([task["id"]])["items"][0]
 
 
-def delivered(context, basis="specific", human=False, grouped=False):
-    store, project, ws = context
-    group = store.create_group(ws, "Delivery group") if grouped else None
-    task = store.create_task(
-        project,
-        "Scope",
-        body="Exact accepted requirements",
-        acceptance_criteria="Actual proof",
-        workstream_id=ws,
-        group_id=group["id"] if group else None,
-        group_expected_revision=group["revision"] if group else None,
-    )
-    attempt = store.record_result(
+def result(store, task, ws):
+    current = full(store, task)
+    return store.record_result(
         task["id"],
         ws,
-        1,
+        current["revision"],
         "worker",
         "Delivered",
         "Actual proof",
         artifacts=[{"kind": "artifact", "reference": "tests/test_signoff.py"}],
         verification="Actual proof",
-        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
+        specification_etag=current["specification_etag"],
     )
+
+
+def delivered(context, human=False, grouped=False):
+    store, project, ws = context
+    group = store.create_group(ws, "Delivery group") if grouped else None
+    task = store.create_task(
+        project,
+        "Scope",
+        body="Exact requirements",
+        acceptance_criteria="Actual proof",
+        workstream_id=ws,
+        group_id=group["id"] if group else None,
+        group_expected_revision=group["revision"] if group else None,
+    )
+    attempt = result(store, task, ws)
     if human:
         store.human_review(attempt["id"], 1, "Synthetic actual human review")
     else:
-        store.record_review(
-            attempt["id"], 1, "independent reviewer", "pass", "Actual independent proof"
-        )
-    return full(store, task), attempt
+        store.record_review(attempt["id"], 1, "reviewer", "pass", "Independent proof")
+    return full(store, task), store.get_attempt(attempt["id"])
 
 
-def decide(store, task, attempt, decision, **extra):
+def decide(store, task, attempt, decision, reasons="Synthetic actual user reasons"):
     return store.signoff_task(
         task["id"],
         task["revision"],
         decision,
-        "Synthetic actual user's verdict",
+        reasons,
         attempt["id"],
-        task["attempts"][0]["revision"],
-        **extra,
+        attempt["revision"],
     )
 
 
 @pytest.mark.parametrize(
-    ("decision", "judgment"),
-    [("approve", None), ("rework", None)]
-    + [
-        (decision, quality)
-        for decision in ("revise", "drop", "defer")
-        for quality in (None, "accepted", "rework")
+    "decision,status",
+    [
+        ("approve", "done"),
+        ("rework", "rework"),
+        ("revise", "open"),
+        ("drop", "dropped"),
     ],
 )
 @pytest.mark.parametrize("human", [False, True])
-def test_compact_signoff_ack_returns_recorded_facts_without_notes(
-    context, decision, judgment, human
+def test_verdict_records_only_actual_decision_and_reasons_with_compact_ack(
+    context, decision, status, human
 ):
-    store, _, _ = context
-    task, attempt = delivered(context, basis="delegated", human=human)
-    secret = "Actual synthetic user note and separate judgment. " * 1000
-    extra = (
-        {"specification_question": "Which required behavior should change?"}
-        if decision == "revise"
-        else {}
-    )
-    if judgment is not None:
-        extra.update(result_judgment=judgment, result_note=secret)
+    store, _, ws = context
+    task, attempt = delivered(context, human=human, grouped=True)
+    reasons = "Synthetic user reasons. " * 1000
     ack = store.compact_call(
-        "signoff_task", task["id"], task["revision"], decision, secret, attempt["id"], 2, **extra
+        "signoff_task", task["id"], task["revision"], decision, reasons, attempt["id"], 2
     )
     saved = full(store, task)
     recorded = saved["signoff_decisions"][-1]
-    resulting_attempt = store.get_attempt(attempt["id"])
-    assert ack["attempt_state"] == resulting_attempt["state"]
-    assert ack["attempt_revision"] == resulting_attempt["revision"]
-    assert ack["attempt_revision"] == 2 + (recorded["result_judgment"] == "rework")
-    for key in (
-        "purpose_judgment",
-        "purpose_source",
-        "result_judgment",
-    ):
-        assert ack[key] == recorded[key]
-    assert ack["result_judgment"] == (
-        judgment or {"approve": "accepted", "rework": "rework"}.get(decision, "not_judged")
-    )
-    assert ack["spec_revision"] == task["spec_revision"]
-    assert not {"user_note", "result_note", "signoff_decisions", "attempts", "body"} & ack.keys()
-    assert secret not in json.dumps(ack) and len(json.dumps(ack)) < 1600
-
-
-@pytest.mark.parametrize("human", [False, True])
-def test_one_approve_records_actual_verdict_and_reviewed_result(context, human):
-    store, _, _ = context
-    task, attempt = delivered(context, human=human, grouped=True)
-    ack = decide(store, task, attempt, "approve")
-    assert ack["status"] == "done" and ack["selected_attempt_id"] == attempt["id"]
-    assert ack["purpose_source"] == "user_verdict"
-    assert ack["attempt_state"] == ("human_review" if human else "passed")
-    saved = full(Store(store.path), task)
-    judgment = saved["signoff_decisions"][-1]
-    assert judgment["decision_ref"] == ack["decision_ref"]
-    assert judgment["task_revision"] == task["revision"]
-    assert judgment["spec_revision"] == attempt["spec_revision"] == 1
-    assert judgment["purpose_judgment"] == "approved" and judgment["result_judgment"] == "accepted"
+    assert saved["status"] == ack["status"] == status
+    assert saved["queue_workstream_id"] == ws and saved["spec_revision"] == 1
+    assert recorded["decision"] == decision and recorded["reasons"] == reasons
+    assert recorded["decision_ref"] == ack["decision_ref"]
     assert (
-        not {"approval_basis", "approval_decision_ref", "reused_approval_decision_ref"}
-        & judgment.keys()
+        not {"purpose_judgment", "purpose_source", "result_judgment", "result_note", "user_note"}
+        & recorded.keys()
     )
-    assert saved["attempts"] == task["attempts"]
-    with pytest.raises(TaskError, match="completed_task_immutable"):
-        decide(store, saved, attempt, "defer")
-
-
-@pytest.mark.parametrize(
-    "decision,status,accepted,purpose",
-    [
-        ("revise", "open", False, "revise"),
-        ("drop", "dropped", False, "dropped"),
-        ("defer", "deferred", True, "deferred"),
-    ],
-)
-def test_direction_decision_preserves_sound_result_without_inventing_quality(
-    context, decision, status, accepted, purpose
-):
-    store, project, ws = context
-    task, attempt = delivered(context)
-    extra = (
-        {"specification_question": "Should this accept both input formats?"}
-        if decision == "revise"
-        else {}
-    )
-    dependent = store.create_task(
-        project,
-        "Dependent",
-        workstream_id=ws,
-    )
-    dependent = store.add_prerequisite(dependent["id"], 1, task["id"])
-    ack = decide(store, task, attempt, decision, **extra)
-    saved = full(Store(store.path), task)
-    assert ack["status"] == status and ack["queue_workstream_id"] == ws
-    assert saved["body"] == task["body"] and saved["spec_revision"] == task["spec_revision"]
-    assert saved["attempts"] == task["attempts"]
-    judgment = saved["signoff_decisions"][-1]
-    assert judgment["purpose_judgment"] == purpose and judgment["purpose_source"] == "user_verdict"
-    assert judgment["result_judgment"] == "not_judged" and judgment["result_note"] is None
-    assert judgment["disposition"] == status
-    assert judgment["resulting_task_revision"] == ack["revision"]
-    assert judgment["resulting_attempt_revision"] == ack["attempt_revision"] == 2
-    if decision == "revise":
-        # A direction-only verdict retains the sound current-spec review until a real edit.
-        assert store.get_next_action(ws)["task"]["id"] == dependent["id"]
-        assert full(store, dependent)["prerequisites"][0]["satisfied"]
+    assert not {"reasons", "signoff_decisions", "attempts", "body"} & ack.keys()
+    assert reasons not in json.dumps(ack) and len(json.dumps(ack)) < 1600
+    saved_attempt = store.get_attempt(attempt["id"])
+    assert ack["attempt_revision"] == saved_attempt["revision"] == 2 + (decision == "rework")
+    if decision == "rework":
+        assert saved_attempt["state"] == "rework"
+        assert saved_attempt["review_note"] == attempt["review_note"]
+        assert saved_attempt["human_review_note"] == attempt["human_review_note"]
     else:
-        assert store.get_next_action(ws)["task"] is None
-        assert "prerequisites" in store.workstream_status(ws)["items"][-1]["gate_diagnostics"]
+        assert saved["attempts"] == task["attempts"]
+    assert saved["selected_attempt_id"] == (attempt["id"] if decision == "approve" else None)
     if decision == "revise":
-        assert ack["unresolved_id"] == saved["unresolved_items"][-1]["id"]
-        assert saved["unresolved_items"][-1]["text"] == extra["specification_question"]
-        resolved = store.resolve_unresolved(
-            task["id"], ack["revision"], ack["unresolved_id"], "Use both"
-        )
-        edited = store.update_task(
-            task["id"],
-            resolved["revision"],
-            {"body": "Now accept both"},
-            specification_etag=full(store, task)["specification_etag"],
-        )
-        assert edited["spec_revision"] == 2 and edited["queue_workstream_id"] == ws
-        assert full(store, task)["attempts"] == task["attempts"]
-        assert full(store, dependent)["prerequisites"][0]["blocking"]
-    elif decision == "defer":
-        resumed = store.set_disposition(task["id"], ack["revision"], "open", "Resume")
-        assert resumed["queue_workstream_id"] == ws and "signoff" not in resumed["gate_diagnostics"]
-        assert store.read_tasks([task["id"]], workstream_id=ws)["items"][0]["view"] == "signoff"
+        assert saved["unresolved_items"] == [{"id": ack["unresolved_id"], "text": reasons}]
+    if decision == "approve":
+        with pytest.raises(TaskError, match="completed_task_immutable"):
+            decide(store, saved, saved_attempt, "drop")
 
 
-@pytest.mark.parametrize("decision", ["revise", "drop", "defer"])
-@pytest.mark.parametrize("quality", ["accepted", "rework"])
-def test_separately_supplied_actual_quality_is_recorded_without_replacing_independent_review(
-    context, decision, quality
-):
+@pytest.mark.parametrize("decision", ["rework", "revise"])
+@pytest.mark.parametrize("reasons", [None, "", " \n "])
+def test_rejections_require_reasons_without_partial_changes(context, decision, reasons):
     store, _, _ = context
     task, attempt = delivered(context)
-    extra = (
-        {"specification_question": "Which behavior should replace this?"}
-        if decision == "revise"
-        else {}
-    )
-    with pytest.raises(TaskError, match="result_note_required"):
-        decide(store, task, attempt, decision, result_judgment=quality, **extra)
-    ack = decide(
-        store,
-        task,
-        attempt,
+    with pytest.raises(TaskError, match="reasons_required"):
+        decide(store, task, attempt, decision, reasons)
+    assert full(store, task) == task
+    assert store.get_attempt(attempt["id"]) == attempt
+
+
+@pytest.mark.parametrize("decision", ["approve", "drop"])
+def test_approve_and_drop_allow_omitted_reasons(context, decision):
+    store, _, _ = context
+    task, attempt = delivered(context)
+    ack = store.signoff_task(
+        task["id"],
+        task["revision"],
         decision,
-        result_judgment=quality,
-        result_note="Synthetic actual quality judgment separately supplied by user",
-        **extra,
+        attempt_id=attempt["id"],
+        expected_attempt_revision=2,
     )
-    saved = full(store, task)
-    assert saved["signoff_decisions"][-1]["result_judgment"] == quality
-    result = saved["attempts"][0]
-    assert result["state"] == ("rework" if quality == "rework" else "passed")
-    assert (
-        result["reviewer"] == "independent reviewer"
-        and result["review_note"] == "Actual independent proof"
-    )
-    assert result["revision"] == ack["attempt_revision"] == (3 if quality == "rework" else 2)
-    with sqlite3.connect(store.path) as db:
-        review = db.execute(
-            "SELECT after_json FROM events WHERE action='attempt.reviewed'"
-        ).fetchone()
-    assert json.loads(review[0])["state"] == "passed"
+    assert ack["status"] == {"approve": "done", "drop": "dropped"}[decision]
+    assert full(store, task)["signoff_decisions"][-1]["reasons"] is None
 
 
-def test_rework_retains_approved_spec_requires_new_result_and_fresh_review(context):
-    store, _, ws = context
-    task, attempt = delivered(context, "delegated")
-    ack = decide(store, task, attempt, "rework")
-    saved = full(store, task)
-    assert (
-        ack["queue_workstream_id"] == ws
-        and ack["spec_revision"] == 1
-        and ack["attempt_revision"] == 3
-    )
-    judgment = saved["signoff_decisions"][-1]
-    assert (
-        judgment["purpose_judgment"] == "approved" and judgment["purpose_source"] == "user_verdict"
-    )
-    assert judgment["result_judgment"] == "rework"
-    assert store.get_next_action(ws)["task"]["id"] == task["id"]
-    with pytest.raises(TaskError, match="review_required"):
-        decide(store, saved, attempt, "approve")
-    retry = store.record_result(
-        task["id"],
-        ws,
-        ack["revision"],
-        "worker",
-        "Fixed",
-        "Fresh proof",
-        artifacts=[{"kind": "artifact", "reference": "tests/test_signoff.py"}],
-        verification="Fresh proof",
-        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
-    )
-    with pytest.raises(TaskError, match="review_required"):
-        store.signoff_task(task["id"], ack["revision"] + 1, "approve", "Approve", retry["id"], 1)
-    reviewed = store.record_review(retry["id"], 1, "reviewer", "pass", "Fresh independent proof")
-    complete = store.signoff_task(
-        task["id"],
-        ack["revision"] + 1,
-        "approve",
-        "Approve both",
-        retry["id"],
-        reviewed["revision"],
-    )
-    assert complete["status"] == "done"
-    assert len(full(store, task)["signoff_decisions"]) == 2
-
-
-def test_ordinary_drop_defer_and_authorized_revival_need_no_review(context):
+def test_latest_rejection_replaces_previous_without_changing_factual_history(context, tmp_path):
     store, project, ws = context
-    task = store.create_task(
-        project,
-        "Unbuilt",
-        body="Scope",
-        workstream_id=ws,
-    )
-    deferred = store.set_disposition(task["id"], 1, "deferred", "Later")
-    assert deferred["queue_workstream_id"] == ws
-    dropped = store.set_disposition(task["id"], 2, "dropped", "No longer wanted")
-    assert dropped["queue_workstream_id"] == ws and dropped["spec_revision"] == 1
-    for status in ("open", "deferred"):
-        with pytest.raises(TaskError, match="revival_authorization_required"):
-            store.set_disposition(task["id"], 3, status, "Agent decided to restore")
-    revived = store.set_disposition(
-        task["id"], 3, "open", "Restore", authorization="Synthetic actual user requested revival"
-    )
+    task, attempt = delivered(context)
+    first = decide(store, task, attempt, "rework", "User: fix lost input")
+    selected = store.get_next_action(ws)
+    rejection = selected["task"]["latest_rejection"]
+    assert selected["action"] == "implement" and selected["attempt"]["id"] == attempt["id"]
+    assert rejection["source"] == "signoff" and rejection["reasons"] == "User: fix lost input"
+    assert rejection["attempt_id"] == attempt["id"] and rejection["workstream_id"] == ws
+    assert rejection["decision_ref"] == first["decision_ref"] and rejection["timestamp"]
+    first_history = full(store, task)["signoff_decisions"]
+    retry = result(store, task, ws)
+    store.record_review(retry["id"], 1, "next reviewer", "rework", "Reviewer: handle empty input")
+    assert full(store, task)["signoff_decisions"] == first_history
+    latest = store.read_tasks([task["id"]], specification=True, workstream_id=ws)["items"][0][
+        "latest_rejection"
+    ]
+    assert latest["source"] == "review" and latest["verdict"] == "rework"
     assert (
-        revived["queue_workstream_id"] == ws
-        and store.get_next_action(ws)["task"]["id"] == task["id"]
+        latest["reasons"] == "Reviewer: handle empty input" and latest["attempt_id"] == retry["id"]
     )
-    full_task = full(store, task)
-    assert full_task["body"] == "Scope" and full_task["signoff_decisions"] == []
+    card = store.list_tasks(project, ws)["items"][0]
+    assert card["latest_rejection"] == {k: v for k, v in latest.items() if k != "reasons"}
+    fixed = result(store, task, ws)
+    store.record_review(fixed["id"], 1, "fresh reviewer", "pass", "Checked fresh proof")
+    decide(
+        store,
+        full(store, task),
+        store.get_attempt(fixed["id"]),
+        "revise",
+        "Design: accept both input formats",
+    )
+    saved = full(Store(store.path), task)
+    assert saved["latest_rejection"]["verdict"] == "revise"
+    assert saved["latest_rejection"]["reasons"] == saved["unresolved_items"][-1]["text"]
+    assert saved["signoff_decisions"][0] == first_history[0]
+    # Rejection context is canonical; attempt eligibility remains branch-local.
+    other = store.init(
+        str(tmp_path / "repo"), branch="feature", action="new_workstream", confirmed=True
+    )
+    other_ws = other["workstream"]["id"]
+    store.resolve_unresolved(
+        task["id"], saved["revision"], saved["unresolved_items"][-1]["id"], "Settled"
+    )
+    current = full(store, task)
+    store.queue_task(task["id"], other_ws, current["revision"])
+    action = store.get_next_action(other_ws)
+    assert action["action"] == "implement" and action["attempt"] is None
+    assert action["task"]["latest_rejection"]["workstream_id"] == ws
+    assert action["task"]["latest_rejection"]["attempt_id"] == fixed["id"]
+    assert action["task"]["attempt_total"] == 0
+    text = store.export_workstream(other_ws)["content"]
+    assert "#### Latest rejection" in text and "Design: accept both input formats" in text
+    assert ws in text and "Sign-off history" in text
 
 
-def test_signoff_checks_exact_attempt_concurrency_and_both_completion_gates(context):
-    store, project, _ = context
+def test_legacy_decisions_remain_readable_and_unchanged_and_lookup_is_indexed(context):
+    store, _, ws = context
+    task, attempt = delivered(context)
+    legacy = {
+        "task_revision": 2,
+        "spec_revision": 1,
+        "attempt_id": attempt["id"],
+        "attempt_revision": 2,
+        "decision": "defer",
+        "disposition": "deferred",
+        "user_note": "Legacy defer note",
+        "purpose_judgment": "deferred",
+        "purpose_source": "user_verdict",
+        "result_judgment": "accepted",
+        "result_note": "Old actual judgment",
+    }
+    with sqlite3.connect(store.path) as db:
+        for decision in ("rework", "defer"):
+            item = {**legacy, "decision": decision}
+            db.execute(
+                "INSERT INTO events(timestamp,actor,action,outcome,task_id,"
+                "request_json,after_json) "
+                "VALUES('legacy-time','test','task.signoff','ok',?,?,?)",
+                (
+                    task["id"],
+                    json.dumps(
+                        {
+                            "decision": decision,
+                            "attempt_id": attempt["id"],
+                            "user_note": "Legacy rework reasons",
+                        }
+                    ),
+                    json.dumps({"signoff_decision": item}),
+                ),
+            )
+        before = db.execute("SELECT * FROM events").fetchall()
+    assert Store(store.path).migration_backup_path is None
+    saved = full(store, task)
+    assert {
+        k: v
+        for k, v in saved["signoff_decisions"][-1].items()
+        if k not in {"decision_ref", "timestamp"}
+    } == legacy
+    assert saved["latest_rejection"]["reasons"] == "Legacy rework reasons"
+    assert saved["latest_rejection"]["workstream_id"] == ws
+    with store._connect() as db:
+        queries = []
+        db.set_trace_callback(queries.append)
+        Store._latest_rejection(db, task["id"])
+        db.set_trace_callback(None)
+        plan = db.execute("EXPLAIN QUERY PLAN " + queries[0]).fetchall()
+        assert any("SEARCH e USING INDEX rejection_history" in row[3] for row in plan)
+        assert [
+            tuple(row)
+            for row in db.execute("SELECT * FROM events WHERE sequence<=?", (before[-1][0],))
+        ] == before
+    text = store.export_workstream(ws)["content"]
+    assert "Legacy defer note" in text and "Old actual judgment" in text
+
+
+def test_rework_requires_fresh_result_and_review_and_completion_checks_gates(context):
+    store, project, ws = context
+    task, attempt = delivered(context)
+    ack = decide(store, task, attempt, "rework")
+    with pytest.raises(TaskError, match="review_required"):
+        decide(store, full(store, task), store.get_attempt(attempt["id"]), "approve")
+    retry = result(store, task, ws)
+    with pytest.raises(TaskError, match="review_required"):
+        decide(store, full(store, task), retry, "approve")
+    store.record_review(retry["id"], 1, "reviewer", "pass", "Fresh independent proof")
+    gate = store.add_unresolved(task["id"], ack["revision"] + 1, "Unanswered")
+    blocker = store.create_task(project, "Blocker")
+    gate = store.add_prerequisite(task["id"], gate["revision"], blocker["id"])
+    with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
+        decide(store, full(store, task), store.get_attempt(retry["id"]), "approve")
+    gate = store.resolve_unresolved(
+        task["id"], gate["revision"], gate["unresolved_items"][0]["id"], "Settled"
+    )
+    with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
+        decide(store, full(store, task), store.get_attempt(retry["id"]), "approve")
+    gate = store.remove_prerequisite(task["id"], gate["revision"], blocker["id"], "Unneeded")
+    done = decide(store, full(store, task), store.get_attempt(retry["id"]), "approve")
+    assert done["status"] == "done" and len(full(store, task)["signoff_decisions"]) == 2
+
+
+def test_removed_contract_invalid_decisions_and_exact_attempt_concurrency(context):
+    store, _, _ = context
     task, attempt = delivered(context)
     with pytest.raises(TaskError, match="revision_conflict"):
         store.signoff_task(task["id"], 2, "approve", "Actual verdict", attempt["id"], 1)
-    with pytest.raises(TaskError, match="specification_question_required"):
-        decide(store, task, attempt, "revise")
     with pytest.raises(TaskError, match="user_verdict_required"):
-        store.signoff_task(task["id"], 2, "approve", "  ", attempt["id"], 2)
-    with pytest.raises(TaskError, match="conflicting_result_judgment"):
-        decide(store, task, attempt, "approve", result_judgment="not_judged")
-    blocker = store.create_task(project, "Blocker")
-    gated = store.add_unresolved(task["id"], 2, "Unanswered")
-    gated = store.add_prerequisite(task["id"], gated["revision"], blocker["id"])
-    for clear_question in (False, True):
-        if clear_question:
-            gated = store.resolve_unresolved(
-                task["id"], gated["revision"], gated["unresolved_items"][0]["id"], "Settled"
+        decide(store, task, attempt, "defer")
+    for key in ("user_note", "result_judgment", "result_note", "specification_question", "note"):
+        with pytest.raises(TypeError):
+            store.signoff_task(
+                task["id"],
+                2,
+                "approve",
+                attempt_id=attempt["id"],
+                expected_attempt_revision=2,
+                **{key: "removed"},
             )
-        with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
-            decide(store, full(store, task), attempt, "approve")
+    assert full(store, task) == task
+
+
+def test_ordinary_deferral_and_authorized_revival_are_status_changes(context):
+    store, project, ws = context
+    task = store.create_task(project, "Unbuilt", body="Scope", workstream_id=ws)
+    deferred = store.set_disposition(task["id"], 1, "deferred", "Later")
+    assert deferred["queue_workstream_id"] == ws
+    dropped = store.set_disposition(task["id"], 2, "dropped", "No longer wanted")
+    with pytest.raises(TaskError, match="revival_authorization_required"):
+        store.set_disposition(task["id"], 3, "open", "Restore")
+    revived = store.set_disposition(
+        task["id"],
+        dropped["revision"],
+        "open",
+        "Restore",
+        authorization="Actual user requested revival",
+    )
+    assert revived["queue_workstream_id"] == ws
     assert full(store, task)["signoff_decisions"] == []
 
 
-def test_concurrent_actual_decisions_have_one_winner_and_no_partial_judgment(context):
+def test_concurrent_actual_verdicts_have_one_winner(context):
     store, _, _ = context
     task, attempt = delivered(context)
     barrier = Barrier(2)
@@ -345,10 +335,7 @@ def test_concurrent_actual_decisions_have_one_winner_and_no_partial_judgment(con
             return str(exc)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(race, ["drop", "defer"]))
-    assert sum(isinstance(result, dict) for result in results) == 1
-    assert sum("revision_conflict" in result for result in results if isinstance(result, str)) == 1
-    saved = full(store, task)
-    assert len(saved["signoff_decisions"]) == 1
-    assert saved["signoff_decisions"][0]["disposition"] == saved["status"]
-    assert saved["attempts"] == task["attempts"]
+        results = list(pool.map(race, ["drop", "rework"]))
+    assert sum(isinstance(r, dict) for r in results) == 1
+    assert sum("revision_conflict" in r for r in results if isinstance(r, str)) == 1
+    assert len(full(store, task)["signoff_decisions"]) == 1

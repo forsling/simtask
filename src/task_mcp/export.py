@@ -4,7 +4,7 @@ import html
 import re
 from collections import Counter
 
-FORMAT = "task-mcp/v4"
+FORMAT = "task-mcp/v5"
 VIEWS = {
     "ready": "Ready",
     "inbox": "Inbox",
@@ -139,6 +139,42 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                 "Descriptive summary (stale)" if task["summary_stale"] else "Descriptive summary",
                 task["summary"],
             )
+        if rejection := task.get("latest_rejection"):
+            lines.extend(
+                [
+                    "#### Latest rejection",
+                    "",
+                    f"- Source: {rejection['source']}; verdict: {rejection['verdict']}",
+                    f"- Attempt: `{rejection['attempt_id']}`; "
+                    f"workstream: `{rejection['workstream_id']}`; "
+                    f"specification: {rejection['spec_revision']}",
+                    f"- Recorded: {rejection['timestamp']}; decision: {rejection['decision_ref']}",
+                    "",
+                ]
+            )
+            _section(lines, "Rejection reasons", rejection["reasons"] or "", level=5)
+        if decisions := task.get("signoff_decisions"):
+            lines.extend(["#### Sign-off history", ""])
+            for decision in decisions:
+                lines.extend(
+                    [
+                        f"- Verdict: {decision['decision']}; "
+                        f"disposition: {decision['disposition']}; "
+                        f"attempt: `{decision['attempt_id']}`; recorded: {decision['timestamp']}",
+                        "",
+                    ]
+                )
+                _section(
+                    lines,
+                    "Reasons",
+                    decision.get("reasons", decision.get("user_note")) or "",
+                    level=5,
+                )
+                for key in ("purpose_judgment", "purpose_source", "result_judgment"):
+                    if key in decision:
+                        lines.extend([f"- Historical {key}: {_inline(decision[key])}", ""])
+                if decision.get("result_note"):
+                    _section(lines, "Historical result note", decision["result_note"], level=5)
         _section(lines, "Specification", task["body"])
         _section(lines, "Acceptance criteria", task["acceptance_criteria"])
         if task["user_request"]:

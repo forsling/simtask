@@ -264,8 +264,8 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
 
             runtime = await call("runtime_info")
             assert runtime["package_path"] == str(root / "src/task_mcp")
-            assert runtime["protocol_schema_revision"] == 10
-            assert runtime["database_schema_revision"] == 6
+            assert runtime["protocol_schema_revision"] == 11
+            assert runtime["database_schema_revision"] == 7
             setup = await call(
                 "init",
                 path=str(tmp_path / "checkout"),

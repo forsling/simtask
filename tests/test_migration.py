@@ -165,7 +165,7 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
                 ("review" if version < 5 else "signoff",)
             ]
         assert Store(database).migration_backup_path is None
-        assert len(list(tmp_path.glob("*.pre-schema-6.*.sqlite3"))) == 1
+        assert len(list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3"))) == 1
         # Restore into a disposable target using SQLite online backup, not a
         # file copy over the still-open source/WAL. This proves rollback content.
         restored = tmp_path / "restored.sqlite3"
@@ -228,7 +228,7 @@ def test_migration_failure_rolls_back_ddl_revision_and_data_retains_backup(
         assert snapshot(database) == before
         with closing(sqlite3.connect(database)) as db:
             assert db.execute("PRAGMA user_version").fetchone()[0] == version
-        backups = list(tmp_path.glob("*.pre-schema-6.*.sqlite3"))
+        backups = list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3"))
         assert len(backups) == 1 and snapshot(backups[0]) == before
     finally:
         writer.close()
@@ -261,7 +261,7 @@ def test_fresh_empty_database_needs_no_backup(tmp_path):
         and store.migration_backup_path is None
     )
     assert snapshot(database)[1]["tasks"] == []
-    assert list(tmp_path.glob("*.pre-schema-6.*.sqlite3")) == []
+    assert list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3")) == []
 
 
 def test_migration_reports_unapproved_and_multiscope_deterministic_owner(tmp_path):
@@ -303,3 +303,47 @@ def test_migration_reports_unapproved_and_multiscope_deterministic_owner(tmp_pat
         assert db.execute("SELECT count(*) FROM queue_members").fetchone()[0] == 2
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
     writer.close()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_schema6_rejection_index_upgrade_preserves_rows_and_rolls_back(tmp_path, monkeypatch, fail):
+    database = tmp_path / "schema6.sqlite3"
+    store = Store(database)
+    setup = store.init(str(tmp_path), branch="main", action="create_project", confirmed=True)
+    store.create_task(
+        setup["project"]["id"], "Existing queue", workstream_id=setup["workstream"]["id"]
+    )
+    with closing(sqlite3.connect(database)) as db:
+        db.execute("DROP INDEX rejection_history")
+        db.execute("PRAGMA user_version=6")
+        db.commit()
+    before = snapshot(database)
+    if fail:
+        upgrade = Store._upgrade_schema
+
+        def failed_upgrade(db):
+            upgrade(db)
+            assert db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='rejection_history'"
+            ).fetchone()
+            raise RuntimeError("Injected index migration failure")
+
+        monkeypatch.setattr(Store, "_upgrade_schema", staticmethod(failed_upgrade))
+        with pytest.raises(RuntimeError, match="Injected index migration"):
+            Store(database)
+    else:
+        upgraded = Store(database)
+        assert upgraded.database_schema_revision() == DATABASE_SCHEMA_REVISION
+    assert snapshot(database) == before
+    backups = list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3"))
+    assert len(backups) == 1 and snapshot(backups[0]) == before
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == (
+            6 if fail else DATABASE_SCHEMA_REVISION
+        )
+        assert (
+            bool(
+                db.execute("SELECT 1 FROM sqlite_master WHERE name='rejection_history'").fetchone()
+            )
+            != fail
+        )

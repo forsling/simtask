@@ -731,7 +731,6 @@ def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_pat
         "revise",
         "Change requirements",
         retry["id"],
-        specification_question="Which requirements should change?",
         expected_attempt_revision=2,
     )
     assert revised["queue_workstream_id"] == ws and revised["unresolved_id"]
@@ -834,7 +833,7 @@ def test_order_and_deterministic_export(store, tmp_path):
     two = store.export_workstream(ws)
     assert one == two
     assert one["content"].index(second["id"]) < one["content"].index(first["id"])
-    assert one["format"] == "task-mcp/v4"
+    assert one["format"] == "task-mcp/v5"
 
 
 def test_current_schema_reopens_without_changing_task_or_audit(store, tmp_path):

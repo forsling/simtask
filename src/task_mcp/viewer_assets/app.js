@@ -523,6 +523,7 @@ function row(r) {
       node("span", v.short, "row-meta tone-" + v.tone),
     );
   }
+  if (r.latest_rejection) b.append(node("span", `Rejected · ${r.latest_rejection.source} ${r.latest_rejection.verdict}`, "row-meta tone-warn"));
   if (r.summary) {
     b.querySelector(".row-title").append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
   }
@@ -767,6 +768,13 @@ function body(t) {
     });
     out.push(section("Prerequisites", list));
   }
+  if (t.latest_rejection) {
+    const r = t.latest_rejection;
+    out.push(section("Latest rejection", el("div", "",
+      node("p", `${r.source} · ${r.verdict} · ${r.timestamp}`),
+      node("p", `Attempt ${r.attempt_id} · workstream ${r.workstream_id} · spec ${r.spec_revision}.`, "muted"),
+      markdown(r.reasons || ""))));
+  }
   out.push(section("Specification", markdown(t.body)));
   const criteria = markdown(t.acceptance_criteria, { checklist: true });
   criteria.classList.add("criteria");
@@ -778,9 +786,9 @@ function body(t) {
       history.append(el("div", "sub",
         node("h4", `${d.decision} · ${d.disposition}`),
         node("p", `Task revision ${d.task_revision}, spec ${d.spec_revision}; attempt ${d.attempt_id}, revision ${d.attempt_revision}. Decision ${d.decision_ref}.`),
-        node("p", `Purpose: ${d.purpose_judgment} (${d.purpose_source.replaceAll("_", " ")}).`),
-        node("p", `Human result quality: ${d.result_judgment.replaceAll("_", " ")}. Independent review remains in the result evidence.`),
-        markdown(d.user_note), d.result_note ? markdown(d.result_note) : null));
+        d.purpose_judgment ? node("p", `Historical purpose: ${d.purpose_judgment} (${(d.purpose_source || "unknown").replaceAll("_", " ")}).`) : null,
+        d.result_judgment ? node("p", `Historical human result quality: ${d.result_judgment.replaceAll("_", " ")}.`) : null,
+        markdown(d.reasons ?? d.user_note ?? ""), d.result_note ? markdown(d.result_note) : null));
     }
     out.push(history);
   }
@@ -1057,18 +1065,18 @@ function confirmation(text = "This is my decision. Record it in the task history
 function decision({ title, description, action, data, key, label, submit, danger, before }) {
   openDialog(title, description, submit || "Confirm", danger);
   before?.();
-  field(key, label || (key === "text" ? "Question" : "Note"));
+  const input = field(key, label || (key === "text" ? "Question" : "Note"), "", "textarea", action !== "signoff");
+  if (action === "signoff") {
+    const choice = $("field-decision");
+    const sync = () => { input.required = ["rework", "revise"].includes(choice.value); };
+    choice.onchange = sync; sync();
+  }
   confirmation();
   const taskId = state.task.id;
   submitAction = async (values) => {
     const payload = { ...data, [key]: values.get(key) };
     if (action === "signoff") {
       payload.decision = values.get("decision") || data.decision;
-      if (payload.decision === "revise") payload.specification_question = values.get("specification_question");
-      if (["revise", "drop", "defer"].includes(payload.decision)) {
-        payload.result_judgment = values.get("result_judgment") || "not_judged";
-        if (payload.result_judgment !== "not_judged") payload.result_note = values.get("result_note");
-      }
     }
     if (values.has("authorization")) payload.authorization = values.get("authorization");
     try {
@@ -1261,13 +1269,13 @@ function humanReview(a) {
 }
 function signoff(t, a, initial = "approve") {
   decision({
-    title: "Judge purpose and result",
-    description: `“${t.title}” · spec ${t.spec_revision}. Result ${a.id} · revision ${a.revision}. Approve completes the task and cannot be undone.`,
+    title: "Sign off the task",
+    description: `“${t.title}” · spec ${t.spec_revision}. Result ${a.id} · revision ${a.revision}. Approve completes the task and cannot be undone. Rework and revise require reasons.`,
     action: "signoff",
     data: { task_id: t.id, expected_revision: t.revision, attempt_id: a.id,
       expected_attempt_revision: a.revision, decision: initial },
-    key: "user_note",
-    label: "Your decision and reason",
+    key: "reasons",
+    label: "Reasons",
     submit: "Record decision",
     before: () => {
       $("fields").append(section("Reviewed result", el("div", "", markdown(a.summary || ""),
@@ -1276,32 +1284,13 @@ function signoff(t, a, initial = "approve") {
       const choice = node("select");
       choice.id = "field-decision"; choice.name = "decision";
       for (const [value, label] of [
-        ["approve", "Approve purpose and result; complete"],
-        ["rework", "Purpose approved; repair implementation and review again"],
-        ["revise", "Revise requirements; ask a blocking question"],
-        ["drop", "Drop task; keep queue placement and proof"],
-        ["defer", "Defer task; retain queue placement and proof"],
+        ["approve", "Approve; complete the task"],
+        ["rework", "Rework; repair implementation and review again"],
+        ["revise", "Revise; return to design with an open question"],
+        ["drop", "Drop; close without approval"],
       ]) {const option = node("option", label); option.value = value; choice.append(option);}
       choice.value = initial;
       $("fields").append(el("div", "field", node("label", "Decision"), choice));
-      const question = field("specification_question", "Concrete specification question", "", "textarea", false);
-      const quality = node("select"); quality.id = "field-result_judgment"; quality.name = "result_judgment";
-      for (const [value, label] of [["not_judged", "Human technical quality not judged"], ["accepted", "User separately judged result sound"], ["rework", "User separately requested technical rework"]]) {
-        const option = node("option", label); option.value = value; quality.append(option);
-      }
-      quality.value = "not_judged";
-      const qualityField = el("div", "field", node("label", "Separate actual quality judgment (optional)"), quality);
-      $("fields").append(qualityField);
-      const qualityNote = field("result_note", "Actual separate quality judgment", "", "textarea", false);
-      const sync = () => {
-        const direction = ["revise", "drop", "defer"].includes(choice.value);
-        question.parentElement.hidden = choice.value !== "revise";
-        question.disabled = choice.value !== "revise"; question.required = choice.value === "revise";
-        qualityField.hidden = !direction; quality.disabled = !direction;
-        const judged = direction && quality.value !== "not_judged";
-        qualityNote.parentElement.hidden = !judged; qualityNote.disabled = !judged; qualityNote.required = judged;
-      };
-      choice.onchange = sync; quality.onchange = sync; sync();
     },
   });
 }

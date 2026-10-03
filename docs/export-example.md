@@ -1,6 +1,6 @@
 # Task MCP workstream export
 
-Format: task-mcp/v4
+Format: task-mcp/v5
 
 Snapshot only. Editing this document does not update Task MCP.
 

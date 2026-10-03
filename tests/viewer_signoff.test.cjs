@@ -48,35 +48,33 @@ async function test() {
   assert.doesNotMatch(allText, /Approval basis|Supporting approval/);
   assert.match(allText, /Actual result/);
   assert.match(allText, /Actual review proof/);
-  const choice = get("field-decision"), quality = get("field-result_judgment");
-  assert.deepEqual(choice.children.map(node => node.value), ["approve", "rework", "revise", "drop", "defer"]);
-  context.values = new Map([["decision", "approve"], ["user_note", "I approve purpose and result"]]);
-  await run("submitAction(values)");
-  assert.equal(context.captured.payload.decision, "approve");
-  assert.equal(context.captured.payload.expected_revision, 8);
-  assert.equal(context.captured.payload.expected_attempt_revision, 2);
-  assert.equal("result_judgment" in context.captured.payload, false);
-  assert.equal("verdict" in context.captured.payload, false);
-  assert.equal("rejection" in context.captured.payload, false);
-  for (const decision of ["rework", "revise", "drop", "defer"]) {
+  const choice = get("field-decision"), reasons = get("field-reasons");
+  assert.deepEqual(choice.children.map(node => node.value), ["approve", "rework", "revise", "drop"]);
+  assert.equal(descendants(get("fields")).some(node => ["field-result_judgment", "field-specification_question", "field-result_note", "field-user_note"].includes(node.id)), false);
+  for (const decision of ["approve", "rework", "revise", "drop"]) {
     choice.value = decision; choice.onchange();
-    context.values = new Map([["decision", decision], ["user_note", "Actual verdict"],
-      ["specification_question", "Which format should be accepted?"], ["result_judgment", "not_judged"]]);
+    assert.equal(reasons.required, ["rework", "revise"].includes(decision));
+    context.values = new Map([["decision", decision], ["reasons", "Actual reasons"]]);
     await run("submitAction(values)");
     const payload = context.captured.payload;
     assert.equal(payload.decision, decision);
-    assert.equal("specification_question" in payload, decision === "revise");
-    assert.equal(get("field-specification_question").required, decision === "revise");
-    assert.equal("result_judgment" in payload, decision !== "rework");
-    if (decision !== "rework") assert.equal(payload.result_judgment, "not_judged");
-    assert.equal("result_note" in payload, false);
+    assert.equal(payload.reasons, "Actual reasons");
+    assert.equal(payload.expected_revision, 8);
+    assert.equal(payload.expected_attempt_revision, 2);
+    for (const key of ["result_judgment", "result_note", "specification_question", "user_note", "note"]) assert.equal(key in payload, false);
   }
-  quality.value = "accepted"; quality.onchange();
-  assert.equal(get("field-result_note").required, true);
-  context.values.set("result_judgment", "accepted");
-  context.values.set("result_note", "Actual separately supplied technical judgment");
-  await run("submitAction(values)");
-  assert.equal(context.captured.payload.result_note, "Actual separately supplied technical judgment");
+  // Both history generations render without inventing judgments or throwing.
+  run(`task.unresolved_items = []; task.blocked_by = []; task.prerequisites = []; task.gate_proposals = [];
+    task.body = "Spec"; task.acceptance_criteria = "Criteria";
+    task.signoff_decisions = [
+      {decision: "defer", disposition: "deferred", purpose_judgment: "deferred", purpose_source: "user_verdict", result_judgment: "accepted", user_note: "Old defer reasons", result_note: "Old quality note"},
+      {decision: "drop", disposition: "dropped", reasons: "New drop reasons"}];
+    task.latest_rejection = {source: "review", verdict: "rework", reasons: "Reviewer reasons", attempt_id: "origin-attempt", workstream_id: "origin-branch", spec_revision: 4, timestamp: "then"};
+    activity = () => node("div"); rendered = body(task);`);
+  const renderedText = context.rendered.flatMap(descendants).map(node => node.textContent).join(" ");
+  assert.match(renderedText, /Old defer reasons/); assert.match(renderedText, /Old quality note/);
+  assert.match(renderedText, /New drop reasons/); assert.match(renderedText, /Reviewer reasons/);
+  assert.match(renderedText, /origin-branch/);
   run("task.status = 'dropped'; disposition(task, 'open', 'Resume');");
   assert.equal(get("field-authorization").required, true);
   context.values = new Map([["note", "Resume"], ["authorization", "Actual user revival instruction"]]);

@@ -43,8 +43,12 @@ and returns the link. No browser is launched automatically.
 - Review the result and evidence before recording a human review. The dialog
   records your review or your explicit instruction that additional independent
   review is unnecessary; it does not sign off. A separately confirmed sign-off
-  approves the chosen reviewed result permanently. “Request changes” asks you
-  to choose implementation rework or specification revision.
+  offers approve (complete), rework (repair implementation), revise (return to
+  design with an open question), and drop (close without approval). Its single
+  reasons field is required for rework/revise and optional for approve/drop.
+  Deferral remains an ordinary status change. Latest rejection reasons appear
+  with their originating attempt/workstream in the task; list rows carry a flag.
+  Historical defer decisions and judgment fields remain readable.
 - Activity shows actor, action, outcome and decision notes; routine read
   events are counted rather than listed. Task text is rendered as a safe
   Markdown subset (paragraphs, lists, headings, code, bold/italic) built from

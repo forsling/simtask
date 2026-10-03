@@ -279,11 +279,11 @@ async def exercise(database):
             attempt_id=ref["attempt_id"],
             expected_attempt_revision=ref["attempt_revision"],
             decision="approve",
-            user_note="Synthetic informed verdict, never a real user decision",
+            reasons="Synthetic informed verdict, never a real user decision",
         )
         assert signed["status"] == "done" and signed["attempt_state"] == "passed"
-        assert signed["purpose_judgment"] == "approved" and signed["result_judgment"] == "accepted"
-        assert signed["purpose_source"] == "user_verdict"
+        assert signed["decision"] == "approve"
+        assert not {"purpose_judgment", "result_judgment", "reasons"} & signed.keys()
         report["signoff_acknowledgements"] = [signed]
         report["queue_informed_signoff_verdict"] = {
             "call_count": len(trace) - start,
@@ -340,17 +340,12 @@ async def exercise(database):
             "task_attempts": 16,
             "members": 24,
         }
-        # Every verdict returns its actual state/judgments without repeating notes.
-        cases = [("rework", None)] + [
-            (decision, quality)
-            for decision in ("revise", "drop", "defer")
-            for quality in (None, "accepted", "rework")
-        ]
-        for decision, quality in cases:
+        # Every verdict returns actual state without repeating reasons.
+        for decision in ("rework", "revise", "drop"):
             judged_task = await ok(
                 "create_task",
                 project=project,
-                title=f"Synthetic {decision}/{quality}",
+                title=f"Synthetic {decision}",
                 body=body,
                 workstream_id=ws,
             )
@@ -374,13 +369,6 @@ async def exercise(database):
                 verdict="pass",
                 note=proof,
             )
-            extra = (
-                {"specification_question": "Which required behavior should change?"}
-                if decision == "revise"
-                else {}
-            )
-            if quality is not None:
-                extra.update(result_judgment=quality, result_note=proof)
             ack = await ok(
                 "signoff_task",
                 task_id=judged_task["id"],
@@ -388,16 +376,12 @@ async def exercise(database):
                 attempt_id=result["attempt_id"],
                 expected_attempt_revision=reviewed["attempt_revision"],
                 decision=decision,
-                user_note=proof,
-                **extra,
+                reasons=proof,
             )
-            expected_quality = quality or ("rework" if decision == "rework" else "not_judged")
-            assert (
-                ack["result_judgment"] == expected_quality
-                and ack["purpose_source"] == "user_verdict"
-            )
-            assert ack["attempt_state"] == ("rework" if expected_quality == "rework" else "passed")
-            assert ack["attempt_revision"] == 2 + (expected_quality == "rework")
+            assert ack["decision"] == decision
+            assert ack["attempt_state"] == ("rework" if decision == "rework" else "passed")
+            assert ack["attempt_revision"] == 2 + (decision == "rework")
+            assert bool(ack["unresolved_id"]) == (decision == "revise")
             assert proof not in json.dumps(ack) and body not in json.dumps(ack)
             report["signoff_acknowledgements"].append(ack)
         # A prerequisite insertion returns order continuation for a direct move.

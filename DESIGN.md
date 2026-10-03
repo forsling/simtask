@@ -103,7 +103,7 @@ among eligible scopes, breaking ties by oldest workstream creation time then ID.
 Completed tasks retain all history regardless of legacy decision classification;
 only the new unique owning queue is chosen. Each report row records candidates,
 chosen owner and reason. Group references survive as context but no longer expand
-live. Fresh databases create schema 6 directly. Existing databases take a fresh
+live. Fresh databases create the current schema directly. Existing databases take a fresh
 verified private SQLite online backup under the migration writer lock; transaction
 failure rolls back schema and data, retaining the backup. Candidate code, copied
 databases and client workflows remain isolated until coordinated rollout.
@@ -222,7 +222,8 @@ The optional local browser companion invokes a narrow allowlist of the same
 Store operations as MCP. It adds no task state model, business transition
 logic, synchronization or agent dependency. Project/workstream queues retain
 their derived views; stored disposition and global group progress are labelled
-separately. Human decision dialogs require a note and explicit confirmation;
+separately. Human decision dialogs require explicit confirmation; signoff reasons are required
+for rework/revise and optional for approve/drop;
 attempt review revisions and task sign-off revisions remain distinct. Text is
 rendered as text, never trusted HTML. Failed concurrent writes preserve drafts
 and require explicit reconciliation with the current version.
@@ -266,7 +267,7 @@ deterministic workstream view, never an editable synchronized ledger. The server
 writes its private SQLite database; it does not edit project files, client
 configuration, or installed skills.
 
-The default `task-mcp/v4` export is human-readable Markdown with the same derived
+The default `task-mcp/v5` export is human-readable Markdown with the same derived
 workflow views as the scoped queue, readable specifications/gates/result history,
 and a separate global group summary. Stored disposition is labelled separately.
 Only local scoped concrete tasks receive full entries. Other-workstream and
@@ -282,14 +283,27 @@ rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
 
-The current signoff decision/attempt-revision contract keeps the existing
-approve/rework/revise/drop/defer decisions. New purpose judgments record the actual
-human verdict without reusing old purpose decisions. Direction changes preserve
-sound proof and leave human quality unjudged unless separately supplied. Revise
-opens a concrete question without fabricating a spec revision. Drop/defer preserve
-queue placement, context and proof; revival from dropped needs actual authority.
-Current-spec reviewed proof and clear completion gates govern approval. Historical
-audit judgments remain immutable, with their original facts intact.
+Protocol 11 supports four actual human signoff verdicts: approve completes;
+rework returns the attempt to implementation; revise returns to design with an
+open question; drop closes without approval. A single reasons field is required
+for rework/revise, optional for approve/drop. Deferral remains an ordinary status
+change. Signoff records only the actual verdict and reasons with provenance;
+there are no separate purpose/technical judgments. Revise uses the reasons as
+the open question without fabricating a specification revision. Queue placement,
+context and factual proof survive; revival from dropped needs actual authority.
+Current-spec reviewed proof and clear completion gates govern approval.
+Historical signoff records, including old defer and judgment fields, stay intact.
+
+A task's latest rejection is the newest successful reviewer rework or signoff
+rework/revise event, with source, verdict, reasons, originating attempt/workstream/
+specification, timestamp and decision reference. Full reads and get_next_action
+carry this handoff; compact cards carry its provenance without prose. Each new
+rejection replaces the projection while prior rounds remain in immutable history.
+It is canonical task context, never evidence that an originating branch's proof
+is current locally. Schema 7 adds a partial rejection-history index so bounded
+reads seek actual rejection records without scanning intervening audit reads;
+no task, attempt or event rows are rewritten. The existing verified migration
+backup/rollback mechanism applies. Export v5 includes rejection and signoff history.
 
 Protocol 7 makes ordinary MCP calls compact and complete for their chosen action.
 Cards never expose partial specifications or replacement tokens. Specifications

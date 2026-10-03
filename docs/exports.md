@@ -11,7 +11,7 @@ Call `export_workstream` with the workstream ID. Optional arguments:
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `include_closed` | `true` | Set `false` to omit done and dropped tasks; deferred tasks remain. |
-| `format` | `markdown` | Human-readable `task-mcp/v4`, or `legacy` for the previous `task-mcp/v1` layout. |
+| `format` | `markdown` | Human-readable `task-mcp/v5`, or `legacy` for the previous `task-mcp/v1` layout. |
 
 The response contains `format`, `content` and `sha256`. The digest is SHA-256 of
 the UTF-8 content, including its final newline. MCP returns the document as a
@@ -44,6 +44,9 @@ MCP connections need to discover the updated tool schema before using the new
   unresolved questions and prerequisite completion. Prerequisites outside the
   exported scope may appear by title/ID, but do not gain full task entries.
   Proposed gates are explicitly nonblocking until accepted.
+- Latest rejection shows the actual review/signoff reasons with its originating
+  attempt, workstream, specification and timestamp. Signoff history records actual
+  verdicts/reasons and preserves historical defer/judgment fields.
 - Implementation history includes results, evidence and review notes. Attempts
   for superseded specifications or other workstreams are labelled accordingly.
   The selected signed-off attempt is identified on completed tasks. These
@@ -68,7 +71,7 @@ The report is a selected view, not a complete backup: excluded tasks, other
 workstreams' scopes and the full audit trail are not included. Editing it does
 not update Task MCP, and there is no import or synchronization mechanism.
 
-The default output version changed from `task-mcp/v1` to `task-mcp/v4`. Existing
+The default output version changed from `task-mcp/v1` to `task-mcp/v5`. Existing
 consumers relying on the old headings or embedded JSON must request `legacy`.
 That option preserves the previous content layout (including its old stored
 `State` label); the readable workflow improvements apply to the new format.

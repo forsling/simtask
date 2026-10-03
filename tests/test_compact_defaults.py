@@ -287,7 +287,7 @@ def test_every_mcp_write_ack_is_compact_and_can_continue(context):
             attempt_id=result["attempt_id"],
             expected_attempt_revision=review["attempt_revision"],
             decision="approve",
-            user_note="Synthetic informed approval",
+            reasons="Synthetic informed approval",
         )
         assert done["status"] == "done"
 

@@ -33,10 +33,22 @@ async def exercise(database: Path):
             "rework",
             "revise",
             "drop",
-            "defer",
         ]
         assert "expected_attempt_revision" in signoff_schema["required"]
-        assert not {"verdict", "rejection"} & signoff_schema["properties"].keys()
+        assert (
+            not {
+                "verdict",
+                "rejection",
+                "user_note",
+                "result_judgment",
+                "result_note",
+                "specification_question",
+                "note",
+            }
+            & signoff_schema["properties"].keys()
+        )
+        assert "reasons" in signoff_schema["properties"]
+        assert "reasons" not in signoff_schema["required"]
         for name in ("add_prerequisite", "propose_prerequisite"):
             descriptor = next(tool for tool in tools if tool.name == name)
             milestone = descriptor.input_schema["properties"]["milestone"]
@@ -150,7 +162,7 @@ async def exercise(database: Path):
             attempt_id=result["id"],
             decision="approve",
             expected_attempt_revision=reviewed["revision"],
-            user_note="Synthetic demo approval, not a real user verdict.",
+            reasons="Synthetic demo approval, not a real user verdict.",
         )
         assert signed["status"] == "done"
         signed_full = (await call("get_tasks", specification=True, ids=[task_id]))["items"][0]
@@ -183,7 +195,7 @@ async def exercise(database: Path):
             k: v for k, v in done_after.items() if k != "order_key"
         }
         print("Atomic move preserved completed proof and selected remaining work.")
-        for decision in ("rework", "revise", "drop", "defer"):
+        for decision in ("rework", "revise", "drop"):
             item = await call(
                 "create_task",
                 project=project_id,
@@ -212,11 +224,18 @@ async def exercise(database: Path):
                 verdict="pass",
                 note="Synthetic independent review",
             )
-            extras = (
-                {"specification_question": "Which actual scope should replace this?"}
-                if decision == "revise"
-                else {}
-            )
+            if decision in {"rework", "revise"}:
+                rejected = await client.call_tool(
+                    "signoff_task",
+                    {
+                        "task_id": item["id"],
+                        "expected_revision": 2,
+                        "attempt_id": built["id"],
+                        "expected_attempt_revision": 2,
+                        "decision": decision,
+                    },
+                )
+                assert rejected.is_error and "reasons_required" in str(rejected.content)
             judged = await call(
                 "signoff_task",
                 task_id=item["id"],
@@ -224,15 +243,18 @@ async def exercise(database: Path):
                 attempt_id=built["id"],
                 expected_attempt_revision=2,
                 decision=decision,
-                user_note="Synthetic actual user decision",
-                **extras,
+                reasons="Synthetic actual user decision",
             )
             details = (await call("get_tasks", specification=True, ids=[item["id"]]))["items"][0]
             events = await call("list_events", task_id=item["id"], include_details=True, limit=100)
             event = next(e for e in events["items"] if e["sequence"] == judged["decision_ref"])
             record = {"decision_ref": event["sequence"], **event["after"]["signoff_decision"]}
             assert record["decision_ref"] == judged["decision_ref"]
-            assert record["result_judgment"] == ("rework" if decision == "rework" else "not_judged")
+            assert record["reasons"] == "Synthetic actual user decision"
+            assert not {"result_judgment", "purpose_judgment"} & record.keys()
+            if decision in {"rework", "revise"}:
+                assert details["latest_rejection"]["reasons"] == record["reasons"]
+                assert details["latest_rejection"]["attempt_id"] == built["id"]
             assert details["spec_revision"] == 1
             if decision == "drop":
                 rejected = await client.call_tool(
@@ -468,7 +490,7 @@ async def exercise(database: Path):
             task_id=remote_blocker["id"],
             expected_revision=2,
             decision="approve",
-            user_note="Synthetic informed human verdict",
+            reasons="Synthetic informed human verdict",
             attempt_id=remote_attempt["id"],
             expected_attempt_revision=2,
         )
@@ -480,7 +502,7 @@ async def exercise(database: Path):
         assert completed_ref["complete"] and not completed_ref["blocking"]
         assert remote_blocker["id"] not in {row["id"] for row in queue["items"]}
         exported = await call("export_workstream", workstream_id=workstream_id)
-        assert exported["format"] == "task-mcp/v4" and task_id in exported["content"]
+        assert exported["format"] == "task-mcp/v5" and task_id in exported["content"]
         assert "- Workflow: Done (done)" in exported["content"]
         assert "```json" not in exported["content"]
         open_export = await call(
