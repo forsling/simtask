@@ -25,9 +25,7 @@ def create(context, title, **kwargs):
         title,
         f"Full {title} requirements",
         f"Verify {title}",
-        approval={"basis": "specific", "note": "Actual synthetic request"},
         workstream_id=ws,
-        scope="workstream",
         **kwargs,
     )
 
@@ -219,21 +217,18 @@ def test_scope_filtering_and_branch_local_gates_follow_shared_order(context):
     store.set_scope(
         ws,
         current_ws["revision"],
-        f"none +{first['id']} +{group['id']} -{second['id']} +{third['id']}",
+        f"none +{first['id']}",
     )
     move(context, third, first)
     assert [row["id"] for row in board(context, workstream_id=other_ws)["items"]] == [
         third["id"],
         second["id"],
     ]
-    assert [row["id"] for row in board(context, workstream_id=ws)["items"]] == [
-        third["id"],
-        first["id"],
-    ]
+    assert [row["id"] for row in board(context, workstream_id=ws)["items"]] == [first["id"]]
     store.record_result(
         third["id"],
         ws,
-        1,
+        store.get_tasks([third["id"]])["items"][0]["revision"],
         "main builder",
         "Durable",
         "Proof",
@@ -242,7 +237,7 @@ def test_scope_filtering_and_branch_local_gates_follow_shared_order(context):
         specification_etag=store.get_tasks([third["id"]])["items"][0]["specification_etag"],
     )
     local = store.get_next_action(ws)
-    assert local["action"] == "review" and local["task"]["id"] == third["id"]
+    assert local["action"] == "implement" and local["task"]["id"] == first["id"]
     assert store.get_next_action(other_ws)["task"]["id"] == third["id"]
     third = store.get_tasks([third["id"]])["items"][0]
     store.add_unresolved(third["id"], third["revision"], "Actual unresolved question")
@@ -250,8 +245,8 @@ def test_scope_filtering_and_branch_local_gates_follow_shared_order(context):
     second = store.get_tasks([second["id"]])["items"][0]
     store.add_prerequisite(second["id"], second["revision"], first["id"])
     assert store.get_next_action(other_ws)["task"] is None
-    # Unaccepted tasks remain excluded even when first in the shared order.
-    pending = store.create_task(project, "Pending", workstream_id=ws, scope="workstream")
+    # Inbox tasks remain excluded even when first in the shared order.
+    pending = store.create_task(project, "Pending")
     move(context, pending, third)
     assert store.get_next_action(ws)["task"]["id"] == first["id"]
 

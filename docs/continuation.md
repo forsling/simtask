@@ -59,8 +59,8 @@ Target verification: <actual command and outcome>; limits: <material limits>.
 ```
 
 Origin evidence and review remain intact. The new result follows the normal
-scope, concurrency and full-spec binding checks; factual recording grants no
-approval, resumption or completion and preserves every execution gate. Task MCP
+project identity, concurrency and full-spec binding checks; factual recording grants no
+queue placement, resumption or completion and preserves every execution gate. Task MCP
 stores assertions and does not inspect Git or authenticate
 reviewer independence, so callers must establish applicability and record it
 truthfully. No adoption tool, shared working state or automatic review
@@ -74,9 +74,9 @@ full specifications and chosen proof are explicit.
 
 When an interrupted session left durable implementation unrecorded, inspect the
 current full spec and actual checkout/commits before one factual `record_result`.
-It may coexist with pending acceptance, unresolved/prerequisite gates or a
+It may coexist with inbox placement, unresolved/prerequisite gates or a
 deferred/dropped disposition; those facts never authorize fresh implementation.
-Its concise ACK exposes unchanged approval/disposition/blockers and attempt/task
+Its concise ACK exposes unchanged queue placement/disposition/blockers and attempt/task
 revisions; retrieve complete proof deliberately.
 
 After restart, `get_next_action(workstream_id)` may return `review` with the full

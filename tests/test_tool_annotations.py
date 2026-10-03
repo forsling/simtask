@@ -41,8 +41,8 @@ DESTRUCTIVE = {
     "rebind_workstream",
     "set_scope",
     "update_task",
-    "accept_task",
-    "withdraw_acceptance",
+    "queue_task",
+    "unqueue_task",
     "set_disposition",
     "resolve_unresolved",
     "remove_prerequisite",
@@ -125,9 +125,7 @@ def test_append_only_tools_preserve_existing_payload_and_audit_history(tmp_path)
         "Original criterion",
         source="user",
         user_request="Original user request",
-        approval={"basis": "specific", "note": "Original user request"},
         workstream_id=workstream,
-        scope="workstream",
     )
     anchor_payload = _business_payload(database, anchor["id"])
     original_audit = _audit_rows(database)
@@ -146,9 +144,7 @@ def test_append_only_tools_preserve_existing_payload_and_audit_history(tmp_path)
     assert member["member"]["parent_group_id"] == group["id"]
     assert _business_payload(database, anchor["id"]) == anchor_payload
 
-    gated = store.create_task(
-        project, "Gated task", "Keep this body", workstream_id=workstream, scope="workstream"
-    )
+    gated = store.create_task(project, "Gated task", "Keep this body", workstream_id=workstream)
     gated_payload = _business_payload(database, gated["id"])
     unresolved = store.add_unresolved(gated["id"], gated["revision"], "New question")
     linked = store.add_prerequisite(gated["id"], unresolved["revision"], anchor["id"])
@@ -164,9 +160,7 @@ def test_append_only_tools_preserve_existing_payload_and_audit_history(tmp_path)
         "Delivery body",
         source="user",
         user_request="Synthetic request",
-        approval={"basis": "specific", "note": "Synthetic request"},
         workstream_id=workstream,
-        scope="workstream",
     )
     delivered_payload = _business_payload(database, delivered["id"])
     attempt = store.record_result(

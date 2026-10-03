@@ -33,11 +33,12 @@ required behavior in the current tree. Registered bindings, branch names and
 old prose do not establish applicability. This is ordinary task verification,
 not an extra repository scan or progress checkpoint at every step.
 
-`none` begins a new workstream with an empty scope. A workstream ID/name as the
-first scope expression term snapshots its current scope; pass that source's
-last read `expected_revision`. `+task-id` and
-`-task-id` adjust it. Group inclusion remains live for future members, while
-explicit exclusions persist. Only members owned by this workstream's project
+`none` begins with an empty queue. A workstream ID/name as the first expression
+term snapshots its actual queue. With `set_scope`, pass the destination's last
+returned `expected_revision`. `+task-id` and `-task-id` adjust that snapshot.
+Explicit `+group-id` queues its current local members; later membership preserves
+placement. Exclusions apply to the current expression. Selected tasks move from
+their previous queues, so each task keeps one owner. Only members owned by this workstream's project
 enter its executable queue; `groups` and `referenced_groups` show global
 progress separately. Use `list_workstreams` for global or project
 filtered candidates and `workstream_status` to inspect a scoped queue without
@@ -46,8 +47,8 @@ task state, never whether an agent is running. The older setup and `preflight`
 primitives remain available to existing clients.
 
 An ordinary "add a task" request does not automatically require feature design.
-Record concrete user-authorized scope accepted without asking again; preserve
-explicit unaccepted requests and leave agent-invented scope pending. Queueing
+Queue concrete user-authorized scope on the intended branch without asking again;
+preserve explicit inbox/design-first requests and leave agent-invented scope in the inbox. Queueing
 work does not start implementation.
 
 For "add a design task" or an exploratory feature idea to save for later, fetch
@@ -65,7 +66,7 @@ an uncertain creation. Cards never carry body previews or replacement tokens.
 For whole-field body/criteria replacements use the full-specification etag from
 your complete read or create/update acknowledgement. Valid token-bearing updates
 return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve spec acceptance and proof.
+edits need no full read. Summary edits preserve queue placement and proof.
 Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
 or `get_attempt`; page deliberate history/membership with `list_task_attempts`
 and `list_group_members`. Never write a card or summary back as a specification.

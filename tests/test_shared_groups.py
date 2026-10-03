@@ -22,7 +22,7 @@ def local_task(store, context, title, group_id=None, group_revision=None):
         title,
         source="user",
         user_request="Requested",
-        approval={"basis": "specific", "note": "Requested"},
+        workstream_id=context["workstream"]["id"],
         group_id=group_id,
         group_expected_revision=group_revision,
     )
@@ -141,7 +141,11 @@ def test_shared_group_live_exclusion_membership_revision_and_cycle(tmp_path):
     with pytest.raises(TaskError, match="revision_conflict"):
         store.add_group_member(group_id, group["revision"], other["id"], 1)
     assert store.get_tasks([other["id"]])["items"][0]["parent_group_id"] is None
-    store.set_scope(ws_b, 2, f"none +{group_id} -{existing['id']}")
+    store.set_scope(
+        ws_b,
+        store.workstream_status(ws_b)["workstream"]["revision"],
+        f"none +{group_id} -{existing['id']}",
+    )
     assert store.workstream_status(ws_b)["status"]["scoped_count"] == 0
     current = store.get_tasks([group_id])["items"][0]
     next_member = local_task(store, b, "Next", group_id, current["revision"])
@@ -152,7 +156,9 @@ def test_shared_group_live_exclusion_membership_revision_and_cycle(tmp_path):
             "scope"
         ]
     )
-    blocked = store.add_prerequisite(other["id"], 1, group_id)
+    blocked = store.add_prerequisite(
+        other["id"], store.get_tasks([other["id"]])["items"][0]["revision"], group_id
+    )
     with pytest.raises(TaskError, match="prerequisite_cycle"):
         store.add_group_member(
             group_id,
@@ -290,9 +296,7 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
         "INSERT INTO workstreams VALUES (?,?,?,?,?,?,?)",
         ("wst_legacy", "prj_legacy", "main", "main", "/legacy", 3, now),
     )
-    group_id = Store._insert_task(
-        db, "prj_legacy", "Group", "Context", "Criteria", {"basis": "specific", "note": "Accepted"}
-    )
+    group_id = Store._insert_task(db, "prj_legacy", "Group", "Context", "Criteria")
     db.execute("UPDATE tasks SET object_type='group' WHERE id=?", (group_id,))
     child_id = Store._insert_task(
         db,
@@ -300,14 +304,11 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
         "Child",
         "Body",
         "Checks",
-        {"basis": "specific", "note": "Accepted"},
         group_id,
     )
     db.execute("INSERT INTO scope_groups VALUES (?,?)", ("wst_legacy", group_id))
     db.execute("INSERT INTO scope_exclusions VALUES (?,?)", ("wst_legacy", child_id))
-    blocker_id = Store._insert_task(
-        db, "prj_legacy", "Blocker", "", "", {"basis": "specific", "note": "Accepted"}
-    )
+    blocker_id = Store._insert_task(db, "prj_legacy", "Blocker", "", "")
     db.execute(
         "INSERT INTO prerequisites (task_id,blocked_by_id) VALUES (?,?)", (blocker_id, group_id)
     )
@@ -340,7 +341,7 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
     detail = store.get_tasks([group_id, child_id])["items"]
     assert detail[0]["members"] == [child_id]
     assert detail[1]["attempts"][0]["id"] == "att_legacy"
-    assert detail[1]["accepted"]
+    assert detail[1]["queue_workstream_id"] is None
     assert child_id not in store.preflight("prj_legacy", "/legacy", branch="main")["scope"]
     assert store.get_tasks([blocker_id])["items"][0]["blocked_by"] == [group_id]
     assert store.list_events("prj_legacy", child_id)["items"][0]["action"] == "test"

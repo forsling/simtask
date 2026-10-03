@@ -12,32 +12,21 @@ automatically ask for feature design.
 
 ## Preserve concrete task authorization
 
-After `init` and checking the board and relevant specifications, when the user
-wants to queue concrete work with settled scope, record its faithful specification
-with `create_task(source="user", user_request=..., approval={"basis": "specific",
-"note": ...})`. Record the actual supporting instruction in the approval note;
-only approval accepts the exact created specification. Source and user_request
-are descriptive provenance and never grant approval. Explicit requests
-to design first or leave work unaccepted take precedence.
-For an existing task, use `accept_task(task_id, expected_revision,
-approval={"basis": "specific", "note": ...})` when the request covers its exact
-current specification. Use the same payload for standalone approval. `specific`
-means a real request/decision covering that exact scope; `delegated` requires
-actual authority to select work within the user's stated goal. Record that
-instruction and respect its limits. Never invent delegation from an idea,
-origin label or general encouragement. No separate acceptance keyword or
-repeated approval is needed.
-For example, "add a task to reject blank names" can authorize that behavior.
-Queueing accepted work does not start implementation; retain the requested scope
-and execution timing. If blockers must be added in separate calls, create pending,
-add them, then record the already-given authorization with `accept_task`.
-Use ordinary task creation for this path and stop here; do not add a design gate.
+After `init` and checking the board and relevant specifications, record concrete
+agreed work with `create_task(source="user", user_request=..., workstream_id=...)`.
+For an existing task use `queue_task(task_id, workstream_id, expected_revision)`.
+The queue is the one action that says the user wants it built on that branch;
+queueing starts no implementation and clears no other gates. Record the request
+and settled decisions in the specification. Source/user_request are descriptive.
+Respect actual delegated scope and earlier decisions without inventing authority.
+No repeated confirmation is needed when the concrete request covers the scope.
+Explicit inbox/design-first requests take precedence. To add blockers in separate
+calls, create in the inbox, add active gates, then queue when placement is agreed.
+Use ordinary creation for this path; do not add a design gate to settled work.
 
-Keep agent-suggested additions, exploratory scope and explicit requests to leave
-work unaccepted pending. Use the design-brief path below when material decisions
-remain open or the user asks to design before implementation. Routine reversible
-implementation choices do not require a design gate. Preserve earlier decisions
-and authorization; do not infer approval of scope invented by the agent.
+Agent-suggested additions and exploratory scope stay in the inbox. Use the brief
+path below when material decisions remain open. Routine reversible choices do
+not require a design gate.
 
 ## Ground the brief
 
@@ -78,10 +67,9 @@ field.
 
 For an exploratory design brief, create a normal task with honest `source`
 (`"user"` for a user idea, `"agent"` for an agent suggestion) and preserve the
-actual `user_request` independently. Omit `approval` so it starts pending.
-Use the requested scope, or the project inbox when no workstream placement was
-requested. Omit approval: supplying it before the separate gate call would
-leave an implementation eligibility window.
+actual `user_request` independently. Create in the project inbox (omit
+`workstream_id`), add the active design gate, then queue only if branch placement
+was explicitly requested. This sequence prevents an ungated eligibility window.
 
 Add an active unresolved item using the revision returned by creation:
 
@@ -95,18 +83,13 @@ design gate before revising the brief. Observer proposals are nonblocking, so
 do not use `handling="observer"` when actively capturing the requested feature.
 Completed work needs a new task; preserve deferred disposition and other gates.
 
-Leave an exploratory brief pending until the user's decisions cover its current
-specification. Reuse authorization already given when it covers that scope;
-a request to record an idea does not approve unresolved or agent-invented scope.
-If acceptance was recorded by mistake, use `withdraw_acceptance` with the last
-read revision and a reason. It retains specification text/revision, decisions,
-results and reviews; no dummy specification edit is needed. Reapproval of the
-unchanged specification may reuse applicable review. Completed requirements and proof are immutable.
-Creation/acceptance/withdrawal return compact acknowledgements; use their IDs
-and revisions to continue; request `get_tasks(specification=true)` only when full details are missing.
-Use the latest returned revision for each mutation. On a conflict, re-read and
-reconcile; after an uncertain create, inspect the board before retrying. If
-adding the gate fails, report the incomplete capture and leave the task pending.
+Leave the design gate until the user's decisions cover the resulting scope.
+Use `unqueue_task(task_id, expected_revision)` to correct mistaken placement;
+requirements, spec revision and proof survive. Completed requirements/proof are
+immutable. Compact create/update/queue/unqueue acknowledgements supply IDs and
+revisions. On conflict reconcile current details; inspect the board before
+retrying uncertain creation. If adding a gate fails, leave the brief in the inbox
+and report the incomplete capture.
 
 Return the saved task ID/title, a short account of the preliminary findings and
 the main open decisions. Explain that "let's design X" or "review design tasks"
@@ -121,7 +104,7 @@ an uncertain creation. Cards never carry body previews or replacement tokens.
 For whole-field body/criteria replacements use the full-specification etag from
 your complete read or create/update acknowledgement. Valid token-bearing updates
 return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve spec acceptance and proof.
+edits need no full read. Summary edits preserve queue placement and proof.
 Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
 or `get_attempt`; page deliberate history/membership with `list_task_attempts`
 and `list_group_members`. Never write a card or summary back as a specification.

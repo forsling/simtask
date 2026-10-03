@@ -18,7 +18,7 @@ vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const attempt = (id, workstream_id, state, spec_revision = 2) => ({
   id, workstream_id, state, spec_revision, revision: 7, implementer: id,
 });
-context.task = {id: "task", spec_revision: 2, revision: 12, status: "open", accepted: true, prerequisites: [], attempts: [
+context.task = {id: "task", spec_revision: 2, revision: 12, status: "open", queue_workstream_id: "main", prerequisites: [], attempts: [
   attempt("main-passed", "main", "passed"),
   attempt("alt-review", "alt", "review"),
   attempt("alt-rework", "alt", "rework"),

@@ -13,8 +13,7 @@ and returns the link. No browser is launched automatically.
   workstreams, each with a count of tasks that need you. “All tasks” includes
   tasks outside any one workstream. Workstream names and counts describe
   recorded state, not a running agent.
-- The list groups tasks by what they need: **Needs you** (sign-off, spec
-  acceptance, open questions), **In progress** (in review, ready, blocked),
+- The list groups tasks by what they need: **Needs you** (sign-off, inbox, open questions), **In progress** (in review, ready, blocked),
   **Later** (deferred) and **Closed** (done/dropped, collapsed). Search filters
   titles across every section. Keyboard: `/` search, `j`/`k` move, `n` new
   task, `e` edit, `r` refresh.
@@ -33,17 +32,14 @@ and returns the link. No browser is launched automatically.
 - Shared groups show all members across all projects and global completion.
   Opening a member moves to its own project's queue. A group's completion does
   not mean a particular local workstream delivered all of its members.
-- New tasks capture your request in the selected workstream or project inbox.
-  Choose draft or explicitly approve the exact specification. Edits similarly
-  offer **Save draft** or **Save and approve exact specification**. A changed
-  draft becomes pending; an approved save records your note and accepts the
-  resulting scope atomically. Approval leaves other gates intact and starts no
-  implementation. Saving unchanged fields preserves the spec revision; an
-  unchanged pending spec can be approved in the same save.
-- Accept a specification, answer a question, or defer/resume/drop with an
-  explicit confirmation and recorded decision note. These are domain operations,
-  not a generic status picker. Dropped/deferred context remains recoverable by
-  resuming the task. Completed tasks cannot be edited.
+- New tasks are queued on the selected branch, or created in the project inbox
+  from All tasks. Edits preserve placement. **Queue for <branch>** chooses the
+  owning branch, with a picker where needed; **Move to inbox** removes placement.
+  These controls require no typed note and preserve all specification/proof history.
+  Queueing starts no implementation and leaves questions/prerequisites intact.
+- Answer questions or defer/resume/drop with an actual decision note. Dropped and
+  deferred context remains recoverable; revival from dropped needs authorization.
+  Completed requirements cannot be edited; summary corrections remain available.
 - Review the result and evidence before recording a human review. The dialog
   records your review or your explicit instruction that additional independent
   review is unnecessary; it does not sign off. A separately confirmed sign-off
@@ -57,7 +53,7 @@ and returns the link. No browser is launched automatically.
   semicolons is displayed as a list; the stored text is unchanged. No remote
   fonts, scripts or image services load. Light and dark themes follow the OS.
 
-This first browser version does not create projects/workstreams, change scope
+This first browser version does not create projects/workstreams, edit bulk group scope
 or group membership, record implementation results, or handle gate proposals.
 Those operations remain available in MCP. It intentionally has no general
 Store method, SQL or shell command endpoint.
@@ -69,8 +65,8 @@ same task, the Store rejects the stale write. Your unsaved fields and note stay
 open. Load the current version alongside your draft, reconcile the contents,
 and explicitly choose that revision before submitting again. Full-detail reads
 also supply the replacement token used when saving the body/criteria. Reconciliation
-refreshes both revision and token. Decision and approved-edit dialogs require
-their confirmation checkbox again after reconciliation. The Store always makes the
+refreshes both revision and token. Decision dialogs require their confirmation checkbox again after reconciliation.
+Placement conflicts preserve the chosen branch until explicit review of current state. The Store always makes the
 final eligibility check. A network failure is not proof a write failed: inspect
 the queue/history before retrying a create, which is not deduplicated.
 
@@ -118,11 +114,3 @@ task. It prints the private link and exact stop command. All decisions in that
 database are synthetic. `pytest tests/test_viewer.py` covers protected access,
 allowed edit and decision flows, stale revisions, Store gate enforcement,
 local/global scope distinctions and cross-process launch/stop/restart.
-
-Creation defaults to **Save draft — pending acceptance**, with the original
-request preserved as user origin. Choose **Create and approve exact specification**,
-record an approval note and confirm that scope to create accepted work. Origin
-alone never accepts it. **Accept spec** records specific approval of the displayed
-specification. **Withdraw acceptance** records a reason, blocks implementation
-and sign-off, and retains spec revision, results and reviews. Reapproval of the
-same spec can reuse applicable proof. Completed tasks remain immutable.

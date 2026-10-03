@@ -4,10 +4,10 @@ import html
 import re
 from collections import Counter
 
-FORMAT = "task-mcp/v3"
+FORMAT = "task-mcp/v4"
 VIEWS = {
     "ready": "Ready",
-    "pending_acceptance": "Pending acceptance",
+    "inbox": "Inbox",
     "unresolved_items": "Blocked: unresolved questions",
     "prerequisites": "Blocked: prerequisites",
     "review": "Awaiting review",
@@ -123,10 +123,8 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                 f"- Workflow: {VIEWS[task['view']]} ({task['view']})",
                 f"- Stored disposition: {task['status']}",
                 f"- Revision: {task['revision']}; specification: {task['spec_revision']}",
-                f"- Current specification accepted: {'yes' if task['accepted'] else 'no'}",
+                f"- Owning queue: {task['queue_workstream_id'] or 'inbox'}",
                 f"- Request origin: {task['source']}",
-                f"- Approval basis (last recorded): {task['acceptance_basis']}",
-                f"- Accepted specification: {task['accepted_spec_revision'] or 'none'}",
                 f"- Updated: {task['updated_at']}",
             ]
         )
@@ -145,8 +143,6 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
         _section(lines, "Acceptance criteria", task["acceptance_criteria"])
         if task["user_request"]:
             _section(lines, "Original request", task["user_request"])
-        if task["acceptance_note"]:
-            _section(lines, "Acceptance note (last recorded)", task["acceptance_note"])
 
         if task["unresolved_items"] or task["prerequisites"]:
             lines.extend(["#### Questions and prerequisites", ""])

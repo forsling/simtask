@@ -16,19 +16,13 @@ def context(tmp_path):
     return store, setup["project"]["id"], setup["workstream"]["id"]
 
 
-def approval():
-    return {"basis": "specific", "note": "Synthetic authorized exact scope"}
-
-
 def test_summary_freshness_completion_and_token_continuation(context):
     store, project, ws = context
     task = store.create_task(
         project,
         "Deliver",
         body="Complete requirements" * 3000,
-        approval=approval(),
         summary="Preserve complete requirements.",
-        scope="workstream",
         workstream_id=ws,
     )
     token = task["specification_etag"]
@@ -36,7 +30,6 @@ def test_summary_freshness_completion_and_token_continuation(context):
         task["id"],
         task["revision"],
         {"title": "Deliver safely"},
-        approval=approval(),
         specification_etag=token,
     )
     assert renamed["spec_revision"] == 2 and renamed["specification_etag"] != token
@@ -46,7 +39,9 @@ def test_summary_freshness_completion_and_token_continuation(context):
         and not {"body", "acceptance_criteria", "specification_etag", "view"} & card.keys()
     )
     refreshed = store.update_task(task["id"], renamed["revision"], {"summary": card["summary"]})
-    assert refreshed["changed"] and not refreshed["spec_changed"] and refreshed["accepted"]
+    assert (
+        refreshed["changed"] and not refreshed["spec_changed"] and refreshed["queue_workstream_id"]
+    )
     assert "specification_etag" not in refreshed
     same = store.update_task(task["id"], refreshed["revision"], {"summary": card["summary"]})
     assert not same["changed"] and same["revision"] == refreshed["revision"]
@@ -80,7 +75,7 @@ def test_summary_freshness_completion_and_token_continuation(context):
         task["id"], done["revision"], {"summary": "Corrected descriptive intent."}
     )
     after = store.get_tasks([task["id"]])["items"][0]
-    assert corrected["changed"] and after["status"] == "done" and after["accepted"]
+    assert corrected["changed"] and after["status"] == "done" and after["queue_workstream_id"]
     assert (
         after["body"],
         after["spec_revision"],
@@ -123,11 +118,8 @@ def test_bounded_projections_exact_proof_and_local_gates(context, tmp_path):
         project,
         "Long specification",
         body="Unabridged scope\n" * 4000,
-        scope="workstream",
         workstream_id=ws,
-        approval=approval(),
     )
-    store.set_scope(other, 1, f"none +{task['id']}")
     revision = task["revision"]
     attempts = []
     for stream in (other, ws, ws, ws, ws):
@@ -171,7 +163,7 @@ def test_bounded_projections_exact_proof_and_local_gates(context, tmp_path):
     with pytest.raises(TaskError, match="invalid_attempt_owner"):
         store.read_tasks([unrelated["id"]], True, attempt_ids=[attempts[0]["id"]])
     updated = store.update_task(
-        task["id"], revision, {"body": "New complete scope"}, approval(), task["specification_etag"]
+        task["id"], revision, {"body": "New complete scope"}, task["specification_etag"]
     )
     assert store.read_tasks([task["id"]], workstream_id=ws)["items"][0]["view"] == "ready"
     assert store.list_task_attempts(task["id"])["items"] == []
@@ -187,7 +179,11 @@ def test_groups_init_events_and_scope_pages_stay_bounded(context):
     for i in range(24):
         group_revision = store.get_tasks([group["id"]])["items"][0]["revision"]
         store.create_task(
-            project, f"Member {i}", group_id=group["id"], group_expected_revision=group_revision
+            project,
+            f"Member {i}",
+            group_id=group["id"],
+            group_expected_revision=group_revision,
+            workstream_id=ws,
         )
     spec = store.read_tasks([group["id"]], True)["items"][0]
     assert len(spec["members"]) == 3 and spec["member_total"] == 24 and spec["members_has_more"]
@@ -236,9 +232,7 @@ def test_every_mcp_write_ack_is_compact_and_can_continue(context):
             project=project,
             title="Concrete",
             body=secret,
-            approval=approval(),
             workstream_id=ws,
-            scope="workstream",
         )
         gate = await call(
             "add_unresolved", task_id=task["id"], expected_revision=task["revision"], text=secret
@@ -348,7 +342,6 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             title="Deliver",
             body=submitted,
             workstream_id=ws,
-            scope="workstream",
         )
         added = await call(
             "add_group_member",
@@ -410,23 +403,22 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             changes={"summary": "Retain approved delivery constraints."},
         )
         accepted = await call(
-            "accept_task",
+            "queue_task",
             task_id=task["id"],
+            workstream_id=ws,
             expected_revision=summary["revision"],
-            approval=approval(),
         )
         same = await call(
-            "accept_task",
+            "queue_task",
             task_id=task["id"],
+            workstream_id=ws,
             expected_revision=accepted["revision"],
-            approval=approval(),
         )
         assert not same["changed"]
         withdrawn = await call(
-            "withdraw_acceptance",
+            "unqueue_task",
             task_id=task["id"],
             expected_revision=same["revision"],
-            note="Correct mistaken authority",
         )
         deferred = await call(
             "set_disposition",
@@ -471,7 +463,6 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             title="Split",
             body=submitted,
             workstream_id=ws,
-            scope="workstream",
         )
         split = await call(
             "decompose_task",
@@ -500,7 +491,7 @@ def test_summary_only_correction_after_group_completion_preserves_members(contex
     member = store.create_task(project, "Member", group_id=group["id"], group_expected_revision=1)
     current_ws = store.workstream_status(ws)["workstream"]["revision"]
     store.set_scope(ws, current_ws, f"none +{group['id']}")
-    accepted = store.accept_task(member["id"], member["revision"], approval())
+    accepted = store.get_tasks([member["id"]])["items"][0]
     attempt = store.record_result(
         member["id"],
         ws,

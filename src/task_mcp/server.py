@@ -11,7 +11,7 @@ from typing import Any, Literal
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from task_mcp.reference import default_skills
 from task_mcp.runtime import RUNTIME_IDENTITY
@@ -25,14 +25,6 @@ class TaskPatch(BaseModel):
     body: str | None = None
     acceptance_criteria: str | None = None
     summary: str | None = None
-
-
-class Approval(BaseModel):
-    """User authority covering the exact specification, independent of origin."""
-
-    model_config = ConfigDict(extra="forbid")
-    basis: Literal["specific", "delegated"]
-    note: str = Field(min_length=1)
 
 
 def domain_errors(function):
@@ -70,14 +62,15 @@ def create_server(
         version=RUNTIME_IDENTITY["package_version"],
         instructions=(
             "Init an explicit checkout/branch and retain its IDs. Continue with returned "
-            "revisions; reconcile conflicts. Record only actual user authority, independent "
+            "revisions; reconcile conflicts. Queue concrete agreed work on exactly one branch; "
+            "unqueue moves it to the inbox. Edits retain placement. Record independent "
             "review and informed human verdicts. Full specifications govern work. "
             "Prerequisites clear on current-spec passed/human review by default; "
             "signoff links are rare exceptions for work very likely wasted "
             "without a human verdict. "
             "Use add_prerequisite to link a blocker; remove_prerequisite with the last "
             "dependent revision and an actual decision note to remove a mistaken or obsolete "
-            "link. Removal preserves acceptance and proof; an absent link is a no-op. "
+            "link. Removal preserves queue placement and proof; an absent link is a no-op. "
             "A satisfied canonical milestone does not prove integration into this checkout."
         ),
         lifespan=lifespan,
@@ -270,7 +263,7 @@ def create_server(
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def set_scope(workstream_id: str, expected_revision: int, expression: str) -> dict[str, Any]:
-        """Replace scope using auditable set expression: none, a workstream base, +/-task/group."""
+        """Replace a queue using none, a workstream base, +/-task/group snapshots."""
         return store.compact_call("set_scope", workstream_id, expected_revision, expression)
 
     @server.tool(annotations=additive, structured_output=True)
@@ -283,17 +276,14 @@ def create_server(
         source: Literal["agent", "user", "unknown"] = "agent",
         user_request: str = "",
         workstream_id: str | None = None,
-        scope: Literal["inbox", "workstream"] = "inbox",
         group_id: str | None = None,
         group_expected_revision: int | None = None,
-        approval: Approval | None = None,
         summary: str | None = None,
     ) -> dict[str, Any]:
-        """Persist origin/request; only supplied approval atomically accepts this exact spec.
+        """Create in the inbox, or queued when workstream_id is supplied.
 
-        Omit approval for pending/design-first work. Approval needs real specific
-        or delegated user authority and its supporting instruction, and clears no
-        other gates. Group membership requires the group's read revision.
+        Queue only concrete agreed work. Open design questions remain blocking gates.
+        Group membership preserves placement; it does not inherit a group's queue.
         """
         return store.compact_call(
             "create_task",
@@ -304,10 +294,8 @@ def create_server(
             source,
             user_request,
             workstream_id,
-            scope,
             group_id,
             group_expected_revision,
-            approval.model_dump() if approval is not None else None,
             summary,
         )
 
@@ -374,38 +362,36 @@ def create_server(
         task_id: str,
         expected_revision: int,
         changes: TaskPatch,
-        approval: Approval | None = None,
         specification_etag: str | None = None,
     ) -> dict[str, Any]:
-        """Save edits and optional exact-scope approval atomically; return compact change flags.
+        """Save edits while retaining queue placement and all historical proof.
 
-        Body/acceptance_criteria are whole-field replacements: supply the full-spec etag you
-        already read or authored. get_tasks(specification=true) supplies it if missing.
-        Use returned revisions/tokens; reconcile conflicts. Title/summary need no full read.
-        Actual specific/delegated approval accepts the resulting spec; unapproved
-        spec changes become pending. Other gates and old-spec proof stay intact.
-        Unchanged patches are no-ops unless approval changes; still check revision.
+        Whole body/criteria replacements require the current full specification_etag.
+        Actual requirement changes advance spec_revision; older proof stays historical.
+        No-op patches retain revisions; every call checks expected_revision.
         """
         return store.compact_call(
             "update_task",
             task_id,
             expected_revision,
             changes.model_dump(exclude_unset=True),
-            approval.model_dump() if approval is not None else None,
             specification_etag,
         )
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def accept_task(task_id: str, expected_revision: int, approval: Approval) -> dict[str, Any]:
-        """Approve the exact current spec using classified actual authority; keep other gates."""
-        return store.compact_call("accept_task", task_id, expected_revision, approval.model_dump())
+    def queue_task(task_id: str, workstream_id: str, expected_revision: int) -> dict[str, Any]:
+        """Queue on one same-project branch; atomically move from any previous queue.
+
+        Use the last task revision. Completed tasks are immutable; a no-op retains revisions.
+        """
+        return store.compact_call("queue_task", task_id, workstream_id, expected_revision)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def withdraw_acceptance(task_id: str, expected_revision: int, note: str) -> dict[str, Any]:
-        """Withdraw acceptance with an audited reason, preserving spec and delivery history."""
-        return store.compact_call("withdraw_acceptance", task_id, expected_revision, note)
+    def unqueue_task(task_id: str, expected_revision: int) -> dict[str, Any]:
+        """Move to the inbox with revision checks; preserve requirements and all proof."""
+        return store.compact_call("unqueue_task", task_id, expected_revision)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -416,7 +402,7 @@ def create_server(
         note: str,
         authorization: str | None = None,
     ) -> dict[str, Any]:
-        """Pause preserving approval; drop revokes it. Revival needs actual authorization."""
+        """Pause/drop preserving queue and proof. Revival needs actual authorization."""
         return store.compact_call(
             "set_disposition", task_id, expected_revision, disposition, note, authorization
         )
@@ -437,7 +423,7 @@ def create_server(
     def resolve_unresolved(
         task_id: str, expected_revision: int, item_id: str, user_note: str
     ) -> dict[str, Any]:
-        """Remove a resolved item after a user decision; acceptance remains valid."""
+        """Remove a resolved item after a user decision; queue placement stays unchanged."""
         return store.compact_call(
             "resolve_unresolved", task_id, expected_revision, item_id, user_note
         )
@@ -471,7 +457,7 @@ def create_server(
         """Remove a prerequisite link with an actual decision note; recalculate the gate.
 
         Use the dependent task's last revision. A removed link advances it once;
-        an absent link returns changed=false with the same revision. Acceptance,
+        an absent link returns changed=false with the same revision. Queue placement,
         specifications and proof survive. Completed tasks remain immutable.
         The configured actor and note are audited, including no-ops.
         """
@@ -490,11 +476,11 @@ def create_server(
         workstream_id: str | None = None,
         milestone: Literal["review", "signoff"] = "review",
     ) -> dict[str, Any]:
-        """Create and link a pending prerequisite in this scope or inbox.
+        """Create and link a prerequisite queued here, or in the inbox.
 
         Default review clears on done or current-spec passed/human_review. Use signoff only
         exceptionally when work would very likely be wasted without the user's verdict.
-        Satisfaction is reversible; it neither grants approval nor proves code integration.
+        Satisfaction is reversible; it neither queues work nor proves code integration.
         """
         return store.compact_call(
             "propose_prerequisite",
@@ -526,7 +512,7 @@ def create_server(
     def decompose_task(
         task_id: str, expected_revision: int, members: list[dict[str, str]]
     ) -> dict[str, Any]:
-        """Convert a task in place to a group and atomically create required pending members."""
+        """Convert to a group and create required members in the parent queue atomically."""
         return store.compact_call("decompose_task", task_id, expected_revision, members)
 
     @server.tool(annotations=editing, structured_output=True)
@@ -560,7 +546,7 @@ def create_server(
         """Read one implement/review action in shared order, without claiming or reordering.
 
         Full current spec/token and exactly one applicable local proof for review
-        (or rework) are included. Autonomous actions require acceptance and clear
+        (or rework) are included. Autonomous actions require queue placement and clear
         gates; passed/human_review waits for the user. Null gives bounded counts.
         Verify the actual checkout/artifacts before trusting recorded proof.
         """
@@ -583,7 +569,7 @@ def create_server(
 
         First check the actual checkout/artifacts and current full specification.
         Supply its etag, concrete artifacts ({kind: artifact|commit, reference: ...}),
-        actual verification and context evidence. Acceptance, disposition and blockers
+        actual verification and context evidence. Queue placement, disposition and blockers
         stay unchanged. The ACK omits proof; retrieve it deliberately with get_tasks.
         """
         return store.compact_call(
@@ -632,8 +618,8 @@ def create_server(
         result_note: str | None = None,
         specification_question: str | None = None,
     ) -> dict[str, Any]:
-        """Record one actual human decision on purpose and result. Approve covers both;
-        specific purpose approval may be reused. Direction-only decisions leave human
+        """Record one actual human decision on purpose and result. Approve covers both.
+        Direction-only decisions leave human
         technical quality unjudged unless separately supplied with its actual note.
         Revise needs a concrete specification question. Read full proof with get_tasks.
         """

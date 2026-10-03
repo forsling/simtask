@@ -1,6 +1,6 @@
 # Task MCP workstream export
 
-Format: task-mcp/v3
+Format: task-mcp/v4
 
 Snapshot only. Editing this document does not update Task MCP.
 
@@ -57,8 +57,8 @@ whole group is complete. Only local scoped task details appear below.
 - Workflow: Awaiting sign-off (signoff)
 - Stored disposition: open
 - Revision: 2; specification: 1
-- Current specification accepted: yes
-- Accepted specification: 1
+- Owning queue: wst_main
+- Request origin: user
 - Updated: 2026-09-26T00:00:00.000000Z
 - Group: Live viewing (`grp_rollout`)
 
@@ -73,7 +73,7 @@ whole group is complete. Only local scoped task details appear below.
 
 > Transitions are covered by tests and the indicator is keyboard accessible.
 
-#### Acceptance note (last recorded)
+#### Original request
 
 > Synthetic example request.
 
@@ -107,8 +107,8 @@ Reviewer: example\-reviewer
 - Workflow: Blocked: unresolved questions (unresolved_items)
 - Stored disposition: open
 - Revision: 2; specification: 1
-- Current specification accepted: yes
-- Accepted specification: 1
+- Owning queue: wst_main
+- Request origin: user
 - Updated: 2026-09-26T00:00:00.000000Z
 
 #### Specification
@@ -119,7 +119,7 @@ Reviewer: example\-reviewer
 
 > The wording is agreed before implementation.
 
-#### Acceptance note (last recorded)
+#### Original request
 
 > Synthetic example request.
 

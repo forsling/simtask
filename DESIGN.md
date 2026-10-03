@@ -42,12 +42,16 @@ states that agent activity is intentionally unobserved; there are no heartbeats
 or leases. These summaries make no claim about integrated feature completion. Page
 offsets browse current state; stable IDs support durable resumption.
 
-Concrete tasks are canonical project objects. One global group model holds
-context and membership across projects. A workstream's explicit scope consists
-of local tasks, group references, and exclusions. A group inclusion is live:
-future members of the workstream's own project enter it unless individually excluded. An
-explicit exclusion takes precedence over group expansion. A workstream can
-snapshot another workstream's current expression, then add or remove references.
+Concrete tasks are canonical project objects. Each task is in the inbox or has
+one owning workstream queue in its project. Queueing on another branch moves it;
+unqueueing returns it to the inbox. A global group holds context and membership
+across projects. Group references are context only: explicitly adding a group
+with `set_scope` queues a snapshot of its current local members, respecting
+individual exclusions in that expression. Future membership preserves each
+member's placement. A workstream-base expression snapshots its actual queue;
+it moves selected tasks rather than duplicating ownership. Decomposition replaces
+a queued parent with concrete members in its queue. Completed placement is
+immutable; bulk moves that would change a completed task fail atomically.
 Project task order is shared; scope and prerequisites remain gates. Scheduling
 metadata is separate from task revisions and immutable specifications/proof.
 An atomic `reorder_tasks` moves one concrete task immediately before/after a
@@ -57,7 +61,7 @@ fail atomically. A no-op does not advance the order revision or normalize keys;
 a changed move advances it once. Insertions append and advance it; decomposition
 advances it for parent removal and member insertions. Existing projects start at
 order revision 0 during the explicit schema 3 migration. Completed rows may
-shift without touching acceptance, selected delivery or review. Each workstream
+shift without touching queue placement, selected delivery or review. Each workstream
 filters shared order by local scope and eligibility. Reads/selection never
 reorder. Actual scheduling intent and actor attribution live in existing audit
 events; no automatic priority rules, normalization or usage-tracking calls exist.
@@ -68,48 +72,43 @@ an empty local slice does not imply global completion.
 
 ## Tasks and groups
 
-Task origin (`source`) and the original `user_request` are descriptive metadata,
-independent of approval and retained on pending tasks. Creation without approval
-is pending. A common `approval={basis: specific|delegated, note: actual supporting
-instruction}` payload atomically accepts the exact created spec, and is also
-required by standalone acceptance. Specific approval covers the exact scope;
-delegated approval requires actual authority to select work within a stated
-goal. Explicit pending/design-first requests take precedence. Queueing starts
-no implementation; approval clears no other gates. Legacy origin and approvals
-are unknown without guessing from historic text or changing accepted/completed
-state. Database schema revision 2 introduced this data; candidate protocol 9
-retains the purpose/result signoff contract described below.
+Task origin (`source`) and the original `user_request` are descriptive metadata.
+`create_task` with a workstream creates queued work; without one it creates an
+inbox task. `queue_task(task_id, workstream_id, expected_revision)` atomically
+chooses its one branch; `unqueue_task(task_id, expected_revision)` moves it to
+the inbox. No note or separate purpose decision is required. Workflow skills
+choose which concrete agreed tasks to queue; raw calls remain available.
+Queueing starts no implementation and clears no unresolved or prerequisite gates.
 
-Acceptance binds to the current specification. `update_task` atomically saves
-title/body/criteria amendments and optional exact-scope specific/delegated
-approval. An actual edit without approval becomes pending; all three fields
-belong to the spec, without inferred editorial exceptions. Unchanged fields
-are no-ops unless approval changes; unchanged pending specs can be approved
-without advancing their spec revision. Whole-field body/criteria replacement
-requires the `specification_etag` from a full detail read, tied to task ID,
-spec revision, body and criteria, alongside the expected task revision.
-MCP `get_tasks` returns cards by default, or a complete current specification
-with `specification=true`. Bounded explicit `attempt_ids` retrieves exactly chosen
-proof in the same call; scoped summaries/gates use current-spec local evidence.
-Unscoped aggregate counts imply no branch readiness. Approval is committed with the resulting
-spec so no intermediate accepted state is exposed. Failed concurrency or audit
-writes roll back both together. Clearing an unresolved item or recording
-evidence does not. Revision-checked `withdraw_acceptance` audits its reason and
-clears current acceptance without a dummy edit, preserving spec revision,
-decisions and proof history. It gates implementation and sign-off. Reapproval
-of the same spec may reuse applicable review; genuine spec changes retain old
-attempts on their old revision. Readiness also depends on unresolved items,
-prerequisites, disposition, scope and attempts. Completed specifications/proof are immutable;
-a new requirement after completion is a new task. Summary-only corrections remain audited.
+`update_task` saves title/body/criteria/summary amendments without changing
+placement. Genuine requirement edits advance `spec_revision`; old attempts and
+reviews remain historical on their original revision. Whole-field body/criteria
+replacement requires the full `specification_etag` and expected task revision.
+Summary-only corrections preserve spec revision and proof. No-op mutations retain
+revisions. Queue moves check the task revision, advance it once, and advance each
+affected workstream revision once. Bulk scope operations also advance every
+changed task revision and affected workstream revision once. Failed concurrency
+or audit writes roll back the entire operation. Completed specifications and
+proof are immutable; new requirements after completion become new tasks.
 
-Existing schemas migrate transactionally after a fresh verified SQLite online
-backup under the writer lock. Backup includes committed WAL data and remains
-available after success or rollback. Migration preserves all existing rows and
-history; it never infers origin or approval basis from prior notes. Fresh empty
-databases create schema 5 directly. Candidate code, databases and companion
-workflow updates must remain isolated until client rollout can happen together.
-Create/update/accept/withdraw acknowledgements return continuation IDs/revisions,
-acceptance and accurate gates without echoing specs or proof history.
+Schema 6 adds a unique `queue_members.task_id` and a private
+`legacy_queue_migration` report/archive. Migration preserves every existing task
+row, event, attempt, review and selected completion. Legacy authority columns in
+tasks and legacy `scope_members`/`scope_exclusions` remain frozen private historical
+storage; current readers and writers never expose or change them. The archive
+records their original authority and scope references for every existing entity.
+Mutable scoped tasks without a current-spec legacy decision move to the inbox.
+Eligible tasks with multiple scopes keep the owner with the most recent attempt
+among eligible scopes, breaking ties by oldest workstream creation time then ID.
+Completed tasks retain all history regardless of legacy decision classification;
+only the new unique owning queue is chosen. Each report row records candidates,
+chosen owner and reason. Group references survive as context but no longer expand
+live. Fresh databases create schema 6 directly. Existing databases take a fresh
+verified private SQLite online backup under the migration writer lock; transaction
+failure rolls back schema and data, retaining the backup. Candidate code, copied
+databases and client workflows remain isolated until coordinated rollout.
+Create/update/queue/unqueue acknowledgements return IDs, revisions, owning queue
+and accurate gates without echoing specifications or proof.
 
 Groups store overarching context and aggregate completion. They are never
 implementable and carry no unresolved items, disposition, attempts, or execution
@@ -127,7 +126,7 @@ scope and completion rules.
 
 An empty group remains incomplete and mutable. A nonempty group completes only
 when every member is signed off; completed groups are immutable. Each member
-keeps its own accepted specification, attempt, review and sign-off. A concrete
+keeps its own current specification, attempt, review and sign-off. A concrete
 task may depend on any canonical task or whole-group completion in any project,
 without requiring shared membership. The default `review` prerequisite milestone
 is satisfied by done or any current-spec `passed`/`human_review` attempt across
@@ -139,7 +138,7 @@ Satisfaction is computed from current state: rework or a genuine specification
 change can block a review link again, while dependent results survive. Canonical
 completion still requires human sign-off; passing a prerequisite is no proof of
 code integration into the dependent checkout. The link changes
-only the dependent gate revision, never specification acceptance, local scope,
+only the dependent gate revision, never specification revision, local scope,
 attempts, reviews or code integration. Compact prerequisite references expose
 ID, title, project identity, required milestone, satisfaction and canonical
 blocking/completion facts in full
@@ -157,7 +156,7 @@ the same transaction. It immediately recomputes the gate and advances only the
 dependent task revision, once for a real deletion. An absent link returns
 `changed=false` with the original revision/timestamp, while stale revisions and
 completed/group targets still fail under the same mutability rules as additions.
-Specifications, acceptance, scope, attempts, reviews and other link milestones
+Specifications, queue placement, attempts, reviews and other link milestones
 survive. Schema 5 already supports removal; no migration is needed.
 Replace known prose gates only after verifying actual IDs/meaning and adding
 real links before resolving the old item; no automatic parsing or state repair.
@@ -168,9 +167,8 @@ Reading/selecting a task does not claim it. An implementer creates an attempt
 only when recording a durable result. Parallel workstreams may produce
 alternative attempts on one canonical task. An independent declared reviewer
 or an explicit human review must pass an attempt before human sign-off. Sign-off
-selects a reviewed attempt. Rejection chooses rework on the current accepted
-specification or revision that invalidates acceptance and adds an unresolved
-item. The service cannot authenticate the reviewer or the user's verdict;
+selects a reviewed attempt. Rejection chooses rework on the current specification or opens an unresolved
+specification question. Queue placement stays unchanged. The service cannot authenticate the reviewer or the user's verdict;
 workflow clients must obtain and accurately record those decisions.
 
 Continuation keeps the durable workstream ID, scope and history through
@@ -194,11 +192,11 @@ required alongside implementer/context proof; the new proof envelope lives in
 the existing evidence TEXT column, with old text evidence/history preserved.
 Recording changes only the attempt and task record revision, never authority,
 disposition, gates or completion. ACKs omit proof and expose attempt/task revisions
-plus unchanged acceptance/disposition and active gate diagnostics.
+plus unchanged queue placement/disposition and active gate diagnostics.
 
 `get_next_action` replaces the old implementation-only selector with no alias or
 extra tool. It follows shared order across eligible implementation and review,
-requiring current approval, active disposition and clear unresolved/prerequisite
+requiring queue placement, active disposition and clear unresolved/prerequisite
 gates. Within a task, pending current-spec local review precedes implementation;
 newest first then ID ascending is deterministic. Passed/human_review waits for
 human sign-off; rework implementation carries its attempt/findings. One selected
@@ -243,19 +241,18 @@ semantics. The service does not authenticate the human behind a token.
 The initial recommended path is `init -> proposal/unresolved review ->
 superdevloop -> sign-off`. Features with unsettled design use `feature-capture`
 then `feature-design` before implementation. Capture does bounded research and
-saves a pending feature brief with an active unresolved design gate. Pending
-creation precedes adding the gate so there is no accepted, ungated intermediate
-task. The human-readable `Feature design required (feature-design):` prefix
+saves an inbox feature brief with an active unresolved design gate. Inbox
+creation precedes adding the gate and any requested branch placement so there is
+no queued, ungated intermediate task. The human-readable `Feature design required (feature-design):` prefix
 identifies the workflow by convention; no schema, task type or parser is added.
 Design resumes those briefs, researches current behavior, compares alternatives,
 recommends an approach and records the user's decisions. Selection includes
-pending-acceptance tasks whose unresolved gates are hidden by their derived view.
+inbox tasks alongside queued tasks with unresolved gates.
 Unrelated unresolved items do not automatically imply feature design.
 
 Design saves the agreed specification before resolving settled gates, keeping
-unfinished decisions blocked. Decomposition keeps the parent pending while
-clearing settled gates and creates pending members; only exact specifications
-covered by the user's informed acceptance become eligible. Prior informed
+unfinished decisions blocked. Unqueue the parent before clearing settled gates for decomposition; children
+then start in the inbox. Queue only the concrete agreed specifications. Prior informed
 authorization remains usable; a capture/design request alone is not permission
 to implement. Finishing design creates no implementation attempt or review.
 MCP instructions route familiar design-task language to the two packaged skills
@@ -269,7 +266,7 @@ deterministic workstream view, never an editable synchronized ledger. The server
 writes its private SQLite database; it does not edit project files, client
 configuration, or installed skills.
 
-The default `task-mcp/v3` export is human-readable Markdown with the same derived
+The default `task-mcp/v4` export is human-readable Markdown with the same derived
 workflow views as the scoped queue, readable specifications/gates/result history,
 and a separate global group summary. Stored disposition is labelled separately.
 Only local scoped concrete tasks receive full entries. Other-workstream and
@@ -285,18 +282,14 @@ rare-workflow parity.
 Product proof requires a complete Codex dogfood cycle plus access and catalog
 validation in Claude Code, OpenCode, and Pi.
 
-Candidate purpose/result signoff (introduced in protocol 3; current protocol 8,
-schema 5) uses one human
-`approve`/`rework`/`revise`/`drop`/`defer` decision. Specific current-scope purpose
-approval references its actual classified audit decision; delegated/unknown
-purpose is judged by the user's informed signoff decision. Direction-only
-changes preserve sound attempts and leave human technical quality unjudged
-unless separately supplied. Revise withdraws approval and opens a concrete
-question without a fabricated spec revision; drop withdraws approval and needs
-actual authority for revival; defer retains approval. Both remain unsatisfied
-prerequisites. Exact task/spec/attempt revisions and separate judgments live in
-immutable audit records, while full task reads deliberately expose proof and
-decision references. No additional DDL is needed for signoff judgments.
+The current signoff decision/attempt-revision contract keeps the existing
+approve/rework/revise/drop/defer decisions. New purpose judgments record the actual
+human verdict without reusing old purpose decisions. Direction changes preserve
+sound proof and leave human quality unjudged unless separately supplied. Revise
+opens a concrete question without fabricating a spec revision. Drop/defer preserve
+queue placement, context and proof; revival from dropped needs actual authority.
+Current-spec reviewed proof and clear completion gates govern approval. Historical
+audit judgments remain immutable, with their original facts intact.
 
 Protocol 7 makes ordinary MCP calls compact and complete for their chosen action.
 Cards never expose partial specifications or replacement tokens. Specifications
@@ -312,7 +305,7 @@ Conflicts reconcile against complete requirements before replacement.
 Schema 4 adds nullable task/group summary and summary_spec_revision, preserving all
 prior columns/rows without backfill. Summaries are optional, non-normative one-line
 intent/constraints up to 240 Unicode characters. Null clears; omitted values persist.
-Summary-only corrections change ordinary revision while preserving acceptance/spec/
+Summary-only corrections change ordinary revision while preserving queue placement/spec/
 proof, even after completion. Later spec edits make summaries stale; explicitly
 reaffirmed or simultaneous edits stamp the current spec. Freshness tracks revisions,
 not descriptive accuracy. Init queues/candidates are bounded to ten; ordinary task/

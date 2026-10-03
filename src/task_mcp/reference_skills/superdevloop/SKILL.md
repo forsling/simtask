@@ -1,6 +1,6 @@
 ---
 name: task-mcp-superdevloop
-description: Implement scoped accepted tasks with a fresh implementer and reviewer.
+description: Implement queued tasks with a fresh implementer and reviewer.
 ---
 
 # Superdevloop
@@ -17,18 +17,17 @@ attempt and its evidence/review provenance; no second history read is needed.
 sign-off. Follow shared project order across both action kinds. Pending local
 review precedes another implementation of the same task. Passed/human-reviewed
 results wait for the user. Rework returns the attempt and relevant findings.
-Do not accept feature briefs or clear design gates to drain the queue. When the
+Do not queue feature briefs or clear design gates to drain the queue. When the
 user requests a design discussion, fetch `get_default_skills(name="feature-design")` and follow
 `feature-design`; save exploratory feature ideas through `feature-capture`.
-Shared project order determines the next eligible action. Scope, current acceptance,
+Shared project order determines the next eligible action. Queue placement,
 active disposition, unresolved items and prerequisites gate both autonomous
-implementation and review. Never invent an accepted task or move work into
-another workstream. Agent-suggested new work is a pending proposal in this scope
-or the inbox. Concrete user-requested additions retain authorization for their
-exact scope without another approval; respect explicit unaccepted requests.
+implementation and review. Never invent a queued task or move work into
+another workstream. Agent-suggested new work is a proposal in the inbox. Concrete user-requested additions retain authorization for their
+exact scope without another confirmation; respect explicit inbox/design-first requests.
 Title tasks by observable outcome; keep progress and evidence out of task bodies.
-Group references are context, not executable tasks. A shared group expands only
-to concrete members owned by this workstream's project; inspect whole-group
+Group references are context, not executable tasks. Explicit group scope queues a snapshot of current local members; future members
+retain their placement; inspect whole-group
 progress separately with `get_tasks(ids=[group_id])` or `workstream_status`.
 
 Continue using the durable workstream ID and its retained scope/history.
@@ -46,7 +45,7 @@ Add required links with `add_prerequisite`. Use
 `remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` only for a
 mistaken or obsolete link, with the dependent task's last revision and the actual
 decision note. Removal immediately recalculates the gate and preserves spec,
-acceptance, scope and proof; only a real deletion advances the revision. An absent
+queue placement and proof; only a real deletion advances the revision. An absent
 link returns `changed=false`, while stale revisions and completed tasks still fail.
 The configured actor and note are audited. Never remove a real blocker merely to
 drain the queue.
@@ -64,7 +63,7 @@ whose evidence cites the origin attempt/workstream, actual integrated source
 and target commits, target verification and material limits. Then send that new
 attempt and target checkout to a fresh independent reviewer. Never copy the
 origin review or infer integration from a title, branch name, deployment report
-or prose. Recording checks mutability, scope, concurrency and the full-spec token;
+or prose. Recording checks mutability, project identity, concurrency and the full-spec token;
 it grants no approval/completion and never clears the execution gates.
 Completed tasks keep their selected human-approved proof; a later integration
 requirement is a new task. No adoption API or shared working state is needed.
@@ -86,14 +85,14 @@ revision, `specification_etag`, actual implementer/summary/context `evidence`,
 `artifacts=[{"kind": "commit", "reference": <actual hash>} ]` (or kind
 `artifact` with the actual path/URL)
 and a `verification` string with the actual checks/outcomes and limits. The ACK
-returns attempt `id`/`revision`, `task_revision`, unchanged `accepted`/`status`
+returns attempt `id`/`revision`, `task_revision`, unchanged `queue_workstream_id`/`status`
 and active gate diagnostics; it does not echo evidence. Then select again and
 send the `review` action to a fresh reviewer. No start/claim/checkpoint is needed.
 
 If interrupted work is durably implemented but unrecorded, read the current full
 spec and inspect the actual checkout/commits before factual recording. This rare
-recovery may record proof while unaccepted, unresolved, prerequisite-blocked,
-deferred or dropped; it never accepts, resumes, clears gates, completes a
+recovery may record proof while in the inbox, unresolved, prerequisite-blocked,
+deferred or dropped; it never queues, resumes, clears gates, completes a
 prerequisite or manufactures review. Do not use factual recording as permission
 to start autonomous implementation. Existing Git files/history are ordinary
 continuation evidence; add no routine extra scan, partial-progress log or
@@ -115,7 +114,7 @@ an uncertain creation. Cards never carry body previews or replacement tokens.
 For whole-field body/criteria replacements use the full-specification etag from
 your complete read or create/update acknowledgement. Valid token-bearing updates
 return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve spec acceptance and proof.
+edits need no full read. Summary edits preserve queue placement and proof.
 Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
 or `get_attempt`; page deliberate history/membership with `list_task_attempts`
 and `list_group_members`. Never write a card or summary back as a specification.

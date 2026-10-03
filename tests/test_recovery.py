@@ -27,11 +27,7 @@ def task(store, project, ws, title="Recover result", accepted=True):
         title,
         body="The exact full requirements",
         acceptance_criteria="Check durable proof",
-        workstream_id=ws,
-        scope="workstream",
-        approval={"basis": "specific", "note": "Synthetic exact scope request"}
-        if accepted
-        else None,
+        workstream_id=ws if accepted else None,
     )
     return full(store, ack)
 
@@ -78,7 +74,9 @@ def test_factual_result_preserves_approval_disposition_and_every_gate(
     after = full(store, work)
     assert ack["id"] == after["attempts"][0]["id"] and ack["revision"] == 1
     assert ack["task_revision"] == before["revision"] + 1
-    assert ack["accepted"] == before["accepted"] and ack["status"] == disposition
+    assert (
+        ack["queue_workstream_id"] == before["queue_workstream_id"] and ack["status"] == disposition
+    )
     assert not {"summary", "evidence", "artifacts", "verification", "attempts"} & ack.keys()
     retained = set(before) - {"attempts", "revision", "updated_at"}
     assert {k: before[k] for k in retained} == {k: after[k] for k in retained}
@@ -87,9 +85,9 @@ def test_factual_result_preserves_approval_disposition_and_every_gate(
     assert attempt["implementer"] == "fixture implementer"
     assert attempt["specification_etag"] == before["specification_etag"]
     assert attempt["spec_revision"] == before["spec_revision"]
-    # Scope only the blocked factual record, so the prerequisite itself isn't assigned.
-    current_ws = store.init(str(tmp_path / "checkout"), "main")["workstream"]
-    store.set_scope(ws, current_ws["revision"], f"none +{work['id']}")
+    # Keep the prerequisite in the inbox without changing the recovered task's placement.
+    store.unqueue_task(blocker["id"], full(store, blocker)["revision"])
+    assert full(store, work)["queue_workstream_id"] == before["queue_workstream_id"]
     assert store.get_next_action(ws)["action"] is None
     # Explicit manual evidence review remains usable and grants no acceptance/completion.
     store.record_review(
@@ -130,15 +128,19 @@ def test_result_contract_requires_current_full_spec_and_concrete_proof_atomicall
     current = full(store, work)
     gated = store.add_unresolved(work["id"], current["revision"], "Question")
     ack = proof(store, current, ws, expected_revision=gated["revision"])
-    assert not ack["accepted"] and "unresolved_items" in ack["gate_diagnostics"]
+    assert (
+        ack["queue_workstream_id"] == current["queue_workstream_id"]
+        and "unresolved_items" in ack["gate_diagnostics"]
+    )
 
 
 def test_mutability_project_and_scope_remain_result_gates(tmp_path):
     store, project, ws = setup(tmp_path)
     work = task(store, project, ws)
     empty = store.init_workstream(project, str(tmp_path / "checkout"), "empty", confirmed=True)
-    with pytest.raises(TaskError, match="task_out_of_scope"):
-        proof(store, work, empty["workstream"]["id"])
+    recovered = proof(store, work, empty["workstream"]["id"])
+    assert recovered["queue_workstream_id"] == ws
+    work = full(store, work)
     remote = store.init(str(tmp_path / "remote"), "main", action="create_project", confirmed=True)
     with pytest.raises(TaskError, match="unknown_workstream"):
         proof(store, work, remote["workstream"]["id"])
@@ -165,11 +167,10 @@ def test_restart_selects_one_complete_local_current_pending_proof_and_preserves_
         work["id"],
         current["revision"],
         {"title": "Current requirements"},
-        approval={"basis": "specific", "note": "Synthetic new scope"},
     )
-    remote = store.init_workstream(
-        project, str(tmp_path / "checkout"), "remote", scope_expression=ws, confirmed=True
-    )["workstream"]["id"]
+    remote = store.init_workstream(project, str(tmp_path / "checkout"), "remote", confirmed=True)[
+        "workstream"
+    ]["id"]
     remote_ack = proof(store, full(store, work), remote, evidence="Other workstream proof")
     first = proof(store, full(store, work), ws, evidence="Earlier current local proof")
     second = proof(

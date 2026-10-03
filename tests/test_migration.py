@@ -38,7 +38,6 @@ def legacy_database(database, version):
     accepted = store.create_task(
         project,
         "Accepted",
-        approval={"basis": "specific", "note": "Legacy accepted"},
         group_id=group["id"],
         group_expected_revision=group["revision"],
     )
@@ -50,9 +49,7 @@ def legacy_database(database, version):
     done = store.create_task(
         project,
         "Done",
-        approval={"basis": "specific", "note": "Legacy approved"},
         workstream_id=ws,
-        scope="workstream",
     )
     attempt = store.record_result(
         done["id"],
@@ -73,9 +70,23 @@ def legacy_database(database, version):
     # rather than assuming a copy of just the main file is sufficient.
     db = sqlite3.connect(database)
     db.execute("PRAGMA foreign_keys=OFF")
+    # Reconstruct the actual pre-queue authority and live scope tables.
+    db.execute("INSERT INTO scope_members SELECT workstream_id,task_id FROM queue_members")
+    db.execute("DROP TABLE queue_members")
+    db.execute("DROP TABLE legacy_queue_migration")
+    db.execute(
+        "UPDATE tasks SET accepted_spec_revision=spec_revision,acceptance_note='Legacy "
+        "accepted',acceptance_basis='specific' WHERE id=?",
+        (accepted["id"],),
+    )
+    db.execute(
+        "UPDATE tasks SET accepted_spec_revision=spec_revision,acceptance_note='Legacy "
+        "approved',acceptance_basis='specific' WHERE id=?",
+        (done["id"],),
+    )
     if version < 3:
         db.execute("ALTER TABLE projects DROP COLUMN order_revision")
-    for table in ("prerequisites", "gate_proposals"):
+    for table in ("prerequisites", "gate_proposals") if version < 5 else ():
         db.execute(f"ALTER TABLE {table} DROP COLUMN milestone")
     for name in ("summary", "summary_spec_revision") if version < 4 else ():
         db.execute(f"ALTER TABLE tasks DROP COLUMN {name}")
@@ -106,7 +117,7 @@ def legacy_database(database, version):
     return db, (pending["id"], accepted["id"], done["id"])
 
 
-@pytest.mark.parametrize("version", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("version", [0, 1, 2, 3, 4, 5])
 def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_path, version):
     database = tmp_path / "legacy.sqlite3"
     writer, identities = legacy_database(database, version)
@@ -125,30 +136,36 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         details = store.get_tasks(list(identities))["items"]
-        assert [item["accepted"] for item in details] == [False, True, True]
+        assert all("accepted" not in item and "approval_decision" not in item for item in details)
+        assert details[0]["queue_workstream_id"] is None
+        assert details[1]["queue_workstream_id"] == details[2]["queue_workstream_id"]
         assert details[2]["status"] == "done" and details[2]["selected_attempt_id"]
         assert details[2]["attempts"][0]["evidence"] == "Exact proof"
         if version < 2:
-            assert all(item["source"] == item["acceptance_basis"] == "unknown" for item in details)
+            assert all(item["source"] == "unknown" for item in details)
             assert all(item["user_request"] == "" for item in details)
         else:
             assert details[0]["source"] == "user" and details[0]["user_request"] == "Design first"
-            assert details[1]["acceptance_basis"] == "specific"
         assert store.list_tasks(details[0]["project_id"])["project_order_revision"] == (
             3 if version >= 3 else 0
         )
         assert all(item["summary"] is None and item["summary_stale"] is None for item in details)
-        assert details[1]["acceptance_note"] == "Legacy accepted"
+        with closing(sqlite3.connect(database)) as db:
+            archive = db.execute(
+                "SELECT authority_json FROM legacy_queue_migration WHERE task_id=?",
+                (identities[1],),
+            ).fetchone()[0]
+            assert '"acceptance_note": "Legacy accepted"' in archive
         assert details[1]["prerequisites"][0]["milestone"] == "review"
         with closing(sqlite3.connect(database)) as db:
             assert db.execute("SELECT DISTINCT milestone FROM prerequisites").fetchall() == [
                 ("review",)
             ]
             assert db.execute("SELECT DISTINCT milestone FROM gate_proposals").fetchall() == [
-                ("review",)
+                ("review" if version < 5 else "signoff",)
             ]
         assert Store(database).migration_backup_path is None
-        assert len(list(tmp_path.glob("*.pre-schema-5.*.sqlite3"))) == 1
+        assert len(list(tmp_path.glob("*.pre-schema-6.*.sqlite3"))) == 1
         # Restore into a disposable target using SQLite online backup, not a
         # file copy over the still-open source/WAL. This proves rollback content.
         restored = tmp_path / "restored.sqlite3"
@@ -162,91 +179,34 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
         writer.close()
 
 
-@pytest.mark.parametrize(
-    "legacy_disposition,restored_disposition",
-    [("dropped", "open"), ("dropped", "deferred"), ("deferred", "open")],
-)
-def test_legacy_disposition_restore_does_not_reactivate_dropped_acceptance(
-    tmp_path, legacy_disposition, restored_disposition
+@pytest.mark.parametrize("legacy_disposition", ["dropped", "deferred"])
+def test_legacy_disposition_restore_preserves_authority_archive_and_proof(
+    tmp_path, legacy_disposition
 ):
     database = tmp_path / "legacy-disposition.sqlite3"
+    writer, identities = legacy_database(database, 5)
+    writer.execute("UPDATE tasks SET status=? WHERE id=?", (legacy_disposition, identities[1]))
+    writer.commit()
+    before = snapshot(database)
     store = Store(database)
-    setup = store.init(
-        str(tmp_path / "repo"), branch="main", action="create_project", confirmed=True
-    )
-    project, ws = setup["project"]["id"], setup["workstream"]["id"]
-    task = store.create_task(
-        project,
-        "Legacy accepted scope",
-        body="Keep the original requirements",
-        approval={"basis": "specific", "note": "Historical approval"},
-        scope="workstream",
-        workstream_id=ws,
-    )
-    attempt = store.record_result(
-        task["id"],
-        ws,
-        1,
-        "worker",
-        "Earlier result",
-        "Durable proof",
-        artifacts=[{"kind": "artifact", "reference": "tests/test_migration.py"}],
-        verification="Durable proof",
-        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
-    )
-    store.record_review(attempt["id"], 1, "independent reviewer", "rework", "Repair needed")
-    # Schema 1 disposition changes retained accepted_spec_revision, including
-    # when dropping a task. Reproduce those persisted rows before migration.
-    with closing(sqlite3.connect(database)) as db:
-        for name in PROVENANCE_COLUMNS:
-            db.execute(f"ALTER TABLE tasks DROP COLUMN {name}")
-        db.execute("PRAGMA user_version=1")
-        db.execute(
-            "UPDATE tasks SET status=?,revision=revision+1 WHERE id=?",
-            (legacy_disposition, task["id"]),
-        )
-        db.commit()
-    columns, original_rows = snapshot(database)
-    store = Store(database)
-    assert snapshot(store.migration_backup_path) == (columns, original_rows)
-    assert snapshot(database, columns)[1] == original_rows
-    migrated = store.get_tasks([task["id"]])["items"][0]
-    assert migrated["accepted"] and migrated["acceptance_basis"] == "unknown"
+    assert snapshot(store.migration_backup_path) == before
+    migrated = store.get_tasks([identities[1]])["items"][0]
     restored = store.set_disposition(
-        task["id"],
+        migrated["id"],
         migrated["revision"],
-        restored_disposition,
-        "Restore task only",
-        authorization="Actual instruction to restore" if legacy_disposition == "dropped" else None,
+        "open",
+        "Resume",
+        authorization="Actual revival instruction" if legacy_disposition == "dropped" else None,
     )
-    is_dropped = legacy_disposition == "dropped"
-    assert restored["accepted"] == (not is_dropped)
-    assert restored["accepted_spec_revision"] == (None if is_dropped else 1)
-    if restored_disposition == "deferred":
-        assert store.get_next_action(ws)["task"] is None
-        restored = store.set_disposition(task["id"], restored["revision"], "open", "Resume")
-    if is_dropped:
-        assert restored["gate_diagnostics"] == ["pending_acceptance"]
-        assert store.get_next_action(ws)["task"] is None
-        retained = store.get_tasks([task["id"]])["items"][0]
-        assert retained["acceptance_note"] == "Historical approval"
-        assert retained["acceptance_basis"] == "unknown" and retained["approval_decision"] is None
-        restored = store.accept_task(
-            task["id"],
-            restored["revision"],
-            {"basis": "specific", "note": "Actual approval of the exact restored requirements"},
-        )
-        assert restored["accepted"]
-    assert store.get_next_action(ws)["task"]["id"] == task["id"]
-    saved = Store(database).get_tasks([task["id"]])["items"][0]
-    assert saved["body"] == migrated["body"] and saved["spec_revision"] == 1
-    assert saved["attempts"] == migrated["attempts"] and saved["signoff_decisions"] == []
-    final_rows = snapshot(database, columns)[1]
-    assert final_rows["attempts"] == original_rows["attempts"]
-    assert final_rows["events"][: len(original_rows["events"])] == original_rows["events"]
+    assert restored["queue_workstream_id"] == migrated["queue_workstream_id"]
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute(
+            "SELECT accepted_spec_revision,acceptance_note FROM tasks WHERE id=?", (migrated["id"],)
+        ).fetchone() == (1, "Legacy accepted")
+    writer.close()
 
 
-@pytest.mark.parametrize("version", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("version", [0, 1, 2, 3, 4, 5])
 def test_migration_failure_rolls_back_ddl_revision_and_data_retains_backup(
     tmp_path, monkeypatch, version
 ):
@@ -268,7 +228,7 @@ def test_migration_failure_rolls_back_ddl_revision_and_data_retains_backup(
         assert snapshot(database) == before
         with closing(sqlite3.connect(database)) as db:
             assert db.execute("PRAGMA user_version").fetchone()[0] == version
-        backups = list(tmp_path.glob("*.pre-schema-5.*.sqlite3"))
+        backups = list(tmp_path.glob("*.pre-schema-6.*.sqlite3"))
         assert len(backups) == 1 and snapshot(backups[0]) == before
     finally:
         writer.close()
@@ -301,4 +261,45 @@ def test_fresh_empty_database_needs_no_backup(tmp_path):
         and store.migration_backup_path is None
     )
     assert snapshot(database)[1]["tasks"] == []
-    assert list(tmp_path.glob("*.pre-schema-5.*.sqlite3")) == []
+    assert list(tmp_path.glob("*.pre-schema-6.*.sqlite3")) == []
+
+
+def test_migration_reports_unapproved_and_multiscope_deterministic_owner(tmp_path):
+    database = tmp_path / "ownership.sqlite3"
+    writer, identities = legacy_database(database, 5)
+    pending, accepted, done = identities
+    writer.row_factory = sqlite3.Row
+    ws = writer.execute("SELECT * FROM workstreams").fetchone()
+    values = dict(ws)
+    values.update(id="wst_secondary", name="secondary", branch="secondary", created_at="9999")
+    writer.execute(
+        "INSERT INTO workstreams VALUES "
+        "(:id,:project_id,:name,:branch,:checkout_path,:revision,:created_at)",
+        values,
+    )
+    writer.execute("INSERT INTO scope_members VALUES (?,?)", (ws["id"], pending))
+    writer.execute("INSERT INTO scope_members VALUES (?,?)", ("wst_secondary", accepted))
+    writer.execute("INSERT INTO scope_members VALUES (?,?)", ("wst_secondary", done))
+    writer.execute(
+        "INSERT INTO attempts SELECT "
+        "'att_latest',task_id,'wst_secondary',implementer,summary,evidence,"
+        "spec_revision,state,reviewer,review_note,human_review_note,revision,'9999','9999' "
+        "FROM attempts WHERE task_id=?",
+        (done,),
+    )
+    writer.commit()
+    before = snapshot(database)
+    store = Store(database)
+    assert snapshot(store.migration_backup_path) == before
+    assert snapshot(database, before[0])[1] == before[1]
+    details = {t["id"]: t for t in store.get_tasks(list(identities))["items"]}
+    assert details[pending]["queue_workstream_id"] is None
+    assert details[accepted]["queue_workstream_id"] == ws["id"]
+    assert details[done]["queue_workstream_id"] == "wst_secondary"
+    with closing(sqlite3.connect(database)) as db:
+        report = dict(db.execute("SELECT task_id,reason FROM legacy_queue_migration"))
+        assert report[pending] == "legacy_unapproved_to_inbox"
+        assert report[accepted] == report[done] == "most_recent_attempt_then_oldest_workstream"
+        assert db.execute("SELECT count(*) FROM queue_members").fetchone()[0] == 2
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    writer.close()

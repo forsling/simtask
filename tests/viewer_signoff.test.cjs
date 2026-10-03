@@ -37,8 +37,7 @@ const run = code => vm.runInContext(code, context);
 function descendants(node) {return [node, ...(node.children || []).flatMap(descendants)];}
 async function test() {
   context.task = {id: "task", title: "Purpose", revision: 8, spec_revision: 4,
-    accepted: true, status: "open", acceptance_basis: "delegated", acceptance_note: "Actual delegated authority",
-    approval_decision: {decision_ref: 7, task_revision: 1, spec_revision: 4, active: true}, attempts: []};
+    queue_workstream_id: "main", status: "open", attempts: []};
   context.attempt = {id: "attempt", revision: 2, spec_revision: 4, state: "passed",
     summary: "Actual result", reviewer: "Independent reviewer", review_note: "Actual review proof"};
   run(`state.task = task;
@@ -46,9 +45,7 @@ async function test() {
     markdown = text => node("p", text);
     signoff(task, attempt);`);
   const allText = descendants(get("fields")).map(node => node.textContent).join(" ");
-  assert.match(allText, /Actual delegated authority/);
-  assert.match(allText, /actual purpose judgment/);
-  assert.match(allText, /Supporting approval decision 7/);
+  assert.doesNotMatch(allText, /Approval basis|Supporting approval/);
   assert.match(allText, /Actual result/);
   assert.match(allText, /Actual review proof/);
   const choice = get("field-decision"), quality = get("field-result_judgment");
@@ -80,8 +77,6 @@ async function test() {
   context.values.set("result_note", "Actual separately supplied technical judgment");
   await run("submitAction(values)");
   assert.equal(context.captured.payload.result_note, "Actual separately supplied technical judgment");
-  context.task.acceptance_basis = "specific";
-  assert.match(descendants(run("purposeSummary(task)")).map(n => n.textContent).join(" "), /Purpose already approved/);
   run("task.status = 'dropped'; disposition(task, 'open', 'Resume');");
   assert.equal(get("field-authorization").required, true);
   context.values = new Map([["note", "Resume"], ["authorization", "Actual user revival instruction"]]);

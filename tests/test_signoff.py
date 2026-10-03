@@ -31,8 +31,6 @@ def delivered(context, basis="specific", human=False, grouped=False):
         "Scope",
         body="Exact accepted requirements",
         acceptance_criteria="Actual proof",
-        approval={"basis": basis, "note": "Synthetic actual supporting authority"},
-        scope="workstream",
         workstream_id=ws,
         group_id=group["id"] if group else None,
         group_expected_revision=group["revision"] if group else None,
@@ -104,9 +102,6 @@ def test_compact_signoff_ack_returns_recorded_facts_without_notes(
     for key in (
         "purpose_judgment",
         "purpose_source",
-        "approval_basis",
-        "approval_decision_ref",
-        "reused_approval_decision_ref",
         "result_judgment",
     ):
         assert ack[key] == recorded[key]
@@ -118,49 +113,24 @@ def test_compact_signoff_ack_returns_recorded_facts_without_notes(
     assert secret not in json.dumps(ack) and len(json.dumps(ack)) < 1600
 
 
-@pytest.mark.parametrize("basis", ["specific", "delegated", "unknown"])
 @pytest.mark.parametrize("human", [False, True])
-def test_one_approve_covers_purpose_and_result_with_truthful_approval_reference(
-    context, basis, human
-):
+def test_one_approve_records_actual_verdict_and_reviewed_result(context, human):
     store, _, _ = context
-    task, attempt = delivered(
-        context, "specific" if basis == "unknown" else basis, human, grouped=True
-    )
-    if basis == "unknown":
-        # Migrated classification is unknown. Neither supporting prose nor old
-        # specific audit text may be interpreted as current specific authority.
-        with sqlite3.connect(store.path) as db:
-            db.execute("UPDATE tasks SET acceptance_basis='unknown' WHERE id=?", (task["id"],))
-        task = full(store, task)
-    approval = task["approval_decision"]
-    if basis != "unknown":
-        assert approval["action"] == "task.created" and approval["active"]
-        assert approval["note"] == task["acceptance_note"]
-    else:
-        assert approval is None
+    task, attempt = delivered(context, human=human, grouped=True)
     ack = decide(store, task, attempt, "approve")
     assert ack["status"] == "done" and ack["selected_attempt_id"] == attempt["id"]
-    assert ack["attempt_revision"] == 2 and ack["spec_revision"] == 1
+    assert ack["purpose_source"] == "user_verdict"
     assert ack["attempt_state"] == ("human_review" if human else "passed")
-    assert ack["purpose_source"] == (
-        "reused_specific_approval" if basis == "specific" else "user_verdict"
-    )
-    assert not {"body", "attempts", "signoff_decisions", "user_note"} & ack.keys()
     saved = full(Store(store.path), task)
     judgment = saved["signoff_decisions"][-1]
     assert judgment["decision_ref"] == ack["decision_ref"]
     assert judgment["task_revision"] == task["revision"]
     assert judgment["spec_revision"] == attempt["spec_revision"] == 1
-    assert judgment["attempt_id"] == attempt["id"] and judgment["attempt_revision"] == 2
     assert judgment["purpose_judgment"] == "approved" and judgment["result_judgment"] == "accepted"
-    assert judgment["purpose_source"] == (
-        "reused_specific_approval" if basis == "specific" else "user_verdict"
+    assert (
+        not {"approval_basis", "approval_decision_ref", "reused_approval_decision_ref"}
+        & judgment.keys()
     )
-    assert judgment["reused_approval_decision_ref"] == (
-        approval["decision_ref"] if basis == "specific" else None
-    )
-    assert judgment["user_note"] == "Synthetic actual user's verdict"
     assert saved["attempts"] == task["attempts"]
     with pytest.raises(TaskError, match="completed_task_immutable"):
         decide(store, saved, attempt, "defer")
@@ -187,16 +157,13 @@ def test_direction_decision_preserves_sound_result_without_inventing_quality(
     dependent = store.create_task(
         project,
         "Dependent",
-        approval={"basis": "specific", "note": "Yes"},
-        scope="workstream",
         workstream_id=ws,
     )
     dependent = store.add_prerequisite(dependent["id"], 1, task["id"])
     ack = decide(store, task, attempt, decision, **extra)
     saved = full(Store(store.path), task)
-    assert ack["status"] == status and ack["accepted"] == accepted
+    assert ack["status"] == status and ack["queue_workstream_id"] == ws
     assert saved["body"] == task["body"] and saved["spec_revision"] == task["spec_revision"]
-    assert saved["acceptance_note"] == task["acceptance_note"]
     assert saved["attempts"] == task["attempts"]
     judgment = saved["signoff_decisions"][-1]
     assert judgment["purpose_judgment"] == purpose and judgment["purpose_source"] == "user_verdict"
@@ -223,12 +190,12 @@ def test_direction_decision_preserves_sound_result_without_inventing_quality(
             {"body": "Now accept both"},
             specification_etag=full(store, task)["specification_etag"],
         )
-        assert edited["spec_revision"] == 2 and not edited["accepted"]
+        assert edited["spec_revision"] == 2 and edited["queue_workstream_id"] == ws
         assert full(store, task)["attempts"] == task["attempts"]
         assert full(store, dependent)["prerequisites"][0]["blocking"]
     elif decision == "defer":
         resumed = store.set_disposition(task["id"], ack["revision"], "open", "Resume")
-        assert resumed["accepted"] and "signoff" not in resumed["gate_diagnostics"]
+        assert resumed["queue_workstream_id"] == ws and "signoff" not in resumed["gate_diagnostics"]
         assert store.read_tasks([task["id"]], workstream_id=ws)["items"][0]["view"] == "signoff"
 
 
@@ -276,7 +243,11 @@ def test_rework_retains_approved_spec_requires_new_result_and_fresh_review(conte
     task, attempt = delivered(context, "delegated")
     ack = decide(store, task, attempt, "rework")
     saved = full(store, task)
-    assert ack["accepted"] and ack["spec_revision"] == 1 and ack["attempt_revision"] == 3
+    assert (
+        ack["queue_workstream_id"] == ws
+        and ack["spec_revision"] == 1
+        and ack["attempt_revision"] == 3
+    )
     judgment = saved["signoff_decisions"][-1]
     assert (
         judgment["purpose_judgment"] == "approved" and judgment["purpose_source"] == "user_verdict"
@@ -317,28 +288,24 @@ def test_ordinary_drop_defer_and_authorized_revival_need_no_review(context):
         project,
         "Unbuilt",
         body="Scope",
-        approval={"basis": "specific", "note": "Initial approval"},
-        scope="workstream",
         workstream_id=ws,
     )
     deferred = store.set_disposition(task["id"], 1, "deferred", "Later")
-    assert deferred["accepted"]
+    assert deferred["queue_workstream_id"] == ws
     dropped = store.set_disposition(task["id"], 2, "dropped", "No longer wanted")
-    assert not dropped["accepted"] and dropped["spec_revision"] == 1
+    assert dropped["queue_workstream_id"] == ws and dropped["spec_revision"] == 1
     for status in ("open", "deferred"):
         with pytest.raises(TaskError, match="revival_authorization_required"):
             store.set_disposition(task["id"], 3, status, "Agent decided to restore")
     revived = store.set_disposition(
         task["id"], 3, "open", "Restore", authorization="Synthetic actual user requested revival"
     )
-    assert not revived["accepted"] and store.get_next_action(ws)["task"] is None
-    full_task = full(store, task)
-    assert full_task["body"] == "Scope" and full_task["acceptance_note"] == "Initial approval"
-    assert not full_task["approval_decision"]["active"] and full_task["signoff_decisions"] == []
-    approved = store.accept_task(
-        task["id"], revived["revision"], {"basis": "specific", "note": "Actual reapproval"}
+    assert (
+        revived["queue_workstream_id"] == ws
+        and store.get_next_action(ws)["task"]["id"] == task["id"]
     )
-    assert approved["accepted"] and store.get_next_action(ws)["task"]["id"] == task["id"]
+    full_task = full(store, task)
+    assert full_task["body"] == "Scope" and full_task["signoff_decisions"] == []
 
 
 def test_signoff_checks_exact_attempt_concurrency_and_both_completion_gates(context):

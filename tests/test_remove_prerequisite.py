@@ -26,11 +26,7 @@ def create(context, title, accepted=True):
         title,
         body=f"Requirements for {title}",
         acceptance_criteria="Keep the recorded specification and proof",
-        approval={"basis": "specific", "note": "Synthetic exact scope instruction"}
-        if accepted
-        else None,
-        workstream_id=ws,
-        scope="workstream",
+        workstream_id=ws if accepted else None,
     )
 
 
@@ -78,11 +74,11 @@ def test_removal_immediately_recalculates_gate_and_audits_actor_note(context, mi
     )
     assert ack["changed"] and ack["revision"] == ack["task_revision"] == 3
     assert ack["blocked_by_id"] == blocker["id"]
-    assert ack["gate_diagnostics"] == [] and ack["accepted"]
+    assert ack["gate_diagnostics"] == [] and ack["queue_workstream_id"]
     assert not {"body", "attempts", "prerequisites"} & ack.keys()
     after = detail(store, dependent["id"])
     assert after["blocked_by"] == after["prerequisites"] == []
-    assert after["spec_revision"] == after["accepted_spec_revision"] == 1
+    assert after["spec_revision"] == 1 and after["queue_workstream_id"] == ws
     row = store.list_tasks(project, ws)["items"][0]
     assert row["id"] == dependent["id"] and row["view"] == "ready"
     selected = store.get_next_action(ws)
@@ -207,7 +203,7 @@ def test_groups_have_same_mutability_rule_as_add_prerequisite(context):
 
 
 @pytest.mark.parametrize("disposition", ["open", "deferred", "dropped"])
-def test_removal_preserves_pending_acceptance_and_disposition(context, disposition):
+def test_removal_preserves_inbox_and_disposition(context, disposition):
     store, _, _ = context
     task = create(context, "Pending dependent", accepted=False)
     blocker = create(context, "Blocker")
@@ -217,8 +213,8 @@ def test_removal_preserves_pending_acceptance_and_disposition(context, dispositi
             task["id"], task["revision"], disposition, "Synthetic decision"
         )
     result = store.remove_prerequisite(task["id"], task["revision"], blocker["id"], "Wrong link")
-    assert not result["accepted"] and result["status"] == disposition
-    assert result["spec_revision"] == 1 and result["accepted_spec_revision"] is None
+    assert result["queue_workstream_id"] is None and result["status"] == disposition
+    assert result["spec_revision"] == 1 and result["queue_workstream_id"] is None
 
 
 def test_failed_audit_rolls_back_link_deletion_and_task_revision(context):
@@ -268,8 +264,8 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
 
             runtime = await call("runtime_info")
             assert runtime["package_path"] == str(root / "src/task_mcp")
-            assert runtime["protocol_schema_revision"] == 9
-            assert runtime["database_schema_revision"] == 5
+            assert runtime["protocol_schema_revision"] == 10
+            assert runtime["database_schema_revision"] == 6
             setup = await call(
                 "init",
                 path=str(tmp_path / "checkout"),
@@ -281,8 +277,6 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
             arguments = dict(
                 project=setup["project"]["id"],
                 workstream_id=ws,
-                scope="workstream",
-                approval={"basis": "specific", "note": "Synthetic exact scope request"},
             )
             dependent = await call("create_task", title="Dependent", **arguments)
             blocker = await call("create_task", title="Blocker", **arguments)

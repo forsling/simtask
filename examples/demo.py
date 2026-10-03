@@ -15,7 +15,7 @@ async def exercise(database: Path):
     server = StdioServerParameters(
         command=sys.executable,
         args=["-m", "task_mcp", "--db", str(database), "--actor", "demo-coordinator"],
-        env={"PYTHONPATH": str(root / "src")},
+        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
     )
     async with Client(server, read_timeout_seconds=60) as client:
         assert client.instructions
@@ -72,9 +72,7 @@ async def exercise(database: Path):
             acceptance_criteria="The demonstration passes.",
             source="user",
             user_request="Synthetic demo request",
-            approval={"basis": "specific", "note": "Synthetic demo request"},
             workstream_id=workstream_id,
-            scope="workstream",
         )
         task_id = task["id"]
         resumed = await call("init", path=project_path, branch="main")
@@ -161,9 +159,7 @@ async def exercise(database: Path):
             "create_task",
             project=project_id,
             title="Prioritized remaining work",
-            approval={"basis": "specific", "note": "Synthetic exact scope request"},
             workstream_id=workstream_id,
-            scope="workstream",
         )
         board = await call("list_tasks", project=project_id)
         move_args = dict(
@@ -192,9 +188,7 @@ async def exercise(database: Path):
                 "create_task",
                 project=project_id,
                 title=f"Signoff {decision}",
-                approval={"basis": "delegated", "note": "Synthetic authority within this goal"},
                 workstream_id=workstream_id,
-                scope="workstream",
             )
             built = await call(
                 "record_result",
@@ -261,7 +255,7 @@ async def exercise(database: Path):
                     note="Restore",
                     authorization="Synthetic actual revival instruction",
                 )
-                assert not revived["accepted"]
+                assert revived["queue_workstream_id"] == workstream_id
         # User origin preserves the request without approving an exploratory spec.
         draft = await call(
             "create_task",
@@ -270,32 +264,33 @@ async def exercise(database: Path):
             source="user",
             user_request="Synthetic design-first request; leave pending",
         )
-        assert not draft["accepted"] and "body" not in draft and "attempts" not in draft
+        assert (
+            draft["queue_workstream_id"] is None and "body" not in draft and "attempts" not in draft
+        )
         details = (await call("get_tasks", specification=True, ids=[draft["id"]]))["items"][0]
         assert details["source"] == "user" and details["user_request"]
         accepted = await call(
-            "accept_task",
+            "queue_task",
             task_id=draft["id"],
             expected_revision=draft["revision"],
-            approval={
-                "basis": "delegated",
-                "note": "Synthetic authority to choose this exact scope",
-            },
+            workstream_id=workstream_id,
         )
-        assert accepted["accepted"] and accepted["acceptance_basis"] == "delegated"
+        assert accepted["queue_workstream_id"] == workstream_id
         withdrawn = await call(
-            "withdraw_acceptance",
+            "unqueue_task",
             task_id=draft["id"],
             expected_revision=accepted["revision"],
-            note="Synthetic correction of mistaken approval",
         )
-        assert not withdrawn["accepted"] and withdrawn["spec_revision"] == accepted["spec_revision"]
-        assert "pending_acceptance" in withdrawn["gate_diagnostics"]
+        assert (
+            withdrawn["queue_workstream_id"] is None
+            and withdrawn["spec_revision"] == accepted["spec_revision"]
+        )
+        assert "inbox" in withdrawn["gate_diagnostics"]
         approved_again = await call(
-            "accept_task",
+            "queue_task",
             task_id=draft["id"],
             expected_revision=withdrawn["revision"],
-            approval={"basis": "specific", "note": "Synthetic exact-scope approval"},
+            workstream_id=workstream_id,
         )
         assert approved_again["revision"] == withdrawn["revision"] + 1
         full_spec = (await call("get_tasks", specification=True, ids=[draft["id"]]))["items"][0]
@@ -314,13 +309,15 @@ async def exercise(database: Path):
             expected_revision=full_spec["revision"],
             changes={"body": "Synthetic complete amended specification"},
             specification_etag=full_spec["specification_etag"],
-            approval={"basis": "specific", "note": "Synthetic approval of this amended scope"},
         )
-        assert approved_again["spec_revision"] == approved_again["accepted_spec_revision"] == 2
-        assert approved_again["accepted"] and approved_again["spec_changed"]
+        assert approved_again["spec_revision"] == 2
+        assert (
+            approved_again["queue_workstream_id"] == workstream_id
+            and approved_again["spec_changed"]
+        )
         assert "body" not in approved_again and "attempts" not in approved_again
         obsolete = await client.call_tool(
-            "accept_task",
+            "queue_task",
             {
                 "task_id": draft["id"],
                 "expected_revision": approved_again["revision"],
@@ -364,9 +361,9 @@ async def exercise(database: Path):
                 title=title,
                 source="user",
                 user_request="Synthetic group demo",
-                approval={"basis": "specific", "note": "Synthetic group demo"},
                 group_id=group["id"],
                 group_expected_revision=current_group["revision"],
+                workstream_id=context["workstream"]["id"],
             )
             members.append(member)
         detail = (await call("get_tasks", specification=True, ids=[group["id"]]))["items"][0]
@@ -387,17 +384,13 @@ async def exercise(database: Path):
             project=second["project"]["id"],
             title="Independent remote blocker",
             body="Remote full requirements",
-            approval={"basis": "specific", "note": "Demo request"},
             workstream_id=second["workstream"]["id"],
-            scope="workstream",
         )
         dependent = await call(
             "create_task",
             project=project_id,
             title="Wait for remote completion",
-            approval={"basis": "specific", "note": "Demo request"},
             workstream_id=workstream_id,
-            scope="workstream",
         )
         linked = await call(
             "add_prerequisite",
@@ -412,7 +405,11 @@ async def exercise(database: Path):
         reference = linked_full["prerequisites"][0]
         assert reference["project_id"] == second["project"]["id"] and reference["blocking"]
         assert reference["project_name"] == second["project"]["name"]
-        assert linked["accepted"] and linked["spec_revision"] == 1 and linked["revision"] == 2
+        assert (
+            linked["queue_workstream_id"] == workstream_id
+            and linked["spec_revision"] == 1
+            and linked["revision"] == 2
+        )
         assert "attempts" not in linked and "Remote full requirements" not in str(linked)
         proposal = await call(
             "add_prerequisite",
@@ -483,7 +480,7 @@ async def exercise(database: Path):
         assert completed_ref["complete"] and not completed_ref["blocking"]
         assert remote_blocker["id"] not in {row["id"] for row in queue["items"]}
         exported = await call("export_workstream", workstream_id=workstream_id)
-        assert exported["format"] == "task-mcp/v3" and task_id in exported["content"]
+        assert exported["format"] == "task-mcp/v4" and task_id in exported["content"]
         assert "- Workflow: Done (done)" in exported["content"]
         assert "```json" not in exported["content"]
         open_export = await call(
@@ -497,7 +494,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.13.0"
+        assert catalog["version"] == "1.14.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

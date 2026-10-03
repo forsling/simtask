@@ -10,7 +10,7 @@ approve choices during the conversation; retain that authorization instead of
 asking them to repeat it. Choosing an approach does not by itself authorize
 unmentioned scope or implementation. A concrete "add a task" request does not
 require this workflow when its scope is already settled; preserve authorization
-for that exact specification without a separate acceptance keyword.
+for that exact specification without another confirmation.
 
 ## Find and resume the design
 
@@ -19,8 +19,7 @@ Run `init` for the explicit checkout and branch/name. Find a named task with
 default to the project queue, including inbox ideas saved by `feature-capture`;
 respect an explicitly narrower workstream scope. Page through `list_tasks`
 and fetch relevant bodies in batches of at most 20. Include both
-`pending_acceptance` and `unresolved_items` candidates: a pending task's design
-gate is hidden by its compact pending-acceptance view. Preserve
+`inbox` and `unresolved_items` candidates; inbox briefs may also carry design gates. Preserve
 deferred tasks unless the user asks to revisit them; do not revive dropped or
 completed work implicitly.
 
@@ -66,7 +65,7 @@ dependent checkout; inspect actual code and commits before relying on it.
 Add links with `add_prerequisite`. Remove a mistaken or obsolete link with
 `remove_prerequisite(task_id, expected_revision, blocked_by_id, note)`, using the
 dependent task's last revision and the actual decision note. Removal recalculates
-the gate without changing specifications, acceptance, scope or proof. Only a real
+the gate without changing specifications, queue placement or proof. Only a real
 deletion advances the task revision; an absent link returns `changed=false`.
 Stale revisions and completed tasks still fail. Actor and note are audited;
 removal records an actual scope/dependency decision, not a bypass of unsettled design.
@@ -81,37 +80,17 @@ instead of appending dated discussion notes; audit events keep prior revisions.
 
 ## Prepare the agreed work
 
-Save the resulting goal, boundaries, chosen behavior, relevant implementation
-direction, acceptance criteria and rationale with `update_task`. Editing these
-fields without approval invalidates prior acceptance. When the user already
-approved the resulting scope, include the common approval payload in this save
-to accept it atomically. Follow feature-capture's title and body rules for the
-final specification and any members; retitle while already revising. Preserve unresolved questions and unrelated
-gates; call `resolve_unresolved` only for settled items, with an accurate decision
-note. Keep the design gate until the requested discussion and material decisions
-are complete. If the session ends early, leave the gate and save where to resume.
-
-For one implementation task, save the final specification before clearing the
-design gate, including actual approval when it covers the resulting scope.
-Otherwise use `accept_task(task_id, expected_revision, approval={"basis":
-"specific", "note": ...})` only when the user's informed authorization covers
-that exact current specification. A decision already given for the presented
-scope is sufficient; do not impose a second ceremonial approval. Otherwise
-present the concrete scope for acceptance, or leave it pending if the user only
-asked to design. Acceptance alone does not clear other unresolved items,
-prerequisites, disposition or scope gates. Use the common approval payload for
-creation, amendment and standalone acceptance: `specific` records a real exact-scope
-request/decision; `delegated` records actual authority to select work within a
-stated goal and its limits. Both need a nonempty note identifying the supporting
-instruction. Origin (`source`) and `user_request` remain descriptive, including
-on pending briefs, and never imply acceptance. Explicit pending/design-first
-instructions take precedence over inferred authorization.
-
-Use `withdraw_acceptance(task_id, expected_revision, note)` to correct mistaken
-acceptance without editing the specification. Proof and decisions survive;
-reapproval of the unchanged spec can reuse applicable review. Completed work
-remains immutable. Compact create/update/accept/withdraw acknowledgements provide IDs,
-revisions, acceptance and gates; request `get_tasks(specification=true)` for missing requirements and exact proof.
+Save the resulting goal, boundaries, chosen behavior, implementation direction,
+acceptance criteria and rationale with `update_task`. Edits preserve queue placement;
+real requirement changes advance spec revision and leave older proof historical.
+Keep unresolved questions and unrelated gates. Resolve only settled items with an
+accurate note, keeping the design gate until material decisions are complete.
+Queue the final concrete scope with `queue_task` only when the user's decision
+covers building it on that branch. Reuse an already given decision; design alone
+does not start implementation. Otherwise leave it in the inbox or unqueue it.
+Queueing clears no unresolved/prerequisite/disposition gates. Source/user_request
+remain descriptive. Compact acknowledgements provide continuation revisions;
+full requirements and chosen proof are fetched deliberately when missing.
 
 Split a larger feature only when concrete, independently deliverable members
 improve execution. Present their boundaries, acceptance criteria and dependencies
@@ -121,28 +100,17 @@ unresolved items or gate proposals. Do not clear unsettled questions merely to
 satisfy these constraints; keep the feature intact until they are settled, or
 use separately captured pending proposals for optional future work.
 
-For decomposition, first save the agreed split and rationale in the parent's
-specification and verify it is pending acceptance. An unchanged patch does not
-invalidate acceptance: do not remove the last gate from an accepted parent
-while preparing a split. With the parent pending, resolve only settled gates
-and adjudicate proposals on their merits, then call `decompose_task` with the
-last returned revision. Do not accept the parent before conversion. The atomic
-conversion preserves context and creates pending children; existing prerequisites
-move to them. Read the children, add any agreed child dependencies/gates before
-acceptance, and accept only the exact child specifications the user authorized.
-Groups hold context, not execution gates or implementation acceptance. If the
-parent is deferred, resume it only when requested, after saving the pending
-specification; if attempts or a parent group prevent conversion, retain the
-existing task and discuss a suitable follow-up structure instead of forcing it.
-
-Acceptance does not place an inbox task into an executable workstream. When the
-agreed plan includes implementation in the current or a named workstream, use
-its last returned revision and `set_scope` to add the task/group,
-preserving existing scope (for example, `<workstream-id> +<task-or-group-id>`).
-Respect explicit exclusions and narrower placement decisions; otherwise retain
-the inbox placement and report that workstream placement remains outstanding.
-Do not ask again when the intended workstream is already clear from the user's
-request. Use the successful acknowledgement to continue; inspect the queue only when placement is uncertain.
+For decomposition, first save the agreed split and unqueue the parent before
+clearing settled design gates. Conversion creates inbox children from an inbox
+parent, or transfers a queued parent's queue to its children. Add agreed member
+dependencies/gates before queueing their exact scope. Groups hold context and
+whole-group completion. Deferred work resumes only when requested. Attempts or
+parent membership may prevent conversion; preserve existing proof and discuss a
+follow-up structure instead of forcing it. Use `queue_task` for individual agreed
+placement, or `set_scope` for an explicit bulk snapshot of current local group
+members. Future membership never changes placement. Queueing on another branch
+moves it; it never duplicates ownership. Do not ask again when the intended
+branch is already clear, and do not implement unless requested and eligible.
 
 Re-read and reconcile revision conflicts. Inspect the board after uncertain
 mutations before retrying creation or decomposition. Report the saved task/group
@@ -159,7 +127,7 @@ an uncertain creation. Cards never carry body previews or replacement tokens.
 For whole-field body/criteria replacements use the full-specification etag from
 your complete read or create/update acknowledgement. Valid token-bearing updates
 return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve spec acceptance and proof.
+edits need no full read. Summary edits preserve queue placement and proof.
 Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
 or `get_attempt`; page deliberate history/membership with `list_task_attempts`
 and `list_group_members`. Never write a card or summary back as a specification.

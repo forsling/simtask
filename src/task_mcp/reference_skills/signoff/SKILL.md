@@ -17,14 +17,9 @@ one current task at a time with these explicit fields:
 - What the user should judge, material limitations and your recommendation.
 - A judgment question seeking the informed explicit verdict.
 
-Present the task's purpose,
-`acceptance_basis`, supporting `approval_decision` (actual note and decision
-reference), and whether it is currently accepted separately from the result,
-verification, independent review and material limitations. Specific approval
-already answers purpose for this scope and can be reused. Delegated or unknown
-approval needs an actual purpose judgment now; never infer it from origin or
-old prose. One informed approval may cover both purpose and result. Do not ask
-for two ceremonial confirmations.
+Present the task's purpose and current specification separately from result,
+verification, independent review and material limitations. An informed verdict
+can judge purpose and result together. No earlier purpose decision is reused.
 
 Attribute every alternative to its workstream and specification revision.
 Check actual checkout/commit applicability before presenting it as locally
@@ -38,18 +33,17 @@ Only after the user's explicit informed verdict call `signoff_task` with the
 last-read task `expected_revision`, selected `attempt_id` and its
 `expected_attempt_revision`, actual `user_note`, and one `decision`:
 
-- `approve`: accepts purpose and result and completes the task. Current
-  acceptance, applicable passed/human-reviewed attempt and clear completion
+- `approve`: accepts purpose and result and completes the task. An applicable current-spec passed/human-reviewed attempt and clear completion
   gates are required. Completed requirements and proof are immutable.
 - `rework`: purpose remains approved; repair this implementation, record a new
   result and obtain fresh review. The selected attempt goes to rework.
-- `revise`: withdraw approval and pass the actual concrete
+- `revise`: keep placement and pass the actual concrete
   `specification_question`. The sound reviewed result survives. Recording this
   verdict does not edit requirements or advance `spec_revision`; later real
   edits do.
-- `drop`: deactivate approval and keep history, context and proof. Revival
-  requires an actual supporting authorization and current specification approval.
-- `defer`: pause while retaining approval, context and proof for resumption.
+- `drop`: keep queue placement, history, context and proof. Revival
+  requires actual supporting authorization.
+- `defer`: pause while retaining queue placement, context and proof for resumption.
 
 `revise`, `drop` and `defer` leave human result quality `not_judged` by default.
 Only when the user separately supplied an actual technical judgment pass
@@ -62,11 +56,10 @@ independence. Do not sign off on behalf of the user.
 
 Signoff and ordinary `set_disposition` return compact IDs, revisions, disposition
 and any new `unresolved_id`; signoff also returns `decision_ref` and selected
-attempt continuation state and the recorded purpose/result judgments. The full
-specification request above includes `approval_decision`; `get_attempt` retrieves
+attempt continuation state and the recorded purpose/result judgments. `get_attempt` retrieves
 one known proof. Use paged `list_events(task_id=..., include_details=true)` for
 historical signoff audit snapshots. Ordinary drop/defer needs no reviewed attempt;
-drop deactivates approval, defer retains it, and leaving dropped status requires
+both preserve queue placement, and leaving dropped status requires
 `authorization` with the actual revival instruction. Neither dropped nor
 deferred work satisfies a prerequisite. Shared-group completion still needs all
 members human signed off across projects; there is no separate group sign-off.
@@ -83,6 +76,6 @@ an uncertain creation. Cards never carry body previews or replacement tokens.
 For whole-field body/criteria replacements use the full-specification etag from
 your complete read or create/update acknowledgement. Valid token-bearing updates
 return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve spec acceptance and proof.
+edits need no full read. Summary edits preserve queue placement and proof.
 Page deliberate attempt history/membership with `list_task_attempts`
 and `list_group_members`. Never write a card or summary back as a specification.

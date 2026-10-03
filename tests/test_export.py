@@ -18,16 +18,14 @@ def context(tmp_path):
     return store, initialized["project"]["id"], initialized["workstream"]["id"]
 
 
-def create(context, title, **kwargs):
+def create(context, title, queued=True, **kwargs):
     store, project, ws = context
     created = store.create_task(
         project,
         title,
         source="user",
         user_request="Synthetic export test",
-        approval={"basis": "specific", "note": "Synthetic export test"},
-        scope="workstream",
-        workstream_id=ws,
+        workstream_id=ws if queued else None,
         **kwargs,
     )
     return store.get_tasks([created["id"]])["items"][0]
@@ -99,7 +97,6 @@ def test_export_workflow_views_match_scoped_queue(context):
     queue = store.list_tasks(project, ws)["items"]
     assert {item["view"] for item in queue} == {
         "ready",
-        "pending_acceptance",
         "unresolved_items",
         "prerequisites",
         "review",
@@ -126,16 +123,18 @@ def test_export_workflow_views_match_scoped_queue(context):
 
 def test_export_readable_questions_prerequisites_proposals_and_prose(context):
     store, _, ws = context
-    satisfied = create(context, "Completed dependency")
+    satisfied = create(context, "Completed dependency", queued=False)
     finish(context, satisfied)
-    blocked = create(context, "External scope dependency", body="Dependency body is not exported")
+    blocked = create(
+        context, "External scope dependency", queued=False, body="Dependency body is not exported"
+    )
     task = create(context, "Feature", body="Goal\n\n- first step", acceptance_criteria="Observable")
     task = store.add_prerequisite(task["id"], 1, satisfied["id"])
     task = store.add_prerequisite(task["id"], task["revision"], blocked["id"])
     task = store.add_unresolved(task["id"], task["revision"], "Choose a version\nExplain why")
     store.add_unresolved(task["id"], task["revision"], "Observer concern", handling="observer")
     revision = store.list_workstreams()["items"][0]["revision"]
-    store.set_scope(ws, revision, f"none +{task['id']}")
+    store.set_scope(ws, revision, f"{ws} +{task['id']}")
     text = store.export_workstream(ws)["content"]
     assert "> Goal\n>\n> - first step" in text
     assert "> Observable" in text
@@ -152,7 +151,6 @@ def test_attempt_history_does_not_misrepresent_current_workstream_or_spec(contex
     other = store.init_workstream(project, str(tmp_path / "repo"), branch="other", confirmed=True)
     other_ws = other["workstream"]["id"]
     task = create(context, "History")
-    store.set_scope(other_ws, 1, f"none +{task['id']}")
     elsewhere = result((store, project, other_ws), task)
     store.human_review(elsewhere["id"], 1, "Actual human review in this synthetic test")
     text = store.export_workstream(ws)["content"]
@@ -167,9 +165,6 @@ def test_attempt_history_does_not_misrepresent_current_workstream_or_spec(contex
         full["revision"],
         {"body": "New version"},
         specification_etag=full["specification_etag"],
-    )
-    task = store.accept_task(
-        task["id"], task["revision"], {"basis": "specific", "note": "Accept new version"}
     )
     text = store.export_workstream(ws)["content"]
     assert "- Workflow: Ready (ready)" in text
@@ -268,13 +263,17 @@ def test_export_shared_groups_respect_local_scope_and_filter(context, tmp_path):
                 body=f"{title} private body",
                 source="user",
                 user_request="Test",
-                approval={"basis": "specific", "note": "Test"},
+                workstream_id=ws if pid == project else remote["workstream"]["id"],
                 group_id=group["id"],
                 group_expected_revision=group["revision"],
             )
         )
     finish(context, members[0])
-    store.set_scope(ws, 2, f"none +{group['id']} -{members[1]['id']}")
+    store.set_scope(
+        ws,
+        store.workstream_status(ws)["workstream"]["revision"],
+        f"none +{group['id']} -{members[1]['id']}",
+    )
     text = store.export_workstream(ws, include_closed=False)["content"]
     assert "Global progress: 1/3 done; incomplete" in text
     assert "Members in this project: 2" in text
@@ -285,7 +284,9 @@ def test_export_shared_groups_respect_local_scope_and_filter(context, tmp_path):
     assert all(member["id"] not in text for member in members)
     assert "private body" not in text
     # Including a concrete member alone must still carry its global group context.
-    store.set_scope(ws, 3, f"none +{members[0]['id']}")
+    store.set_scope(
+        ws, store.workstream_status(ws)["workstream"]["revision"], f"none +{members[0]['id']}"
+    )
     text = store.export_workstream(ws)["content"]
     assert "Reference: task membership" in text
     assert "Global progress: 1/3 done; incomplete" in text
@@ -294,7 +295,7 @@ def test_export_shared_groups_respect_local_scope_and_filter(context, tmp_path):
     dependent = create(context, "Dependent")
     store.add_prerequisite(dependent["id"], 1, group["id"])
     revision = store.list_workstreams(project)["items"][0]["revision"]
-    store.set_scope(ws, revision, f"none +{dependent['id']}")
+    store.set_scope(ws, revision, f"{ws} +{dependent['id']} -{group['id']} +{members[0]['id']}")
     text = store.export_workstream(ws)["content"]
     assert "Reference: prerequisite" in text
     assert "Not satisfied: Shared delivery" in text
@@ -373,7 +374,7 @@ def test_legacy_export_preserves_v1_layout(context):
             "",
             f"ID: {task['id']}",
             "Revision: 1",
-            "Accepted: true",
+            f"Queue: {ws}",
             "State: open",
             "",
             "Body",

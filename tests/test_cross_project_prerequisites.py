@@ -22,9 +22,7 @@ def create(store, context, title):
         context["project"]["id"],
         title,
         body=f"Full requirements for {title}",
-        approval={"basis": "specific", "note": "Synthetic exact-scope request"},
         workstream_id=context["workstream"]["id"],
-        scope="workstream",
     )
     return detail(store, ack["id"])
 
@@ -91,7 +89,7 @@ def test_link_milestone_clears_blocker_without_moving_proof_or_scope(context, re
         "blocking": True,
     }
     assert linked["revision"] == 2
-    assert linked["spec_revision"] == linked["accepted_spec_revision"] == 1
+    assert linked["spec_revision"] == 1 and linked["queue_workstream_id"] == ws
     assert linked["attempts"] == [] and linked["blocked_by"] == [blocker["id"]]
     assert detail(store, blocker["id"])["revision"] == 2  # result only; linking did not touch it
     assert store.workstream_status(ws)["workstream"] == before_scope
@@ -128,7 +126,7 @@ def test_link_milestone_clears_blocker_without_moving_proof_or_scope(context, re
         expected_attempt_revision=2,
     )
     now = detail(store, dependent["id"])
-    assert now["revision"] == 2 and now["accepted"]
+    assert now["revision"] == 2 and now["queue_workstream_id"]
     assert now["prerequisites"] == [
         {**ref, "state": "done", "complete": True, "satisfied": True, "blocking": False}
     ]
@@ -148,7 +146,7 @@ def test_remote_noncompletion_gates_remain_blocking(context, gate):
     blocker = create(store, b, "Blocker")
     store.add_prerequisite(dependent["id"], 1, blocker["id"])
     if gate == "unaccepted":
-        store.withdraw_acceptance(blocker["id"], 1, "Unsettled request")
+        store.unqueue_task(blocker["id"], 1)
     elif gate == "unresolved":
         store.add_unresolved(blocker["id"], 1, "A material open question")
     else:
@@ -172,7 +170,7 @@ def test_observer_proposal_remote_acceptance_authority_revisions_and_audit(conte
         store.accept_gate_proposal(proposal["id"], 1)
     assert detail(store, dependent["id"])["gate_proposals"][0]["id"] == proposal["id"]
     accepted = store.accept_gate_proposal(proposal["id"], 2)
-    assert accepted["revision"] == 3 and accepted["accepted"]
+    assert accepted["revision"] == 3 and accepted["queue_workstream_id"]
     assert accepted["spec_revision"] == 1 and accepted["gate_proposals"] == []
     assert accepted["prerequisites"][0]["project_id"] == b["project"]["id"]
     with pytest.raises(TaskError, match="invalid_handling"):
@@ -238,14 +236,17 @@ def test_decomposition_inherits_remote_edges_and_checks_group_completion_graph(c
     for member in group["members"]:
         child = detail(store, member)
         assert child["prerequisites"][0]["project_id"] == b["project"]["id"]
-        assert child["blocked_by"] == [blocker["id"]] and not child["accepted"]
+        assert (
+            child["blocked_by"] == [blocker["id"]]
+            and child["queue_workstream_id"] == a["workstream"]["id"]
+        )
     with pytest.raises(TaskError, match="prerequisite_cycle"):
         store.add_prerequisite(blocker["id"], 1, downstream["id"])
     assert detail(store, blocker["id"])["revision"] == 1
     signoff(store, blocker, b)
     assert not detail(store, downstream["id"])["prerequisites"][0]["complete"]
     for index, identity in enumerate(group["members"]):
-        store.accept_task(identity, 1, {"basis": "specific", "note": "Synthetic member request"})
+        store.queue_task(identity, a["workstream"]["id"], 1)
         signoff(store, detail(store, identity), a)
         ref = detail(store, downstream["id"])["prerequisites"][0]
         assert ref["project_id"] is None and ref["project_name"] is None
@@ -286,7 +287,7 @@ def test_global_edges_and_audit_survive_reopen_without_schema_change(context):
             table: db.execute(f"SELECT * FROM {table}").fetchall()
             for table in ("tasks", "prerequisites", "events")
         }
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     restored = Store(store.path, actor="resumed coordinator")
     with sqlite3.connect(store.path) as db:
@@ -351,7 +352,6 @@ def test_current_spec_review_is_reversible_and_keeps_dependent_results(context, 
         blocker["id"],
         detail(store, blocker["id"])["revision"],
         {"body": "Changed complete requirements"},
-        approval={"basis": "specific", "note": "Synthetic exact amended requirements"},
         specification_etag=detail(store, blocker["id"])["specification_etag"],
     )
     assert changed["spec_revision"] == 2
@@ -437,7 +437,7 @@ def test_proposals_and_decomposition_preserve_milestone(context, milestone):
         child, 1, "Needed work", workstream_id=a["workstream"]["id"], milestone=milestone
     )
     assert {ref["milestone"] for ref in proposed["task"]["prerequisites"]} == {milestone}
-    assert not proposed["proposal"]["accepted"]
+    assert proposed["proposal"]["queue_workstream_id"] == a["workstream"]["id"]
 
 
 @pytest.mark.parametrize("value", ["done", None, [], 1])

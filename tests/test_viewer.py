@@ -62,15 +62,10 @@ def create(server, context, **overrides):
     args = {
         "project": context["project"]["id"],
         "workstream_id": context["workstream"]["id"],
-        "scope": "workstream",
         "title": "A task",
         "body": "The specification",
         "acceptance_criteria": "Verified outcome",
         "user_request": "An explicit synthetic human request",
-        "approval": {
-            "basis": "specific",
-            "note": "Synthetic approval of exact browser specification",
-        },
         **overrides,
     }
     status, task = request(server, "/api/create", args)
@@ -81,7 +76,7 @@ def create(server, context, **overrides):
 def test_browse_edit_conflicts_and_decisions(viewer):
     server, store, context = viewer
     task = create(server, context)
-    assert task["accepted"]
+    assert task["queue_workstream_id"]
     assert request(server, "/api/projects")[1]["items"][0]["id"] == context["project"]["id"]
     assert request(server, "/api/workstreams")[1]["items"][0]["id"] == context["workstream"]["id"]
     status, edited = request(
@@ -89,7 +84,7 @@ def test_browse_edit_conflicts_and_decisions(viewer):
         "/api/edit",
         {"task_id": task["id"], "expected_revision": 1, "changes": {"title": "Updated"}},
     )
-    assert status == 200 and not edited["accepted"]
+    assert status == 200 and edited["queue_workstream_id"] == context["workstream"]["id"]
     status, conflict = request(
         server,
         "/api/edit",
@@ -99,14 +94,10 @@ def test_browse_edit_conflicts_and_decisions(viewer):
     assert store.get_tasks([task["id"]])["items"][0]["title"] == "Updated"
     status, task = request(
         server,
-        "/api/accept",
-        {
-            "task_id": task["id"],
-            "expected_revision": 2,
-            "approval": {"basis": "specific", "note": "I accept this specification"},
-        },
+        "/api/unqueue",
+        {"task_id": task["id"], "expected_revision": 2},
     )
-    assert status == 200 and task["accepted"]
+    assert status == 200 and task["queue_workstream_id"] is None
     status, task = request(
         server,
         "/api/question",
@@ -446,63 +437,61 @@ def test_pending_dialog_submission_cannot_be_abandoned():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_draft_approved_creation_and_withdrawal_return_compact_continuation(viewer):
+def test_queue_inbox_moves_return_compact_continuation_without_notes(viewer):
     server, store, context = viewer
-    draft = create(server, context, approval=None, user_request="Save user-origin draft")
-    assert not draft["accepted"] and draft["source"] == "user"
-    assert draft["user_request"] == "Save user-origin draft"
-    status, accepted = request(
+    ws = context["workstream"]["id"]
+    draft = create(server, context, workstream_id=None, user_request="Save user-origin idea")
+    assert draft["queue_workstream_id"] is None and draft["source"] == "user"
+    status, queued = request(
         server,
-        "/api/accept",
-        {
-            "task_id": draft["id"],
-            "expected_revision": draft["revision"],
-            "approval": {"basis": "specific", "note": "Approve the displayed exact draft"},
-        },
+        "/api/queue",
+        {"task_id": draft["id"], "workstream_id": ws, "expected_revision": draft["revision"]},
     )
-    assert status == 200 and accepted["accepted"]
-    assert accepted["revision"] == draft["revision"] + 1
-    assert not {"title", "body", "attempts", "acceptance_note"} & accepted.keys()
-    status, withdrawn = request(
-        server,
-        "/api/withdraw-acceptance",
-        {
-            "task_id": draft["id"],
-            "expected_revision": accepted["revision"],
-            "note": "Mistaken approval",
-        },
+    assert status == 200 and queued["queue_workstream_id"] == ws
+    assert queued["revision"] == draft["revision"] + 1
+    assert not {"title", "body", "attempts", "approval_decision"} & queued.keys()
+    status, inbox = request(
+        server, "/api/unqueue", {"task_id": draft["id"], "expected_revision": queued["revision"]}
     )
-    assert status == 200 and not withdrawn["accepted"]
-    assert withdrawn["spec_revision"] == accepted["spec_revision"]
-    assert withdrawn["gate_diagnostics"] == ["pending_acceptance"]
-    assert store.get_tasks([draft["id"]])["items"][0]["user_request"] == "Save user-origin draft"
-    stale, conflict = request(
-        server,
-        "/api/withdraw-acceptance",
-        {
-            "task_id": draft["id"],
-            "expected_revision": accepted["revision"],
-            "note": "Stale",
-        },
+    assert status == 200 and inbox["queue_workstream_id"] is None
+    assert inbox["spec_revision"] == queued["spec_revision"] and inbox["gate_diagnostics"] == [
+        "inbox"
+    ]
+    assert store.get_tasks([draft["id"]])["items"][0]["user_request"] == "Save user-origin idea"
+    assert (
+        request(
+            server,
+            "/api/unqueue",
+            {"task_id": draft["id"], "expected_revision": queued["revision"]},
+        )[0]
+        == 409
     )
-    assert stale == 409 and "revision_conflict" in conflict["error"]
+    assert (
+        request(
+            server, "/api/accept", {"task_id": draft["id"], "expected_revision": inbox["revision"]}
+        )[0]
+        == 400
+    )
+    assert (
+        request(
+            server,
+            "/api/withdraw-acceptance",
+            {"task_id": draft["id"], "expected_revision": inbox["revision"]},
+        )[0]
+        == 400
+    )
     status, created = request(
         server,
         "/api/create",
         {
             "project": context["project"]["id"],
-            "workstream_id": context["workstream"]["id"],
-            "scope": "workstream",
-            "title": "Approved creation",
+            "workstream_id": ws,
+            "title": "Queued creation",
             "user_request": "Actual request",
-            "approval": {"basis": "specific", "note": "Explicit exact-scope browser approval"},
         },
     )
-    assert status == 200 and created["accepted"] and created["workstream_revision"] == 3
+    assert status == 200 and created["queue_workstream_id"] == ws
     assert not {"title", "body", "attempts", "user_request"} & created.keys()
-    assert (
-        request(server, "/api/details", {"ids": [created["id"]]})[1]["items"][0]["source"] == "user"
-    )
 
 
 def test_approved_and_draft_amendment_http_flow(viewer):
@@ -512,15 +501,18 @@ def test_approved_and_draft_amendment_http_flow(viewer):
         "task_id": task["id"],
         "expected_revision": task["revision"],
         "changes": {"body": "Complete amended scope", "acceptance_criteria": "New proof"},
-        "approval": {"basis": "specific", "note": "I approve this resulting exact scope"},
     }
     status, denied = request(server, "/api/edit", payload)
     assert status == 400 and "specification_read_required" in denied["error"]
     assert store.get_tasks([task["id"]])["items"][0] == task
     payload["specification_etag"] = task["specification_etag"]
     status, saved = request(server, "/api/edit", payload)
-    assert status == 200 and saved["accepted"] and saved["spec_changed"]
-    assert saved["spec_revision"] == saved["accepted_spec_revision"] == 2
+    assert (
+        status == 200
+        and saved["queue_workstream_id"] == context["workstream"]["id"]
+        and saved["spec_changed"]
+    )
+    assert saved["spec_revision"] == 2
     assert not {"body", "attempts", "acceptance_note"} & saved.keys()
     status, conflict = request(server, "/api/edit", {**payload, "changes": {"body": "Stale"}})
     assert status == 409 and "full specification" in conflict["error"]
@@ -536,12 +528,16 @@ def test_approved_and_draft_amendment_http_flow(viewer):
             "changes": {"body": "Draft scope"},
         },
     )
-    assert status == 200 and not draft["accepted"] and draft["spec_revision"] == 3
+    assert (
+        status == 200
+        and draft["queue_workstream_id"] == context["workstream"]["id"]
+        and draft["spec_revision"] == 3
+    )
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
-def test_creation_amendment_approval_and_withdrawal_form_handlers():
-    script = Path(__file__).with_name("viewer_approval.test.cjs")
+def test_creation_edits_queue_and_inbox_form_handlers():
+    script = Path(__file__).with_name("viewer_queue.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -558,9 +554,7 @@ def test_creation_amendment_approval_and_withdrawal_form_handlers():
 )
 def test_purpose_result_decisions_over_real_viewer_transport(viewer, decision, disposition):
     server, store, context = viewer
-    task = create(
-        server, context, approval={"basis": "delegated", "note": "Actual delegated authority"}
-    )
+    task = create(server, context)
     attempt = store.record_result(
         task["id"],
         context["workstream"]["id"],

@@ -16,7 +16,7 @@ async def exercise(database):
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "task_mcp", "--db", str(database), "--actor", "synthetic-compact-trace"],
-        env={"PYTHONPATH": str(root / "src")},
+        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
     )
     trace = []
     report = {
@@ -78,7 +78,6 @@ async def exercise(database):
             confirmed=True,
         )
         other = other_setup["workstream"]["id"]
-        approval = {"basis": "specific", "note": "Synthetic exact-scope request"}
         body, criteria = (
             "Complete current requirement.\n" * 2000,
             "Every required behavior verified.\n" * 500,
@@ -91,15 +90,7 @@ async def exercise(database):
             body=body,
             acceptance_criteria=criteria,
             summary="Bound ordinary context while preserving full requirements and chosen proof.",
-            approval=approval,
             workstream_id=ws,
-            scope="workstream",
-        )
-        await ok(
-            "set_scope",
-            workstream_id=other,
-            expected_revision=other_setup["workstream"]["revision"],
-            expression=f"none +{task['id']}",
         )
         token, revision = task["specification_etag"], task["revision"]
         zero_history = (await ok("get_tasks", ids=[task["id"]], workstream_id=ws))["items"][0]
@@ -124,7 +115,6 @@ async def exercise(database):
             task_id=task["id"],
             expected_revision=revision,
             changes={"body": body + "Current additional requirement.\n"},
-            approval=approval,
             specification_etag=token,
         )
         token, revision = changed["specification_etag"], changed["revision"]
@@ -293,7 +283,7 @@ async def exercise(database):
         )
         assert signed["status"] == "done" and signed["attempt_state"] == "passed"
         assert signed["purpose_judgment"] == "approved" and signed["result_judgment"] == "accepted"
-        assert signed["purpose_source"] == "reused_specific_approval"
+        assert signed["purpose_source"] == "user_verdict"
         report["signoff_acknowledgements"] = [signed]
         report["queue_informed_signoff_verdict"] = {
             "call_count": len(trace) - start,
@@ -317,6 +307,7 @@ async def exercise(database):
                 title=f"Member {i}",
                 group_id=group["id"],
                 group_expected_revision=group_revision,
+                workstream_id=ws,
             )
             group_revision = member["group_revision"]
         group_card = (await ok("get_tasks", ids=[group["id"]]))["items"][0]
@@ -356,14 +347,11 @@ async def exercise(database):
             for quality in (None, "accepted", "rework")
         ]
         for decision, quality in cases:
-            purpose = {"basis": "delegated", "note": "Synthetic delegated goal"}
             judged_task = await ok(
                 "create_task",
                 project=project,
                 title=f"Synthetic {decision}/{quality}",
                 body=body,
-                approval=purpose,
-                scope="workstream",
                 workstream_id=ws,
             )
             result = await ok(

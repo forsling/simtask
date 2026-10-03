@@ -132,8 +132,8 @@ def analyze(directory, *, since=None, until=None, connection=None, tool=None, en
     writes = {
         "create_task",
         "update_task",
-        "accept_task",
-        "withdraw_acceptance",
+        "queue_task",
+        "unqueue_task",
         "signoff_task",
         "add_unresolved",
         "resolve_unresolved",

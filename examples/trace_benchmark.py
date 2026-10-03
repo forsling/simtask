@@ -33,8 +33,6 @@ async def benchmark(directory, samples):
         body="å scope\n" * 12000,
         acceptance_criteria="Synthetic criteria\n" * 1000,
         workstream_id=workstream,
-        scope="workstream",
-        approval={"basis": "specific", "note": "Disposable synthetic data only"},
     )
     attempt = store.record_result(
         task["id"],
@@ -53,7 +51,6 @@ async def benchmark(directory, samples):
             f"Synthetic queue task {number}",
             summary="Small queue card",
             workstream_id=workstream,
-            scope="workstream",
         )
     methods = {
         "runtime_info": ("runtime_info", {}),
@@ -83,7 +80,9 @@ async def benchmark(directory, samples):
                 if mode == "disabled":
                     args.append("--no-trace")
                 params = StdioServerParameters(
-                    command=sys.executable, args=args, env={"PYTHONPATH": str(root / "src")}
+                    command=sys.executable,
+                    args=args,
+                    env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
                 )
                 client = await stack.enter_async_context(Client(params, read_timeout_seconds=30))
                 clients[mode] = client

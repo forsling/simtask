@@ -54,7 +54,6 @@ async def exercise(call, samples, project, workstream):
             project=project,
             title=f"Synthetic latency sample {index}",
             workstream_id=workstream,
-            scope="workstream",
         )
         token = task["specification_etag"]
         task = await timed(
@@ -66,13 +65,10 @@ async def exercise(call, samples, project, workstream):
         )
         token = task["specification_etag"]
         task = await timed(
-            "accept_task",
+            "queue_task",
             task_id=task["id"],
+            workstream_id=workstream,
             expected_revision=task["revision"],
-            approval={
-                "basis": "specific",
-                "note": "Synthetic benchmark acceptance, not a real user verdict",
-            },
         )
         await timed(
             "record_result",
@@ -137,7 +133,7 @@ async def run(args):
                         "--actor",
                         "synthetic-benchmark",
                     ],
-                    env={"PYTHONPATH": str(source_root)},
+                    env={"PYTHONPATH": str(source_root), "TASK_MCP_DB": str(database)},
                 )
                 async with Client(server, read_timeout_seconds=30) as client:
                     startup = (perf_counter_ns() - start) / 1e6

@@ -11,7 +11,7 @@ Call `export_workstream` with the workstream ID. Optional arguments:
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `include_closed` | `true` | Set `false` to omit done and dropped tasks; deferred tasks remain. |
-| `format` | `markdown` | Human-readable `task-mcp/v3`, or `legacy` for the previous `task-mcp/v1` layout. |
+| `format` | `markdown` | Human-readable `task-mcp/v4`, or `legacy` for the previous `task-mcp/v1` layout. |
 
 The response contains `format`, `content` and `sha256`. The digest is SHA-256 of
 the UTF-8 content, including its final newline. MCP returns the document as a
@@ -34,14 +34,13 @@ MCP connections need to discover the updated tool schema before using the new
 - The header identifies the project, checkout, branch/name and workstream scope
   revision. A scope revision is not a version of every task in the report.
 - The overview counts the exported tasks and lists them in project order.
-  Workflow views match `list_tasks(project, workstream_id)`, including pending
-  acceptance, blockers, review and sign-off. A task's stored disposition is
+  Workflow views match `list_tasks(project, workstream_id)`, including blockers, review and sign-off. A task's stored disposition is
   shown separately in its details; "open" alone is not its workflow state.
 - Group context and progress cover all member repositories, even if the local
   queue is empty. Local-project, local-scope and exported-member counts are
   separate. Explicit group references, groups of exported tasks and group
   prerequisites receive summaries; remote task bodies are never pulled in.
-- Task entries contain the specification, criteria, acceptance context,
+- Task entries contain the specification, criteria, owning queue,
   unresolved questions and prerequisite completion. Prerequisites outside the
   exported scope may appear by title/ID, but do not gain full task entries.
   Proposed gates are explicitly nonblocking until accepted.
@@ -69,7 +68,7 @@ The report is a selected view, not a complete backup: excluded tasks, other
 workstreams' scopes and the full audit trail are not included. Editing it does
 not update Task MCP, and there is no import or synchronization mechanism.
 
-The default output version changed from `task-mcp/v1` to `task-mcp/v3`. Existing
+The default output version changed from `task-mcp/v1` to `task-mcp/v4`. Existing
 consumers relying on the old headings or embedded JSON must request `legacy`.
 That option preserves the previous content layout (including its old stored
 `State` label); the readable workflow improvements apply to the new format.

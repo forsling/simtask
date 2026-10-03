@@ -38,7 +38,7 @@ function descendants(node) {return [node, ...(node.children || []).flatMap(desce
 async function test() {
   context.task = {id: "task", title: "Signed off task", project_id: "project", status: "done",
     object_type: "task", revision: 9, body: "Complete scope", acceptance_criteria: "Proof",
-    accepted: true, unresolved_items: [], blocked_by: [], attempts: [], gate_proposals: []};
+    queue_workstream_id: "main", unresolved_items: [], blocked_by: [], attempts: [], gate_proposals: []};
   run(`state.project = "project"; state.task = task; state.streams = []; state.projects = [];
     api = async (action, payload) => { captured = {action, payload};
       return action === "tasks" ? {project_order_revision: 7, next_offset: null,

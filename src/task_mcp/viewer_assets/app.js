@@ -8,7 +8,7 @@ history.replaceState(null, "", "/");
 
 const VIEWS = {
   signoff: { label: "Ready to sign off", short: "Sign off", tone: "go" },
-  pending_acceptance: { label: "Needs acceptance", short: "Accept", tone: "ask" },
+  inbox: { label: "Inbox", short: "Queue", tone: "ask" },
   unresolved_items: { label: "Open question", short: "Question", tone: "warn" },
   review: { label: "In review", short: "Review", tone: "info" },
   ready: { label: "Ready", short: "Ready", tone: "ready" },
@@ -20,11 +20,10 @@ const VIEWS = {
   passed: { label: "Review passed", short: "Passed", tone: "go" },
   human_review: { label: "Human reviewed", short: "Reviewed", tone: "go" },
   rejected: { label: "Rejected", short: "Rejected", tone: "warn" },
-  accepted: { label: "Signed off", short: "Signed off", tone: "done" },
   open: { label: "Open", short: "Open", tone: "ready" },
 };
 const SECTIONS = [
-  { key: "you", title: "Needs you", views: ["signoff", "pending_acceptance", "unresolved_items"] },
+  { key: "you", title: "Needs you", views: ["signoff", "inbox", "unresolved_items"] },
   { key: "active", title: "In progress", views: ["review", "ready", "open", "prerequisites"] },
   { key: "later", title: "Later", views: ["deferred"], collapsible: true },
   { key: "closed", title: "Closed", views: ["done", "dropped"], collapsible: true },
@@ -135,8 +134,8 @@ function branchLabel(name) {
 const EVENTS = {
   "task.created": "Created",
   "task.updated": "Edited",
-  "task.accepted": "Spec accepted",
-  "task.acceptance_withdrawn": "Acceptance withdrawn",
+  "task.queued": "Queued",
+  "task.unqueued": "Moved to inbox",
   "task.disposition_changed": "Status changed",
   "task.signoff": "Sign-off decision",
   "task.decomposed": "Split into a group",
@@ -328,7 +327,7 @@ function streamName(id) {
 }
 function needsYou(stream) {
   const c = stream.status?.counts || {};
-  return (c.signoff || 0) + (c.pending_acceptance || 0) + (c.unresolved_items || 0);
+  return (c.signoff || 0) + (c.inbox || 0) + (c.unresolved_items || 0);
 }
 
 /* ---------- navigation ---------- */
@@ -659,9 +658,9 @@ function renderDetail(t) {
       "div",
       "meta",
       pill(view),
-      t.accepted
-        ? el("span", "meta-item", icon("check", 13), "Spec accepted")
-        : node("span", "Spec not accepted", "meta-item warn"),
+      t.queue_workstream_id
+        ? el("span", "meta-item", icon("branch", 13), "Queued for " + streamName(t.queue_workstream_id))
+        : node("span", "Inbox", "meta-item warn"),
       node("span", "Updated " + ago(t.updated_at), "meta-item"),
       t.parent_group
         ? button(t.parent_group.title, () => openGroup(t.parent_group.id), "chip")
@@ -691,12 +690,12 @@ function nextStep(t, view) {
     text = "This task is complete. A new requirement becomes a new task.";
   } else if (view === "deferred" || view === "dropped") {
     title = view === "deferred" ? "Deferred" : "Dropped";
-    text = t.status === "dropped" ? "History and proof are kept. Revival needs actual authorization, then current specification approval." : "Approval, context and proof are kept for resumption.";
+    text = t.status === "dropped" ? "History, queue placement and proof are kept. Revival needs actual authorization." : "Queue placement, context and proof are kept for resumption.";
     buttons.push(button("Resume task", () => disposition(t, "open", "Resume"), "btn primary"));
-  } else if (view === "pending_acceptance" || t.accepted === false) {
-    title = "Accept this spec to unblock work";
-    text = "Agents won't implement it until you accept this exact specification.";
-    buttons.push(button("Accept spec", () => accept(t), "btn primary"));
+  } else if (view === "inbox" || !t.queue_workstream_id) {
+    title = "Queue this task on a branch";
+    text = "Choose the branch where this task should be built. Open questions and prerequisites still apply.";
+    buttons.push(button(queueLabel(t), () => queueTask(t).catch((e) => toast(e.message, true)), "btn primary"));
     buttons.push(button("Edit first", () => editTask(t)));
   } else if (t.unresolved_items.length) {
     const n = t.unresolved_items.length;
@@ -723,11 +722,11 @@ function nextStep(t, view) {
     text = "It becomes ready once the required prerequisite milestones below are satisfied.";
   } else if (view === "ready") {
     title = "Next agent action: implement";
-    text = "Accepted and unblocked. An implementer can use the current checkout and relevant existing work.";
+    text = "Queued and unblocked. An implementer can use the current checkout and relevant existing work.";
   } else return null;
-  const blocked = !t.accepted || t.unresolved_items.length || t.prerequisites?.some((p) => p.blocking) || ["deferred", "dropped"].includes(t.status);
+  const blocked = !t.queue_workstream_id || t.unresolved_items.length || t.prerequisites?.some((p) => p.blocking) || ["deferred", "dropped"].includes(t.status);
   if (blocked && t.attempts.some((a) => a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))) {
-    text += " A factual result is saved below; it grants no acceptance, resumption or completion.";
+    text += " A factual result is saved below; it changes no queue placement, gates or completion.";
     const pending = currentAttempt(t, ["review"]);
     if (pending) buttons.push(button("Record my review", () => humanReview(pending)));
   }
@@ -773,14 +772,13 @@ function body(t) {
   criteria.classList.add("criteria");
   out.push(section("Acceptance criteria", criteria));
   if (t.user_request) out.push(section(`Request (${t.source || "unknown"} origin)`, markdown(t.user_request)));
-  out.push(section("Purpose and approval", purposeSummary(t)));
   if (t.signoff_decisions?.length) {
     const history = el("details", "fold", node("summary", `Sign-off decisions (${t.signoff_decisions.length})`));
     for (const d of t.signoff_decisions) {
       history.append(el("div", "sub",
         node("h4", `${d.decision} · ${d.disposition}`),
         node("p", `Task revision ${d.task_revision}, spec ${d.spec_revision}; attempt ${d.attempt_id}, revision ${d.attempt_revision}. Decision ${d.decision_ref}.`),
-        node("p", `Purpose: ${d.purpose_judgment} (${d.purpose_source.replaceAll("_", " ")})${d.reused_approval_decision_ref ? `; reused approval decision ${d.reused_approval_decision_ref}` : ""}.`),
+        node("p", `Purpose: ${d.purpose_judgment} (${d.purpose_source.replaceAll("_", " ")}).`),
         node("p", `Human result quality: ${d.result_judgment.replaceAll("_", " ")}. Independent review remains in the result evidence.`),
         markdown(d.user_note), d.result_note ? markdown(d.result_note) : null));
     }
@@ -954,7 +952,7 @@ function activity(t) {
         );
         li.lastChild.lastChild.title = new Date(e.timestamp).toLocaleString();
         if (failed) li.append(node("div", "Failed", "warn-text"));
-        const note = e.request?.approval?.note || e.request?.user_note || e.request?.note || e.request?.text || e.error;
+        const note = e.request?.user_note || e.request?.note || e.request?.text || e.error;
         if (note) li.append(node("p", note, "event-note"));
         content.append(li);
       });
@@ -991,8 +989,8 @@ function moreMenu(anchor, t) {
       fn();
     }, "menu-item " + cls);
   const items = [item("Ask a question", () => askQuestion(t))];
-  if (!t.accepted) items.push(item("Accept spec", () => accept(t)));
-  else items.push(item("Withdraw acceptance", () => withdrawAcceptance(t)));
+  items.push(item(queueLabel(t), () => queueTask(t).catch((e) => toast(e.message, true))));
+  if (t.queue_workstream_id) items.push(item("Move to inbox", () => moveToInbox(t)));
   if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => disposition(t, "open", "Resume")));
   else items.push(item("Defer", () => disposition(t, "deferred", "Defer")), item("Drop", () => disposition(t, "dropped", "Drop"), "danger"));
   items.forEach((b) => b.setAttribute("role", "menuitem"));
@@ -1063,10 +1061,6 @@ function decision({ title, description, action, data, key, label, submit, danger
   const taskId = state.task.id;
   submitAction = async (values) => {
     const payload = { ...data, [key]: values.get(key) };
-    if (action === "accept") {
-      payload.approval = { basis: "specific", note: payload[key] };
-      delete payload[key];
-    }
     if (action === "signoff") {
       payload.decision = values.get("decision") || data.decision;
       if (payload.decision === "revise") payload.specification_question = values.get("specification_question");
@@ -1168,27 +1162,53 @@ async function moveTask(t) {
     }
   };
 }
-function accept(t) {
-  decision({
-    title: "Accept this spec?",
-    description: "Your acceptance covers the exact specification shown. Later amendments can be saved with their own approval.",
-    action: "accept",
-    data: { task_id: t.id, expected_revision: t.revision },
-    key: "approval_note",
-    label: "Your approval of this exact scope (note)",
-    submit: "Accept spec",
-  });
+function queueLabel(t) {
+  const target = state.streams.find((w) => w.id === state.stream && w.project_id === t.project_id);
+  return target ? `Queue for ${target.branch || target.name}` : "Queue for branch";
 }
-function withdrawAcceptance(t) {
-  decision({
-    title: "Withdraw acceptance?",
-    description: "This blocks implementation and sign-off. The specification and all results and reviews are retained. You can approve the same specification again.",
-    action: "withdraw-acceptance",
-    data: { task_id: t.id, expected_revision: t.revision },
-    key: "note",
-    label: "Reason for withdrawing acceptance",
-    submit: "Withdraw acceptance",
-  });
+async function queueTask(t) {
+  if (submissionPending) return;
+  const preferred = state.stream;
+  const streams = await pages("workstreams", { project: t.project_id });
+  if (submissionPending) return;
+  openDialog("Queue for branch", `Choose where “${t.title}” should be built. Queueing moves it from its previous branch.`, "Queue task");
+  const picker = node("select"); picker.id = "field-workstream_id"; picker.name = "workstream_id"; picker.required = true;
+  for (const w of streams) {
+    const option = node("option", w.branch || w.name); option.value = w.id; picker.append(option);
+  }
+  picker.value = streams.some(w => w.id === preferred) ? preferred :
+    (streams.some(w => w.id === t.queue_workstream_id) ? t.queue_workstream_id : streams[0]?.id || "");
+  const label = node("label", "Branch"); label.htmlFor = picker.id;
+  $("fields").append(el("div", "field", label, picker));
+  $("submit").disabled = !streams.length;
+  if (!streams.length) $("fields").append(node("p", "Initialize a branch workstream before queueing this task.", "warn-text"));
+  placementAction(t, "queue", values => ({ workstream_id: values.get("workstream_id") }));
+}
+function moveToInbox(t) {
+  if (submissionPending) return;
+  openDialog("Move to inbox", `Remove “${t.title}” from its branch queue. Requirements and all results and reviews are kept.`, "Move to inbox");
+  placementAction(t, "unqueue", () => ({}));
+}
+function placementAction(t, action, extra) {
+  let revision = t.revision;
+  submitAction = async values => {
+    try {
+      return await api(action, { task_id: t.id, expected_revision: revision, ...extra(values) });
+    } catch (error) {
+      if (error.conflict) $("conflict").replaceChildren(button("Show the current task", async () => {
+        const latest = (await api("details", { ids: [t.id] })).items[0];
+        $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
+          markdown(latest.body), markdown(latest.acceptance_criteria),
+          node("p", latest.queue_workstream_id ? "Currently queued for " + streamName(latest.queue_workstream_id) : "Currently in the inbox"),
+          button("I've reviewed it — use this version", () => {
+            revision = latest.revision;
+            $("form-error").textContent = "Check the chosen placement, then submit again.";
+            $("conflict").replaceChildren();
+          }, "btn small")));
+      }, "btn small"));
+      throw error;
+    }
+  };
 }
 function askQuestion(t) {
   decision({
@@ -1215,7 +1235,7 @@ function resolve(t, q) {
 function disposition(t, value, label) {
   decision({
     title: `${label} this task?`,
-    description: value === "dropped" ? "Dropping deactivates approval; history and proof survive. Revival will need actual authorization." : "Approval, context and proof are kept. A revived dropped task needs current specification approval.",
+    description: value === "dropped" ? "Dropping preserves queue placement, history and proof. Revival will need actual authorization." : "Queue placement, context and proof are kept.",
     action: "disposition",
     data: { task_id: t.id, expected_revision: t.revision, disposition: value },
     key: "note",
@@ -1238,14 +1258,6 @@ function humanReview(a) {
     submit: "Record review",
   });
 }
-function purposeSummary(t) {
-  const approval = t.approval_decision;
-  const specific = t.accepted && t.acceptance_basis === "specific" && approval?.active;
-  return el("div", "",
-    node("p", `Approval basis: ${t.acceptance_basis || "unknown"}. ${specific ? "Purpose already approved for this exact scope; that decision can be reused." : "An actual purpose judgment is needed. Approve accepts both purpose and result; rework retains purpose approval."}`),
-    approval ? node("p", `Supporting approval decision ${approval.decision_ref} · task revision ${approval.task_revision}, spec ${approval.spec_revision}${approval.active ? "" : " (inactive)"}.`) : node("p", "No classified supporting approval decision is recorded."),
-    t.acceptance_note ? markdown(t.acceptance_note) : null);
-}
 function signoff(t, a, initial = "approve") {
   decision({
     title: "Judge purpose and result",
@@ -1257,8 +1269,7 @@ function signoff(t, a, initial = "approve") {
     label: "Your decision and reason",
     submit: "Record decision",
     before: () => {
-      $("fields").append(section("Purpose and approval", purposeSummary(t)),
-        section("Reviewed result", el("div", "", markdown(a.summary || ""),
+      $("fields").append(section("Reviewed result", el("div", "", markdown(a.summary || ""),
           node("p", a.state === "human_review" ? "Actual human review recorded." : `Independent review by ${a.reviewer || "reviewer"}.`),
           markdown(a.review_note || a.human_review_note || ""))));
       const choice = node("select");
@@ -1266,9 +1277,9 @@ function signoff(t, a, initial = "approve") {
       for (const [value, label] of [
         ["approve", "Approve purpose and result; complete"],
         ["rework", "Purpose approved; repair implementation and review again"],
-        ["revise", "Revise requirements; withdraw approval and ask a question"],
-        ["drop", "Drop task; deactivate approval and keep proof"],
-        ["defer", "Defer task; retain approval and proof"],
+        ["revise", "Revise requirements; ask a blocking question"],
+        ["drop", "Drop task; keep queue placement and proof"],
+        ["defer", "Defer task; retain queue placement and proof"],
       ]) {const option = node("option", label); option.value = value; choice.append(option);}
       choice.value = initial;
       $("fields").append(el("div", "field", node("label", "Decision"), choice));
@@ -1295,7 +1306,7 @@ function signoff(t, a, initial = "approve") {
 }
 function requestChanges(t, a) { signoff(t, a, "rework"); }
 function editSummary(t) {
-  openDialog("Edit descriptive summary", "Intent or settled constraints, up to 240 characters on one line. Requirements and acceptance stay in the specification.", "Save summary");
+  openDialog("Edit descriptive summary", "Intent or settled constraints, up to 240 characters on one line. Requirements and acceptance criteria stay in the specification.", "Save summary");
   const summary = field("summary", "Summary (optional)", t.summary || "", "input", false);
   summary.maxLength = 240;
   submitAction = async values => api("edit", {
@@ -1307,50 +1318,18 @@ function editTask(t) {
   if (!t || t.object_type !== "task" || t.status === "done") return;
   let revision = t.revision;
   let etag = t.specification_etag;
-  openDialog("Edit task", "Save a draft, or approve the exact resulting specification. Other gates still apply.", "Save draft");
+  openDialog("Edit task", "Save the specification. Queue placement stays unchanged; other gates still apply.", "Save task");
   $("dialog").classList.add("wide");
   field("title", "Title", t.title, "input");
   const summary = field("summary", "Summary (optional descriptive intent)", t.summary || "", "input", false);
   summary.maxLength = 240;
   field("body", "Specification", t.body, "tall", false, "Markdown is supported.");
   field("acceptance_criteria", "Acceptance criteria", t.acceptance_criteria, "textarea", false);
-  const mode = node("select");
-  mode.id = "field-save_mode";
-  mode.name = "save_mode";
-  for (const [value, label] of [["pending", "Save draft — changes need acceptance"], ["accepted", "Save and approve exact specification"]]) {
-    const option = node("option", label);
-    option.value = value;
-    mode.append(option);
-  }
-  const modeLabel = node("label", "Acceptance");
-  modeLabel.htmlFor = mode.id;
-  $("fields").append(el("div", "field", modeLabel, mode));
-  const note = field("approval_note", "Your approval of this resulting scope (note)", "", "textarea", false);
-  const confirmLabel = node("label", undefined, "check");
-  const confirm = node("input");
-  confirm.type = "checkbox";
-  confirm.name = "approve_exact_spec";
-  confirmLabel.append(confirm, node("span", "I approve the resulting specification above. Other gates still apply."));
-  $("fields").append(confirmLabel);
-  mode.onchange = () => {
-    const accepted = mode.value === "accepted";
-    note.required = confirm.required = accepted;
-    note.disabled = confirm.disabled = !accepted;
-    note.parentElement.hidden = confirmLabel.hidden = !accepted;
-    confirm.checked = false;
-    $("submit").textContent = accepted ? "Save and approve" : "Save draft";
-  };
-  mode.value = "pending";
-  mode.onchange();
   submitAction = async (values) => {
     const payload = {
       task_id: t.id, expected_revision: revision, specification_etag: etag,
       changes: { ...Object.fromEntries(["title", "body", "acceptance_criteria"].map(key => [key, values.get(key)])), summary: values.get("summary") || null },
     };
-    if (values.get("save_mode") === "accepted") {
-      if (!values.has("approve_exact_spec")) throw new Error("Confirm approval of the exact resulting specification.");
-      payload.approval = { basis: "specific", note: values.get("approval_note") };
-    }
     try {
       return await api("edit", payload);
     } catch (e) {
@@ -1368,8 +1347,7 @@ function editTask(t) {
               button("I've merged my draft — save over this version", () => {
                 revision = latest.revision;
                 etag = latest.specification_etag;
-                confirm.checked = false;
-                $("form-error").textContent = "Check your merged draft; confirm its resulting scope if saving with approval.";
+                $("form-error").textContent = "Check your merged draft, then save again.";
                 n.remove();
               }, "btn small"),
             );
@@ -1382,12 +1360,13 @@ function editTask(t) {
   };
 }
 function createTask() {
-  if (state.groups || !state.project || $("new").disabled) return;
+  if (state.groups || !state.project || $("new").disabled || submissionPending) return;
+  const projectId = state.project, workstreamId = state.stream;
   openDialog(
     "New task",
     state.stream
-      ? `Adds a task to ${streamName(state.stream)}. Choose draft or approve its exact scope.`
-      : `Adds a task to the ${projectName(state.project)} inbox. Choose draft or approve its exact scope.`,
+      ? `Adds a task to ${streamName(state.stream)}. It will be queued on this branch.`
+      : `Adds a task to the ${projectName(state.project)} inbox.`,
     "Create task",
   );
   $("dialog").classList.add("wide");
@@ -1396,47 +1375,15 @@ function createTask() {
   summary.maxLength = 240;
   field("body", "What needs to happen?", "", "tall", false, "Markdown is supported.");
   field("acceptance_criteria", "How will you know it's done?", "", "textarea", false);
-  field("user_request", "Your original request", "", "textarea", false, "Preserved independently of approval.");
-  const mode = node("select");
-  mode.id = "field-creation_mode";
-  mode.name = "creation_mode";
-  for (const [value, label] of [["pending", "Save draft — pending acceptance"], ["accepted", "Create and approve exact specification"]]) {
-    const option = node("option", label);
-    option.value = value;
-    mode.append(option);
-  }
-  const modeLabel = node("label", "Acceptance");
-  modeLabel.htmlFor = mode.id;
-  $("fields").append(el("div", "field", modeLabel, mode));
-  const note = field("approval_note", "Your approval of this exact scope (note)", "", "textarea", false);
-  const confirmLabel = node("label", undefined, "check");
-  const confirm = node("input");
-  confirm.type = "checkbox";
-  confirm.name = "approve_exact_spec";
-  confirmLabel.append(confirm, node("span", "I approve the specification above. Other gates still apply."));
-  $("fields").append(confirmLabel);
-  mode.onchange = () => {
-    const accepted = mode.value === "accepted";
-    note.required = confirm.required = accepted;
-    note.disabled = confirm.disabled = !accepted;
-    note.parentElement.hidden = confirmLabel.hidden = !accepted;
-    confirm.checked = false;
-  };
-  mode.value = "pending";
-  mode.onchange();
+  field("user_request", "Your original request", "", "textarea", false, "Preserved as descriptive context.");
   submitAction = async (values) => {
     const payload = {
       title: values.get("title"), body: values.get("body"), summary: values.get("summary") || null,
       acceptance_criteria: values.get("acceptance_criteria"),
       user_request: values.get("user_request"), source: "user",
-      project: state.project,
-      workstream_id: state.stream,
-      scope: state.stream ? "workstream" : "inbox",
+      project: projectId,
+      workstream_id: workstreamId,
     };
-    if (values.get("creation_mode") === "accepted") {
-      if (!values.has("approve_exact_spec")) throw new Error("Confirm approval of the exact specification.");
-      payload.approval = { basis: "specific", note: values.get("approval_note") };
-    }
     const r = await api("create", payload);
     state.selected = r.id;
     return r;

@@ -11,7 +11,7 @@ logs; no synthetic tasks were added to the live database.
 | Call | Client start (UTC) | Approval starts (UTC) | Task audit (UTC) | Client end (UTC) | Elapsed |
 | --- | --- | --- | --- | --- | --- |
 | `update_task` | 11:02:16.723 | 11:02:16.727603 | 11:02:24.912778 | 11:02:24.924 | 8,201 ms |
-| `accept_task` | 11:02:46.158 | 11:02:46.164589 | 11:02:52.227132 | 11:02:52.250 | 6,092 ms |
+| `queue_task` | 11:02:46.158 | 11:02:46.164589 | 11:02:52.227132 | 11:02:52.250 | 6,092 ms |
 
 Host policy-review logs show execution resuming at 11:02:24.904 and
 11:02:52.218 respectively, immediately before the task audit writes. Only
@@ -54,7 +54,7 @@ For narrowly selected tools, add overrides such as:
 [mcp_servers.tasks.tools.update_task]
 approval_mode = "approve"
 
-[mcp_servers.tasks.tools.accept_task]
+[mcp_servers.tasks.tools.queue_task]
 approval_mode = "approve"
 ```
 
@@ -76,7 +76,7 @@ its private task data and local viewer boundary.
 Neither option changes other servers or the global approval policy. Plugin
 installations use a different configuration namespace; see the official guide.
 
-Automatic tool-call approval is not approval of a task specification,
+Automatic tool-call approval is not authority to queue or build a task,
 implementation, review or sign-off. Revision checks, workflow gates and audit
 history still apply, and agents must still obtain the required user decisions.
 The prototype does not authenticate actor labels or human-verdict assertions;

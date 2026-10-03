@@ -41,9 +41,7 @@ def seed(path):
                 criteria,
                 source="user",
                 user_request="Synthetic demo request",
-                approval={"basis": "specific", "note": "Synthetic demo request"},
                 workstream_id=stream,
-                scope="workstream",
             )
         )
     attempt = store.record_result(
@@ -66,7 +64,6 @@ def seed(path):
         "Explore a gentler onboarding",
         "A proposal to investigate.",
         workstream_id=stream,
-        scope="workstream",
     )
     other = store.init_project(str(path.parent / "Fieldnotes-Web"), branch="main", confirmed=True)
     store.create_task(
@@ -74,9 +71,7 @@ def seed(path):
         "Explain the new writing flow",
         source="user",
         user_request="Synthetic request",
-        approval={"basis": "specific", "note": "Synthetic request"},
         workstream_id=other["workstream"]["id"],
-        scope="workstream",
         group_id=group["id"],
         group_expected_revision=2,
     )

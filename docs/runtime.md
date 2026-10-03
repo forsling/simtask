@@ -18,7 +18,7 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`9` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8 adds review/signoff prerequisite milestones and satisfaction; schema 5 persists them with review defaults for existing links/proposals. Candidate 9 adds audited prerequisite removal and missing-link no-ops without a schema change; its catalog has 42 tools. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`10` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Candidate 10/schema 6 add single-owner queues, queue/unqueue and removal of the separate purpose-decision surface; its catalog has 42 tools. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
@@ -43,16 +43,16 @@ success or rollback. A database with a higher revision is rejected rather than
 downgraded. Future storage migrations must advance the revision after their
 checks pass.
 
-Database schema revision `2` introduces independent persisted origin,
-classified `{basis, note}` approval and audited withdrawal. Protocol revision
-`3` introduces the incompatible `signoff_task` decision/attempt-revision contract
-and explicit dropped-task revival authorization. Separate purpose/result
-judgments, exact judged revisions and reused approval event references are
-persisted in existing immutable audit JSON; no new DDL or schema bump is needed.
-Existing legacy signoff events remain unchanged and are never backfilled with
-inferred judgments. `Store.get_tasks` and viewer full details expose structured
-`signoff_decisions` and the supporting `approval_decision`. MCP
-`get_tasks(specification=true)` exposes `approval_decision` references without
+Schema `2` historically introduced persisted origin and purpose-decision storage.
+Schema `6` retains those legacy columns and scope tables privately, archives their
+original values and migrates current placement into one owning queue per task.
+Current tools and task payloads omit the retired purpose-decision fields.
+Protocol `3` introduced the `signoff_task` decision/attempt-revision contract and
+explicit dropped-task revival authorization. Historical purpose/result judgments,
+exact revisions and original decision references remain immutable audit facts;
+new signoff records use the actual user verdict. `Store.get_tasks` and viewer full details expose structured
+`signoff_decisions` and historical decision facts. MCP
+`get_tasks(specification=true)` exposes owning queue and current gates without
 signoff history. Retrieve historical decisions through paged
 `list_events(task_id=..., include_details=true)`; detailed audit reads retain older
 records.

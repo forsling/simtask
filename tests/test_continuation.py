@@ -24,8 +24,6 @@ def create(store, context, title="Reject blank names", **fields):
         body="normalize_name strips names and raises ValueError for whitespace-only input.",
         acceptance_criteria="Nonblank names are stripped; empty/whitespace names raise ValueError.",
         workstream_id=context["workstream"]["id"],
-        scope="workstream",
-        approval={"basis": "specific", "note": "Synthetic request for this exact behavior"},
         **fields,
     )
     return detail(store, ack["id"])
@@ -64,6 +62,10 @@ def repository(path):
 def assert_view(store, context, task_id, view):
     ws = context["workstream"]["id"]
     project = context["project"]["id"]
+    if view == "out_of_scope":
+        assert all(r["id"] != task_id for r in store.list_tasks(project, ws)["items"])
+        assert store.read_tasks([task_id], workstream_id=ws)["items"][0]["view"] == view
+        return
     row = next(r for r in store.list_tasks(project, ws)["items"] if r["id"] == task_id)
     assert row["view"] == view
     status = store.workstream_status(ws)
@@ -103,12 +105,18 @@ def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selecti
         expected_revision=origin["scope_revision"],
         confirmed=True,
     )
-    source = record(store, work, origin, "origin builder", "Origin artifact and verification")
-    assert_view(store, origin, work["id"], "review")
+    source = record(
+        store,
+        detail(store, work["id"]),
+        origin,
+        "origin builder",
+        "Origin artifact and verification",
+    )
+    assert_view(store, origin, work["id"], "out_of_scope")
     assert_view(store, target, work["id"], "ready")
     assert store.get_next_action(target["workstream"]["id"])["task"]["id"] == work["id"]
     store.record_review(source["id"], 1, "origin reviewer", "pass", "Synthetic source check")
-    assert_view(store, origin, work["id"], "signoff")
+    assert_view(store, origin, work["id"], "out_of_scope")
     alternative = record(
         store, detail(store, work["id"]), target, "alternative builder", "Independent alternative"
     )
@@ -126,19 +134,15 @@ def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selecti
         work["id"],
         current["revision"],
         {"title": "Reject blank names and retain spelling"},
-        approval={"basis": "specific", "note": "Synthetic revised scope approval"},
     )
-    for context in (origin, target):
-        assert_view(store, context, work["id"], "ready")
-        selected = store.get_next_action(context["workstream"]["id"])["task"]
-        assert selected["spec_revision"] == 2
-        assert "attempts" not in selected
-        assert {
-            (a["workstream_id"], a["spec_revision"]) for a in detail(store, work["id"])["attempts"]
-        } == {
-            (origin["workstream"]["id"], 1),
-            (target["workstream"]["id"], 1),
-        }
+    assert_view(store, origin, work["id"], "out_of_scope")
+    assert store.get_next_action(origin["workstream"]["id"])["task"] is None
+    assert_view(store, target, work["id"], "ready")
+    selected = store.get_next_action(target["workstream"]["id"])["task"]
+    assert selected["spec_revision"] == 2 and "attempts" not in selected
+    assert {
+        (a["workstream_id"], a["spec_revision"]) for a in detail(store, work["id"])["attempts"]
+    } == {(origin["workstream"]["id"], 1), (target["workstream"]["id"], 1)}
 
 
 def test_resume_and_rebind_keep_scope_and_history_but_do_not_prove_checkout(tmp_path):
@@ -225,7 +229,9 @@ def test_deliberate_cherry_pick_records_target_provenance_and_requires_fresh_rev
         expected_revision=origin["scope_revision"],
         confirmed=True,
     )
-    source = record(store, work, origin, "origin builder", f"Source commit {source_commit}")
+    source = record(
+        store, detail(store, work["id"]), origin, "origin builder", f"Source commit {source_commit}"
+    )
     reviewed_source = store.record_review(
         source["id"], 1, "origin reviewer", "pass", "Synthetic origin verification"
     )
@@ -312,8 +318,6 @@ def test_deliberate_cherry_pick_records_target_provenance_and_requires_fresh_rev
         body=f"Integrate the completed result of {work['id']} into a new target checkout.",
         acceptance_criteria="Check the new target tree and record its provenance and verification.",
         workstream_id=origin["workstream"]["id"],
-        scope="workstream",
-        approval={"basis": "specific", "note": "Synthetic later integration request"},
     )
     assert new_requirement["id"] != work["id"]
     assert detail(store, work["id"]) == completed
