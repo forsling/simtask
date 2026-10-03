@@ -50,8 +50,12 @@ and explicit dropped-task revival authorization. Separate purpose/result
 judgments, exact judged revisions and reused approval event references are
 persisted in existing immutable audit JSON; no new DDL or schema bump is needed.
 Existing legacy signoff events remain unchanged and are never backfilled with
-inferred judgments. Full task reads expose new structured `signoff_decisions`
-and supporting `approval_decision`; detailed audit reads retain older records.
+inferred judgments. `Store.get_tasks` and viewer full details expose structured
+`signoff_decisions` and the supporting `approval_decision`. MCP
+`get_tasks(specification=true)` exposes `approval_decision` references without
+signoff history. Retrieve historical decisions through paged
+`list_events(task_id=..., include_details=true)`; detailed audit reads retain older
+records.
 Roll out code, stored schema, companion skills and refreshed client tool catalogs
 together, then use the reconnect procedure below to verify the affected client.
 
