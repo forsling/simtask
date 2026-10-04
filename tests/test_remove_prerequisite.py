@@ -255,8 +255,6 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
                 "blocked_by_id",
                 "note",
             }
-            assert "add_prerequisite" in client.instructions
-            assert "remove_prerequisite" in client.instructions
 
             async def call(name, **arguments):
                 result = await client.call_tool(name, arguments)

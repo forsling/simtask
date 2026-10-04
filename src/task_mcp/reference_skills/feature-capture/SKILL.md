@@ -5,84 +5,82 @@ description: Save a researched feature brief with open design questions. Use for
 
 # Feature capture
 
-Follow explicit user instructions over this guidance. Capture an exploratory
-idea for a later design session; an ordinary concrete "add a task" request
-does not require feature design. User-requested tasks are queued on the current
-branch, including design briefs with active gates. Agent-invented ideas go to
-the inbox only after the user confirms saving them. Explicit inbox or other
-placement instructions take precedence. Queueing starts no implementation.
+Follow explicit user instructions over this guidance. Capture exploratory ideas
+for later design; concrete "add a task" requests need no feature design.
+User-requested work belongs in the current workstream. Save agent-invented ideas
+only after user confirmation; they may stay in the inbox. Respect explicit
+placement. Membership starts no implementation.
 
-## Ground the scope
+## Ground the brief
 
 Run `init` for the explicit checkout and branch/name. Inspect `list_tasks` and
-fetch only related full specifications with `get_tasks(specification=true)` to
-avoid duplicates and preserve decisions. Read enough code/documentation to
-identify current behavior, integration points and constraints; research only
-what shapes the brief and state what remains unverified.
+related full specs with `get_tasks(specification=true)` to avoid duplicates and
+preserve decisions. Read enough code/documentation to identify current behavior,
+integration points and constraints; research what shapes the brief and state
+what remains unverified.
 
-For settled concrete work, use `create_task(source="user", user_request=...,
-workstream_id=...)`, or `queue_task` for an existing task. Record the actual
-request and settled scope without another confirmation. Source/user_request
-are descriptive. Do not add a design gate to settled work. When separate calls
-must add blockers, create in the inbox, add gates, then queue.
+For settled work, use `create_task(source="user", user_request=...,
+workstream_id=...)`, or **Add to workstream** with `add_to_workstream(task_id,
+workstream_id, expected_revision)`. Record the actual request/scope without
+another confirmation or design gate. Adding B retains A. **Remove from
+workstream** uses `remove_from_workstream` with the same arguments and affects
+only that workstream. Inbox means zero effective memberships. Groups/exclusions
+stay dynamic; omitting `workstream_id` does not ensure inbox placement when
+joining an included group.
 
-For exploratory work, record the desired outcome, motivation, relevant current
-behavior/code references, tentative scope/exclusions, constraints, assumptions,
-possible approaches and material open questions. Distinguish user decisions
-from suggestions and mark provisional acceptance criteria. Questions should
-affect value, user experience, scope, architecture, authority or costly choices;
-leave routine reversible details to the implementer. Ask now only if ambiguity
-prevents useful capture; otherwise save the question for design.
+Record outcome, motivation, relevant current behavior/code, tentative scope/
+exclusions, constraints, assumptions, approaches and material questions.
+Distinguish user decisions from suggestions; mark provisional criteria.
+Questions should affect value, experience, scope, architecture, authority or
+costly choices; leave routine reversible details to the implementer. Ask now
+only if ambiguity prevents useful capture.
 
-Attribute existing delivery to its workstream/specification and inspect actual
-files/commits before claiming it exists locally. Milestone satisfaction, branch
-names and prose do not prove integration. Open work deliberately integrated
-elsewhere needs a target-local result citing origin attempt/workstream and
-source/target commits, target verification and fresh review. Completed proof
-is immutable; later integration requires a new task.
+Use an observable title and optional one-line intent/constraints summary (at
+most 240 Unicode characters). Keep scope/questions in the body, criteria in
+their field and evidence in attempts. Summaries are non-normative. Attribute
+existing delivery to its workstream/spec and inspect actual files/commits before
+relying on it locally. Deliberate integration needs target-local verification,
+a result with origin/source/target references and fresh independent review;
+completed proof is immutable, so later integration needs a new task.
 
-Name the observable outcome, normally within about 70 characters. An optional
-one-line summary describes intent/constraints, at most 240 Unicode characters;
-it is non-normative and freshness tracks spec edits. Keep questions and scope
-in the body, acceptance criteria in their field, and progress/commits/evidence
-in attempts, rather than summaries or specifications.
+## Save with active design gates
 
-## Save a gated brief
-
-Create an ordinary inbox task with honest `source` (user or agent) and the
-actual `user_request`. Using the creation revision, add an active unresolved
-item before queueing user-requested work on the current branch:
+Create a new brief without `workstream_id` or `group_id`, with honest `source`
+and the actual `user_request`. Using its returned revision, add an ordinary
+active unresolved item before adding user-requested work to the current workstream:
 
 > Feature design required (feature-design): decide whether the work is worth doing, then agree the approach, scope and acceptance criteria with the user.
 
-Tailor it to the actual decisions. The prefix is a readable skill convention,
-not a new task type or parsed server field. Keep material questions in the
-body, adding separate unresolved items only for independently resolved gates.
-For an existing mutable task, add its active design gate before revising the
-brief. Observer proposals are nonblocking; do not use `handling="observer"`
-while actively capturing requested work. Preserve deferred status/other gates;
-completed work needs a new task. If gate creation fails, leave the task in the
-inbox and report the incomplete capture.
+Tailor it to actual decisions. The prefix is a readable convention, not a task
+type/parsed field. Keep questions in the body; add separate unresolved items
+for independently settled gates. Gate existing mutable work before revising
+its brief; preserve other memberships, deferred status and unrelated gates.
+Observer proposals are nonblocking: do not use `handling="observer"` for actively
+requested capture. Completed work needs a new task. If gating fails, leave new
+work outside workstreams and report incomplete capture. Gate before attaching
+to a dynamically included group.
 
-Express real ordering with `add_prerequisite`, not queue position. Default
-`milestone="review"` clears on done or current-spec passed/human-reviewed proof
-across workstreams, for every member of a nonempty group. Use `signoff` only
-when proceeding before the verdict would very likely waste work. Dropped/
-deferred blockers remain unsatisfied; rework/spec changes can block links again.
-A satisfied blocker proves reviewed work exists, not integration into the
-dependent branch. Verify IDs/meaning before linking a known prose gate, then
-resolve that old item. Remove a mistaken/obsolete link with
-`remove_prerequisite(..., note=...)`, preserving the actual decision reason.
+Use `add_prerequisite` for dependencies. Default `milestone="review"` clears on
+done or current-spec passed/human-reviewed proof across workstreams; every member
+of a nonempty group must satisfy it. Use `signoff` only when proceeding before
+the verdict would very likely waste work. Dropped/deferred blockers stay
+unsatisfied; rework/spec changes can block links again. A satisfied blocker proves
+reviewed work exists, not integration into the dependent branch. Verify IDs/
+meaning before replacing prose gates with links. Remove mistaken/obsolete links
+with `remove_prerequisite(..., note=...)` and the actual reason.
 
-Return the saved ID/title, preliminary findings and main open decisions. Explain
-that "let's design X" or "review design tasks" resumes through `feature-design`.
-Capture alone does not start discussion or implementation. Leave gates until
-the user's decisions cover the resulting scope.
+Use local order for scheduling intent. **Reorder tasks** is
+`reorder_tasks(workstream_id, task_ids, expected_order_revision)`: one exact
+prefix; unlisted members keep relative order. Reuse returned
+`workstream_order_revision` without routine reads/reshuffling. Other lists stay
+intact; new inclusions append deterministically.
 
-Continue from last returned revisions after writes/pauses; reconcile conflicts
-without routine confirming reads. Inspect the board before retrying uncertain
-creation. Use `unqueue_task` to correct placement without changing requirements
-or proof. Cards/summaries cannot replace a spec. Whole-field body/criteria edits
-need its full-spec etag; valid updates return a refreshed token. Fetch only
-needed proof through chosen `get_tasks` attempt IDs or `get_attempt`, and page
-history/membership deliberately with `list_task_attempts`/`list_group_members`.
+Return saved ID/title, findings and open decisions. "Let's design X"/"review
+design tasks" resumes through `feature-design`. Capture starts no discussion/
+implementation; keep gates until decisions cover the scope.
+
+Reuse last revisions after writes/pauses; reconcile conflicts and inspect the
+board before retrying uncertain creation. Cards are not specs. Whole body/
+criteria edits need the full-spec etag; valid updates return its successor.
+Fetch chosen proof with `get_tasks` attempt IDs or `get_attempt`; page
+`list_task_attempts`/`list_group_members` deliberately.

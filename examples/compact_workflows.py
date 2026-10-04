@@ -333,7 +333,9 @@ async def exercise(database):
         index = await ok("get_default_skills")
         assert all("content" not in s for s in index["items"])
         named = await ok("get_default_skills", name="signoff")
-        assert "**Asked:**" in named["items"][0]["content"]
+        metadata = next(item for item in index["items"] if item["name"] == "signoff")
+        assert named["items"][0]["sha256"] == metadata["sha256"]
+        assert named["items"][0]["content"]
         report["fixture"] = {
             "specification_characters": len(body) + len(criteria),
             "proof_characters_per_attempt": len(proof),

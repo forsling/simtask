@@ -67,26 +67,13 @@ def create_server(
         "task-mcp",
         version=RUNTIME_IDENTITY["package_version"],
         instructions=(
-            "Follow explicit user instructions over this workflow guidance. Init an explicit "
-            "checkout/branch and retain its IDs and returned revisions; reconcile conflicts. "
-            "Add user-requested work on the current branch, including gated design briefs; "
-            "confirmed agent ideas go to the inbox. Membership starts no implementation. "
-            "Fetch get_default_skills(name=...) for feature-capture ('add a design task'), "
-            "feature-design ('let's design X'/'review design tasks'), proposal-review, "
-            "superdevloop or signoff. Decide worth-doing before feature design. Implement "
-            "the full specification and use latest_rejection reasons; record design/value "
-            "doubts as concerns and carry on, or add an unexpected blocker and move on. "
-            "Independent review judges Build within the spec: fixes requiring a spec change "
-            "are concerns, not rework. Pass sound Build with serious concerns; optional "
-            "new features are ideas. 'Sign off X' requests asked/built/verified presentation "
-            "then a verdict; explicit 'approve X' needs no walkthrough. Address every concern "
-            "and judge Value, Design, Build independently in that order. Only the user "
-            "approves; signoff verdicts are approve/rework/revise/drop. Confirm the mapping "
-            "of a generic rejection; queue removal work when dropped code must go. Express "
-            "ordering with add_prerequisite, not queue position. Review milestones clear "
-            "on current-spec passed/human-reviewed work; signoff links are only for work "
-            "very likely wasted before the verdict. Satisfaction proves no branch integration. "
-            "Use remove_prerequisite with the actual decision note for obsolete/mistaken links."
+            "Explicit user instructions override workflow guidance. Init the target "
+            "checkout/branch; retain its IDs and last returned revisions. Workstreams have "
+            "nonexclusive memberships and independent order; inclusion starts no implementation. "
+            "Fetch get_default_skills(name=...) on demand: init for setup, feature-capture for "
+            "'add a design task', feature-design for 'let's design X'/'review design tasks', "
+            "proposal-review for ordinary proposals/questions, superdevloop for implementation "
+            "and independent review, signoff for reviewed-result walkthroughs and user verdicts."
         ),
         lifespan=lifespan,
     )
@@ -219,7 +206,7 @@ def create_server(
     def workstream_status(
         workstream_id: str, limit: int = 20, offset: int = 0, include_scope: bool = False
     ) -> dict[str, Any]:
-        """Read a paged local queue and current concerns refs, with counts and no prose.
+        """Read a paged local task list and current concern refs, with counts and no prose.
 
         concern_tasks is separately paged at limit/offset, prioritizing awaiting sign-off.
         include_scope=true also pages explicit scope.
@@ -301,7 +288,7 @@ def create_server(
     ) -> dict[str, Any]:
         """Create with direct membership when workstream_id is supplied.
 
-        Queue only concrete agreed work. Open design questions remain blocking gates.
+        Include agreed work; open design questions remain blocking gates.
         Group membership follows existing dynamic inclusion and exclusions.
         """
         return store.compact_call(
@@ -504,7 +491,7 @@ def create_server(
 
         Default review clears on done or current-spec passed/human_review. Use signoff only
         exceptionally when work would very likely be wasted without the user's verdict.
-        Satisfaction is reversible; it neither queues work nor proves code integration.
+        Satisfaction is reversible; it neither includes work nor proves code integration.
         """
         return store.compact_call(
             "propose_prerequisite",
@@ -556,7 +543,7 @@ def create_server(
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def get_next_action(workstream_id: str) -> dict[str, Any]:
-        """Read one implement/review action in workstream order, without claiming or reordering.
+        """Read one implement/review action in workstream order.
 
         Full current spec/token and exactly one applicable local proof for review
         (or rework) are included. Autonomous actions require workstream membership and clear
@@ -692,7 +679,7 @@ def create_server(
     def get_default_skills(name: str | None = None) -> dict[str, Any]:
         """Read the index or one skill: feature-capture for 'add a design task',
         feature-design for 'let's design X'/'review design tasks', superdevloop for
-        queued Build work/review and signoff for the user's Value/Design/Build verdict.
+        workstream Build work/review and signoff for the user's Value/Design/Build verdict.
         Explicit user instructions override the reference guidance.
         """
         return default_skills(name)
