@@ -640,7 +640,7 @@ def test_atomic_moves_over_real_viewer_transport(viewer):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
-def test_frontend_atomic_order_form_and_conflict_reconciliation():
+def test_frontend_drag_and_drop_order_and_conflict_reconciliation():
     script = Path(__file__).with_name("viewer_order.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr

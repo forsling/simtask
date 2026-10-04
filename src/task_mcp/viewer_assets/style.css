@@ -451,6 +451,52 @@ kbd {
 .row.closed .row-title {
   color: var(--text-3);
 }
+.row-order {
+  flex: none;
+  min-width: 1.6em;
+  margin-top: 1px;
+  font: 500 11px/1.6 var(--mono);
+  color: var(--text-3);
+  text-align: right;
+}
+.row.draggable {
+  position: relative;
+  cursor: grab;
+}
+.row.draggable:active {
+  cursor: grabbing;
+}
+.row.dragging {
+  opacity: 0.45;
+}
+.row.drop-before::before,
+.row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.row.drop-before::before {
+  top: -2px;
+}
+.row.drop-after::after {
+  bottom: -2px;
+}
+.drop-hint {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.drop-hint[hidden] {
+  display: none;
+}
 .dot {
   flex: none;
   width: 8px;

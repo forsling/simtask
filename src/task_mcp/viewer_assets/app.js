@@ -42,6 +42,10 @@ const state = {
   selected: null,
   generation: 0,
   loadedAt: 0,
+  // Drag-and-drop edits only this loaded workstream order, guarded by its revision.
+  orderStream: null,
+  orderRevision: null,
+  orderSaving: false,
 };
 let submitAction = null;
 let submissionPending = false;
@@ -453,6 +457,8 @@ async function reload({ quiet = false } = {}) {
     state.rows = rows.map(r => ({ ...r, view: r.view || (r.object_type === "group" ? "group" : ["done", "deferred", "dropped"].includes(r.status) ? r.status : r.gate_diagnostics?.[0] || "open") }));
     state.streams = streams;
     state.loadedAt = Date.now();
+    state.orderStream = !groups && state.stream ? state.stream : null;
+    state.orderRevision = state.orderStream ? board.workstream_order_revision : null;
     $("subheading").textContent = groups
       ? `${groups === "project" ? projectName(project) : "Across projects"} · ${rows.length} group${rows.length === 1 ? "" : "s"}`
       : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}`;
@@ -517,6 +523,12 @@ function row(r) {
   } else {
     const v = VIEWS[r.view] || { short: r.view, tone: "muted" };
     b.classList.toggle("closed", r.view === "done" || r.view === "dropped");
+    if (orderEditable()) {
+      b.draggable = true;
+      b.classList.add("draggable");
+      b.title = `Position ${r.workstream_order_key} in ${streamName(state.stream)}. Drag to reorder.`;
+      b.append(node("span", String(r.workstream_order_key ?? ""), "row-order"));
+    }
     b.append(
       node("span", "", "dot tone-" + v.tone),
       node("span", r.title, "row-title"),
@@ -579,6 +591,130 @@ function skeleton() {
 function emptyState(title, text, action) {
   return el("div", "empty", node("h3", title), node("p", text), action);
 }
+
+/* ---------- drag-and-drop ordering ---------- */
+
+// Only a named workstream has an order to edit; project-wide and group views do not.
+function orderEditable() {
+  return !state.groups && !!state.stream && state.orderStream === state.stream && state.orderRevision !== null;
+}
+// The complete new order, or null for an invalid or unchanged drop. Rows hidden by
+// search or collapsed sections stay in state.rows, so they keep their relative order.
+function droppedOrder(ids, movedId, targetId, placement) {
+  if (movedId === targetId || !ids.includes(movedId) || !ids.includes(targetId)) return null;
+  if (placement !== "before" && placement !== "after") return null;
+  const next = ids.filter((id) => id !== movedId);
+  next.splice(next.indexOf(targetId) + (placement === "after" ? 1 : 0), 0, movedId);
+  return next.every((id, i) => id === ids[i]) ? null : next;
+}
+function sectionTitle(r) {
+  return SECTIONS.find((s) => s.views.includes(r.view))?.title || "Other";
+}
+const drag = { id: null, stream: null, source: null, marked: null };
+function dropHint(text) {
+  $("drop-hint").textContent = text || "";
+  $("drop-hint").hidden = !text;
+}
+function unmarkDrop() {
+  drag.marked?.classList.remove("drop-before", "drop-after");
+  drag.marked = null;
+}
+function endDrag() {
+  unmarkDrop();
+  drag.source?.classList.remove("dragging");
+  drag.id = drag.stream = drag.source = null;
+  if (!state.orderSaving) dropHint("");
+}
+// The row under the pointer and which half of it: upper half places before, lower after.
+function dropTarget(e) {
+  const target = e.target?.closest?.(".row");
+  if (!target?.dataset.id || target.dataset.id === drag.id) return null;
+  const box = target.getBoundingClientRect();
+  return { el: target, id: target.dataset.id, placement: e.clientY < box.top + box.height / 2 ? "before" : "after" };
+}
+function describeDrop(movedId, targetId, placement, next) {
+  const moved = state.rows.find((r) => r.id === movedId);
+  const target = state.rows.find((r) => r.id === targetId);
+  if (!next) return `“${moved.title}” is already ${placement} “${target.title}”. Dropping here changes nothing.`;
+  let text = `Place ${placement} “${target.title}” · position ${next.indexOf(movedId) + 1} of ${next.length} in ${streamName(drag.stream || state.stream)}`;
+  if (sectionTitle(moved) !== sectionTitle(target))
+    text += ` · it stays under ${sectionTitle(moved)}, because status sets the section`;
+  return text;
+}
+async function commitDrop(movedId, targetId, placement) {
+  if (!orderEditable() || state.orderSaving) return false;
+  const next = droppedOrder(state.rows.map((r) => r.id), movedId, targetId, placement);
+  if (!next) return false;
+  const stream = state.stream, revision = state.orderRevision;
+  const byId = new Map(state.rows.map((r) => [r.id, r]));
+  state.orderSaving = true;
+  state.rows = next.map((id, i) => ({ ...byId.get(id), workstream_order_key: i + 1 }));
+  renderList();
+  dropHint("Saving the new order…");
+  let saved = false;
+  try {
+    // One prefix through the moved task; the store keeps every later member's order.
+    await api("reorder", {
+      workstream_id: stream,
+      task_ids: next.slice(0, next.indexOf(movedId) + 1),
+      expected_order_revision: revision,
+    });
+    saved = true;
+    toast("Order saved");
+  } catch (e) {
+    toast(e.conflict
+      ? `${streamName(stream)} changed elsewhere, so this move was not saved. Showing the current order; drag again if you still want it.`
+      : `Couldn't confirm the new order (${e.message}). Showing the saved order.`, true);
+  } finally {
+    state.orderSaving = false;
+    dropHint("");
+  }
+  // Reconcile with recorded state either way: never keep an unconfirmed local order.
+  if (state.stream === stream && !state.groups) await reload({ quiet: true });
+  return saved;
+}
+$("list").ondragstart = (e) => {
+  const source = e.target?.closest?.(".row");
+  if (!source || !orderEditable() || state.orderSaving || !state.rows.some((r) => r.id === source.dataset.id)) {
+    e.preventDefault();
+    return;
+  }
+  endDrag();
+  drag.id = source.dataset.id;
+  drag.stream = state.stream;
+  drag.source = source;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("application/x-task-mcp-task", drag.id);
+  source.classList.add("dragging");
+  dropHint("Drop on the upper or lower half of another task to place it before or after that task.");
+};
+$("list").ondragover = (e) => {
+  if (!drag.id || drag.stream !== state.stream) return;
+  const target = dropTarget(e);
+  unmarkDrop();
+  if (!target) return dropHint("Drop on another task to place it before or after that task.");
+  const next = droppedOrder(state.rows.map((r) => r.id), drag.id, target.id, target.placement);
+  dropHint(describeDrop(drag.id, target.id, target.placement, next));
+  if (!next) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  target.el.classList.add("drop-" + target.placement);
+  drag.marked = target.el;
+};
+$("list").ondragleave = (e) => {
+  if (drag.id && !$("list").contains(e.relatedTarget)) {
+    unmarkDrop();
+    dropHint("Drop on another task to place it before or after that task.");
+  }
+};
+$("list").ondrop = (e) => {
+  if (!drag.id) return;
+  e.preventDefault();
+  const moved = drag.id, stream = drag.stream, target = dropTarget(e);
+  endDrag();
+  if (target && stream === state.stream) commitDrop(moved, target.id, target.placement).catch((error) => toast(error.message, true));
+};
+$("list").ondragend = endDrag;
 
 /* ---------- detail ---------- */
 
@@ -644,7 +780,6 @@ function renderDetail(t) {
   const locked = t.status === "done";
 
   const actions = [button("Edit summary", () => editSummary(t))];
-  if (t.workstream_ids?.length) actions.unshift(button("Reorder tasks", () => moveTask(t).catch((e) => toast(e.message, true))));
   if (!locked) {
     actions.push(iconButton("edit", "Edit (e)", () => editTask(t)));
     actions.push(iconButton("more", "More actions", (e) => moreMenu(e.currentTarget, t)));
@@ -1124,80 +1259,6 @@ function decision({ title, description, action, data, key, label, submit, danger
       throw e;
     }
   };
-}
-async function moveTask(t) {
-  if (submissionPending) return;
-  const streams = (await pages("workstreams", { project: t.project_id }))
-    .filter(w => t.workstream_ids?.includes(w.id));
-  if (submissionPending || !streams.length) return;
-  openDialog("Reorder tasks", `Choose the workstream and where to place “${t.title}” in its list.`, "Reorder tasks");
-  const wrap = el("div", "field");
-  const streamLabel = node("label", "Workstream");
-  streamLabel.htmlFor = "field-workstream_id";
-  const picker = node("select");
-  picker.id = "field-workstream_id"; picker.name = "workstream_id"; picker.required = true;
-  for (const w of streams) {
-    const option = node("option", w.branch || w.name); option.value = w.id; picker.append(option);
-  }
-  picker.value = streams.some(w => w.id === state.stream) ? state.stream : streams[0].id;
-  const label = node("label", "Place this task"); label.htmlFor = "field-position";
-  const position = node("select"); position.id = "field-position"; position.name = "position";
-  for (const value of ["before", "after"]) {
-    const option = node("option", value === "before" ? "Immediately before" : "Immediately after");
-    option.value = value; position.append(option);
-  }
-  position.value = "before";
-  const anchorLabel = node("label", "Task in this workstream"); anchorLabel.htmlFor = "field-anchor_id";
-  const anchor = node("select"); anchor.id = "field-anchor_id"; anchor.name = "anchor_id"; anchor.required = true;
-  let revision = null, loadedStream = null, orderedIds = [], generation = 0;
-  const populate = (items) => {
-    const selected = anchor.value; anchor.replaceChildren();
-    for (const row of items.filter(row => row.id !== t.id)) {
-      const option = node("option", `${row.workstream_order_key}. ${row.title}${row.view === "done" ? " (done)" : ""}`);
-      option.value = row.id; anchor.append(option);
-    }
-    if (items.some(row => row.id === selected && row.id !== t.id)) anchor.value = selected;
-  };
-  const load = async () => {
-    const thisGeneration = ++generation, workstream = picker.value;
-    revision = null; loadedStream = null; anchor.replaceChildren();
-    const board = await taskBoard({ project: t.project_id, workstream_id: workstream });
-    if (thisGeneration !== generation || picker.value !== workstream) return;
-    revision = board.workstream_order_revision; loadedStream = workstream;
-    orderedIds = board.items.map(row => row.id); populate(board.items);
-  };
-  picker.onchange = () => {
-    $("conflict").replaceChildren(); load().catch(error => { $("form-error").textContent = error.message; });
-  };
-  wrap.append(streamLabel, picker, label, position, anchorLabel, anchor); $("fields").append(wrap);
-  submitAction = async (values) => {
-    const workstream = values.get("workstream_id");
-    if (loadedStream !== workstream || revision === null) throw new Error("Wait for this workstream's list to load.");
-    const anchorId = values.get("anchor_id"), placement = values.get("position");
-    if (!orderedIds.includes(t.id) || anchorId === t.id || !orderedIds.includes(anchorId) || !["before", "after"].includes(placement))
-      throw new Error("Choose a task in this workstream's current list.");
-    const taskIds = orderedIds.filter(identity => identity !== t.id);
-    taskIds.splice(taskIds.indexOf(anchorId) + (placement === "after" ? 1 : 0), 0, t.id);
-    try {
-      return await api("reorder", {
-        workstream_id: workstream, task_ids: taskIds, expected_order_revision: revision,
-      });
-    } catch (error) {
-      if (error.conflict) $("conflict").replaceChildren(button("Show the current workstream order", async () => {
-        const latest = await taskBoard({ project: t.project_id, workstream_id: workstream });
-        if (picker.value !== workstream) return;
-        const list = el("ol", "");
-        for (const row of latest.items) list.append(node("li", row.title));
-        $("conflict").replaceChildren(el("div", "conflict-box", list, button("Use this order", () => {
-          revision = latest.workstream_order_revision; loadedStream = workstream;
-          orderedIds = latest.items.map(row => row.id); populate(latest.items);
-          $("form-error").textContent = "Check the task positions, then submit."; $("conflict").replaceChildren();
-        }, "btn small")));
-      }, "btn small"));
-      throw error;
-    }
-  };
-  await load();
 }
 function membershipLabel(t) {
   const target = state.streams.find((w) => w.id === state.stream && w.project_id === t.project_id);

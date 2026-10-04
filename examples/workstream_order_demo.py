@@ -32,7 +32,7 @@ def seed(path):
             project,
             title,
             "Synthetic preview: this canonical task appears in both A and B.\n\n"
-            "Use Reorder tasks to choose a workstream and placement. Switch A/B in the sidebar "
+            "Drag tasks in a workstream list to reorder it. Switch A/B in the sidebar "
             "to see independent list order. More actions offers Add to workstream and Remove "
             "from workstream; those affect only the selected workstream.",
             "A reorder changes only the chosen list. Named removal leaves the other membership.",
@@ -53,7 +53,7 @@ def seed(path):
             name: [t["id"] for t in store.list_tasks(project, ws)["items"]]
             for name, ws in (("A", a), ("B", b))
         },
-        "landing": "A opens with Gamma selected; Reorder tasks is visible. "
+        "landing": "A opens with Gamma first; drag rows to reorder A. "
         "B uses Alpha/Beta/Gamma/Delta.",
     }
     path.with_suffix(".preview.json").write_text(json.dumps(metadata, indent=2) + "\n")

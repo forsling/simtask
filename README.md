@@ -499,9 +499,14 @@ Initial schema 10 migration preserves each effective list's prior project order
 at revision 0. Scoped boards, next-action selection, status and exports use local
 order; scoped cards include `workstream_order_key`. Project-wide lists report
 `ordering=project_baseline` and remain deterministic without a reorder surface.
-The viewer's **Reorder tasks** form names the affected workstream and translates
-relative placement choices to one complete ordered-ID call using that list's
-revision. It preserves the draft on conflict and needs no typed explanation.
+In the viewer, drag a task onto the upper or lower half of another task in a
+named workstream's list to place it before or after that task. The drop line and
+hint state the resulting position; the task stays in its status section. One
+`reorder_tasks` call sends the prefix through the moved task with the loaded list
+revision, so hidden, filtered and collapsed members keep their relative order.
+Cancelled, self and unchanged drops send nothing. A failed save or stale revision
+shows an error and reloads the recorded order; nothing is overwritten. All tasks
+and group views have no list order to edit.
 Reads never reorder. Actual requests and configured audit actors retain existing
 attribution; assess usage from existing events after rollout, without automatic
 reshuffling or routine reporting.
@@ -509,7 +514,7 @@ reshuffling or routine reporting.
 For a synthetic A/B browser preview with four shared tasks and independent
 orders, run `python examples/workstream_order_demo.py`. It creates a fresh
 disposable database and prints its private viewer link and stop command. A opens
-with Gamma selected and **Reorder tasks** visible; B keeps Alpha/Beta/Gamma/Delta.
+with Gamma first and its tasks draggable; B keeps Alpha/Beta/Gamma/Delta.
 Use the sidebar and named membership actions to inspect the resulting behavior.
 
 Concurrent writes to one revision permit one winner and return

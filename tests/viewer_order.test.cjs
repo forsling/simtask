@@ -1,5 +1,6 @@
-// Exercise the shipped creation and decision handlers with compact server ACKs.
-// This verifies form/payload behavior; it makes no visual layout claim.
+// Exercise the shipped drag-and-drop ordering handlers with a small DOM double.
+// This verifies order computation, payloads and reconciliation; the real browser
+// interaction is checked separately against a live viewer.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -7,14 +8,30 @@ const vm = require("node:vm");
 const all = [];
 const roots = new Map();
 function element(tag = "div") {
-  const node = {tag, children: [], textContent: "", disabled: false, hidden: false,
-    value: "", checked: false, required: false, dataset: {},
-    classList: {add() {}, remove() {}, toggle() {}},
+  const node = {tag, children: [], textContent: "", disabled: false, hidden: false, draggable: false,
+    value: "", checked: false, required: false, dataset: {}, className: "", parentElement: null,
+    get classList() {
+      const self = this, names = () => self.className.split(/\s+/).filter(Boolean);
+      const list = {
+        add: (...c) => { self.className = [...new Set([...names(), ...c])].join(" "); },
+        remove: (...c) => { self.className = names().filter(n => !c.includes(n)).join(" "); },
+        toggle: (c, on) => { (on ?? !names().includes(c)) ? list.add(c) : list.remove(c); },
+        contains: c => names().includes(c),
+      };
+      return list;
+    },
     append(...children) { for (const child of children) {
       this.children.push(child); if (child && typeof child === "object") child.parentElement = this;
     } },
+    prepend(...children) { this.append(...children); },
     replaceChildren(...children) { this.children = []; this.append(...children); },
-    setAttribute() {}, querySelector(selector) { return descendants(this).find(n => selector === "[type=checkbox]" && n.type === "checkbox") || null; }, showModal() {}, close() {}, remove() {},
+    closest(selector) {
+      for (let n = this; n; n = n.parentElement) if (selector === ".row" && n.classList.contains("row")) return n;
+      return null;
+    },
+    contains(other) { for (let n = other; n; n = n.parentElement) if (n === this) return true; return false; },
+    getBoundingClientRect() { return {top: 100, height: 40}; },
+    setAttribute() {}, querySelector() { return null; }, scrollIntoView() {}, showModal() {}, close() {}, remove() {},
   };
   all.push(node);
   return node;
@@ -27,7 +44,7 @@ function get(id) {
 }
 const context = vm.createContext({
   document: {getElementById: get, createElement: element, createElementNS: (_, tag) => element(tag), createDocumentFragment: element,
-    createTextNode: text => Object.assign(element(), {textContent: text}), addEventListener() {}},
+    createTextNode: text => Object.assign(element(), {textContent: text}), addEventListener() {}, querySelectorAll: () => []},
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
   sessionStorage: {getItem: () => ""}, history: {replaceState() {}},
 });
@@ -35,64 +52,174 @@ const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_asse
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = code => vm.runInContext(code, context);
 function descendants(node) {return [node, ...(node.children || []).flatMap(descendants)];}
+const rowsIn = () => descendants(get("list")).filter(n => n.classList.contains("row"));
+const rowFor = id => rowsIn().find(n => n.dataset.id === id);
+const reorders = () => context.calls.filter(c => c.action === "reorder");
+const deq = (actual, expected, message) => assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected, message);
+const toasts = () => get("toasts").children.map(n => n.textContent);
+function event(target, clientY = 110, relatedTarget = null) {
+  const e = {target, clientY, relatedTarget, prevented: false, dataTransfer: {data: {}, setData(k, v) { this.data[k] = v; }},
+    preventDefault() { this.prevented = true; }};
+  return e;
+}
+
+// Server double: A holds done, alpha, inbox, hidden, beta; B holds the same tasks in its own order.
+run(`
+  server = {revision: {a: 7, b: 3}, order: {a: ["done", "alpha", "inbox", "hidden", "beta"], b: ["beta", "alpha", "done"]}};
+  views = {done: "done", alpha: "ready", inbox: "inbox", hidden: "deferred", beta: "ready"};
+  calls = []; nextReorder = null;
+  api = async (action, payload) => {
+    calls.push({action, payload: JSON.parse(JSON.stringify(payload))});
+    if (action === "tasks") {
+      const ids = payload.workstream_id ? server.order[payload.workstream_id] : ["done", "alpha", "inbox", "hidden", "beta"];
+      return {workstream_order_revision: payload.workstream_id ? server.revision[payload.workstream_id] : undefined, next_offset: null,
+        items: ids.map((id, i) => ({id, title: id.toUpperCase(), view: views[id], workstream_order_key: i + 1}))};
+    }
+    if (action === "reorder") {
+      if (nextReorder) return nextReorder(payload);
+      const w = payload.workstream_id;
+      if (payload.expected_order_revision !== server.revision[w]) { const e = new Error("revision_conflict"); e.conflict = true; throw e; }
+      const rest = server.order[w].filter(id => !payload.task_ids.includes(id));
+      server.order[w] = [...payload.task_ids, ...rest]; server.revision[w]++;
+      return {workstream_id: w, workstream_order_revision: server.revision[w], changed: true};
+    }
+    throw new Error("unexpected " + action);
+  };
+  pages = async () => [{id: "a", branch: "A", project_id: "project"}, {id: "b", branch: "B", project_id: "project"}];
+  selectTask = async () => {};
+  state.project = "project"; state.projects = [{id: "project", name: "Project"}]; state.stream = "a";
+`);
+
 async function test() {
-  context.task = {id: "task", title: "Signed off task", project_id: "project", status: "done",
-    object_type: "task", revision: 9, body: "Complete scope", acceptance_criteria: "Proof",
+  // The modal and its launch control are gone; completed tasks render no reorder button.
+  assert.equal(run("typeof moveTask"), "undefined");
+  context.task = {id: "done", title: "Signed off task", project_id: "project", status: "done",
+    object_type: "task", revision: 9, body: "Scope", acceptance_criteria: "Proof",
     workstream_ids: ["a", "b"], unresolved_items: [], blocked_by: [], attempts: [], gate_proposals: []};
-  run(`state.project = "project"; state.task = task; state.stream = "a"; state.streams = []; state.projects = [];
-    pages = async () => [{id: "a", branch: "A"}, {id: "b", branch: "B"}];
-    calls = []; api = async (action, payload) => { captured = {action, payload}; calls.push(captured);
-      return action === "tasks" ? {workstream_order_revision: 7, next_offset: payload.offset === 0 ? 100 : null,
-        items: payload.offset === 0 ? [{id: "task", title: task.title, workstream_order_key: 1, view: "done"},
-          {id: "anchor", title: "Open anchor", workstream_order_key: 2, view: "ready"}] :
-          [{id: "unseen", title: "Task beyond first page", workstream_order_key: 3}]} :
-        {workstream_id: payload.workstream_id, workstream_order_revision: 8, changed: true}; };`);
-  run("renderDetail(task)");
-  const labels = descendants(get("detail")).map(n => n.textContent);
-  assert.ok(labels.includes("Reorder tasks"), "Completed tasks may change list position");
-  assert.ok(!labels.includes("Edit (e)"));
-  await run("moveTask(task)");
-  assert.equal(context.captured.action, "tasks");
-  assert.equal(context.captured.payload.workstream_id, "a");
-  assert.equal(get("field-workstream_id").value, "a");
-  assert.equal(get("field-anchor_id").required, true);
-  assert.deepEqual(get("field-anchor_id").children.map(n => n.value), ["anchor", "unseen"]);
-  assert.ok(!get("fields").children.some(n => n.name === "instruction"));
-  context.values = new Map([["workstream_id", "a"], ["anchor_id", "anchor"], ["position", "after"]]);
-  await run("submitAction(values)");
-  assert.equal(context.captured.action, "reorder");
-  assert.deepEqual(JSON.parse(JSON.stringify(context.captured.payload)), {
-    workstream_id: "a", task_ids: ["anchor", "task", "unseen"], expected_order_revision: 7,
-  });
-  assert.equal(context.calls.filter(c => c.action === "reorder").length, 1, "One call retains unseen members");
-  // Conflict reconciliation keeps the named workstream and reloads its complete order.
-  run(`api = async (action, payload) => {
-    captured = {action, payload};
-    if (action === "tasks") return {workstream_order_revision: 11, next_offset: null,
-      items: [{id: "unseen", title: "Earlier now", workstream_order_key: 1}, {id: "task", title: task.title, workstream_order_key: 2}, {id: "anchor", title: "Open anchor", workstream_order_key: 3}]};
-    const error = new Error("revision_conflict"); error.conflict = true; throw error;
-  };`);
-  await assert.rejects(run("submitAction(values)"), /revision_conflict/);
-  await descendants(get("conflict")).find(n => n.textContent === "Show the current workstream order").onclick();
-  assert.equal(context.captured.payload.workstream_id, "a");
-  descendants(get("conflict")).find(n => n.textContent === "Use this order").onclick();
-  run(`api = async (action, payload) => {captured = {action, payload}; return {changed: false, workstream_order_revision: 11};};`);
-  assert.equal((await run("submitAction(values)")).changed, false);
-  assert.equal(context.captured.payload.expected_order_revision, 11);
-  assert.deepEqual(Array.from(context.captured.payload.task_ids), ["unseen", "anchor", "task"]);
-  // Choosing B refreshes its own anchors/revision, never sends A's stale list to B.
-  run(`api = async (action, payload) => {captured = {action, payload}; return action === "tasks" ? {
-    workstream_order_revision: 20, next_offset: null, items: [{id: "anchor", title: "B first", workstream_order_key: 1}, {id: "task", title: task.title, workstream_order_key: 2}]} : {changed: true};};`);
-  get("field-workstream_id").value = "b";
-  await get("field-workstream_id").onchange();
+  run("state.streams = [{id: 'a', branch: 'A'}, {id: 'b', branch: 'B'}]; renderDetail(task)");
+  assert.ok(!descendants(get("detail")).some(n => /Reorder/.test(n.textContent)), "No ordering modal launcher");
+
+  // Pure order computation: invalid and unchanged drops yield nothing to save.
+  const ids = ["a", "b", "c", "d"];
+  const order = (...args) => { const r = run("droppedOrder")(...args); return r && Array.from(r); };
+  deq(order(ids, "d", "b", "before"), ["a", "d", "b", "c"]);
+  deq(order(ids, "a", "c", "after"), ["b", "c", "a", "d"]);
+  assert.equal(order(ids, "b", "b", "after"), null, "Self drop");
+  assert.equal(order(ids, "b", "c", "before"), null, "Already before c");
+  assert.equal(order(ids, "b", "a", "after"), null, "Already after a");
+  assert.equal(order(ids, "x", "a", "after"), null, "Unknown task");
+  assert.equal(order(ids, "a", "b", "inside"), null, "Unknown placement");
+
+  // A named workstream loads its complete order and revision; rows become draggable.
+  await run("reload()");
+  assert.equal(run("state.orderRevision"), 7);
+  assert.equal(rowFor("alpha").draggable, true);
+  assert.ok(rowFor("done") === undefined, "Closed section starts collapsed");
+
+  // Cancelled drag: start, hover, then dragend without a drop issues no mutation.
+  const list = get("list");
+  let e = event(rowFor("beta"));
+  list.ondragstart(e);
+  assert.equal(e.prevented, false);
+  assert.equal(e.dataTransfer.data["application/x-task-mcp-task"], "beta");
+  e = event(rowFor("alpha"), 105);
+  list.ondragover(e);
+  assert.equal(e.prevented, true);
+  assert.ok(rowFor("alpha").classList.contains("drop-before"));
+  assert.match(get("drop-hint").textContent, /Place before “ALPHA” · position 2 of 5 in A/);
+  list.ondragend(event(rowFor("beta")));
+  assert.ok(!rowFor("alpha").classList.contains("drop-before"));
+  assert.equal(get("drop-hint").hidden, true);
+  assert.equal(reorders().length, 0, "Cancelled drag saves nothing");
+
+  // Self and unchanged targets are not droppable and save nothing.
+  list.ondragstart(event(rowFor("alpha")));
+  e = event(rowFor("alpha"), 105);
+  list.ondragover(e);
+  assert.equal(e.prevented, false, "Dropping on itself is not allowed");
+  list.ondragend(event(rowFor("alpha")));
+  assert.equal(await run('commitDrop("inbox", "alpha", "after")'), false, "Already immediately after alpha");
+  assert.equal(await run('commitDrop("beta", "beta", "after")'), false);
+  assert.equal(reorders().length, 0, "No-op and invalid drops save nothing");
+
+  // A real drop with a search filter active: the hidden and collapsed members keep their order.
+  get("search").value = "BETA";
+  run("renderList()");
+  deq(rowsIn().map(r => r.dataset.id), ["beta"]);
+  get("search").value = "";
+  run("renderList()");
+  list.ondragstart(event(rowFor("beta")));
+  const drop = event(rowFor("inbox"), 130); // lower half: after
+  list.ondragover(drop);
+  assert.ok(rowFor("inbox").classList.contains("drop-after"));
+  assert.match(get("drop-hint").textContent, /stays under In progress, because status sets the section/);
+  list.ondrop(drop);
   await new Promise(resolve => setImmediate(resolve));
-  context.values.set("workstream_id", "b");
-  await run("submitAction(values)");
-  assert.equal(context.captured.payload.workstream_id, "b");
-  assert.equal(context.captured.payload.expected_order_revision, 20);
-  assert.deepEqual(Array.from(context.captured.payload.task_ids), ["anchor", "task"]);
-  run(`api = async (action, payload) => ({items: [], next_offset: payload.offset === 0 ? 100 : null,
-     workstream_order_revision: payload.offset === 0 ? 11 : 12});`);
-  await assert.rejects(run('taskBoard({project: "project", workstream_id: "a"})'), /order changed while loading/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reorders().length, 1);
+  deq(reorders()[0].payload, {workstream_id: "a", task_ids: ["done", "alpha", "inbox", "beta"], expected_order_revision: 7});
+  deq(run("server.order.a"), ["done", "alpha", "inbox", "beta", "hidden"], "Indicated placement matches result");
+  deq(run("server.order.b"), ["beta", "alpha", "done"], "Workstream B keeps its own order");
+  assert.equal(run("state.orderRevision"), 8, "Reconciled revision after save");
+  deq(Array.from(run("state.rows.map(r => r.id)")), ["done", "alpha", "inbox", "beta", "hidden"]);
+  assert.ok(toasts().includes("Order saved"));
+
+  // Completed tasks stay reorderable, even moving across sections.
+  assert.equal(await run('commitDrop("done", "beta", "after")'), true);
+  deq(reorders().at(-1).payload.task_ids, ["alpha", "inbox", "beta", "done"]);
+  assert.equal(run("state.orderRevision"), 9);
+
+  // Stale revision: another writer changed A. Nothing is overwritten; the board reloads the current order.
+  run('server.order.a = ["hidden", "beta", "alpha", "inbox", "done"]; server.revision.a = 20;');
+  assert.equal(await run('commitDrop("alpha", "beta", "before")'), false);
+  deq(reorders().at(-1).payload.expected_order_revision, 9);
+  deq(run("server.order.a"), ["hidden", "beta", "alpha", "inbox", "done"], "Concurrent order survives");
+  deq(Array.from(run("state.rows.map(r => r.id)")), ["hidden", "beta", "alpha", "inbox", "done"]);
+  assert.equal(run("state.orderRevision"), 20);
+  assert.match(toasts().at(-1), /A changed elsewhere, so this move was not saved/);
+  assert.equal(run("state.orderSaving"), false);
+
+  // Other failures also restore the recorded order and explain the outcome.
+  run('nextReorder = async () => { throw new Error("Local service error"); };');
+  assert.equal(await run('commitDrop("done", "hidden", "before")'), false);
+  assert.match(toasts().at(-1), /Couldn't confirm the new order \(Local service error\)/);
+  deq(Array.from(run("state.rows.map(r => r.id)")), ["hidden", "beta", "alpha", "inbox", "done"]);
+
+  // While a save is pending, further drags and drops are refused.
+  let release;
+  run("nextReorder = () => pending;");
+  context.pending = new Promise(resolve => { release = resolve; });
+  const saving = run('commitDrop("done", "hidden", "before")');
+  deq(Array.from(run("state.rows.map(r => r.id)")), ["done", "hidden", "beta", "alpha", "inbox"], "Optimistic order shown while saving");
+  const before = reorders().length;
+  assert.equal(await run('commitDrop("beta", "hidden", "before")'), false);
+  e = event(rowFor("beta"));
+  list.ondragstart(e);
+  assert.equal(e.prevented, true);
+  assert.equal(reorders().length, before);
+  release({changed: true, workstream_order_revision: 21});
+  run('server.order.a = ["done", "hidden", "beta", "alpha", "inbox"]; server.revision.a = 21; nextReorder = null;');
+  assert.equal(await saving, true);
+  assert.equal(run("state.orderRevision"), 21);
+
+  // Project-wide and group views have no workstream order to edit.
+  await run("changeScope(null)");
+  assert.equal(run("orderEditable()"), false);
+  assert.equal(rowsIn().some(r => r.draggable), false);
+  assert.equal(await run('commitDrop("done", "inbox", "after")'), false);
+  e = event(rowsIn()[0]);
+  list.ondragstart(e);
+  assert.equal(e.prevented, true);
+  run('pages = async (action) => action === "groups" ? [] : [{id: "a", branch: "A", project_id: "project"}];');
+  await run('chooseGroups("project")');
+  assert.equal(run("orderEditable()"), false);
+
+  // Switching to B edits only B, with B's own revision.
+  await run('changeScope("b")');
+  assert.equal(run("state.orderRevision"), 3);
+  assert.equal(await run('commitDrop("done", "beta", "before")'), true);
+  deq(reorders().at(-1).payload, {workstream_id: "b", task_ids: ["done"], expected_order_revision: 3});
+  deq(run("server.order.b"), ["done", "beta", "alpha"]);
+  deq(run("server.order.a"), ["done", "hidden", "beta", "alpha", "inbox"]);
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});

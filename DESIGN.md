@@ -75,9 +75,9 @@ ordering or a membership snapshot. Canonical `tasks.order_key` remains a stable
 project-wide baseline; old project order revisions remain private historical
 storage. There is no project-level reorder surface or shared execution order.
 Boards, action/init/status reads and exports expose `workstream_order_revision`;
-scoped cards also expose `workstream_order_key`. The viewer's Reorder tasks form
-names the workstream and translates simple relative choices into one complete
-ordered-ID call with its matching revision. It requires no explanatory prose.
+scoped cards also expose `workstream_order_key`. The viewer reorders by drag and
+drop within the selected workstream's list, sending the prefix through the moved
+task with the loaded order revision; conflicts reload rather than overwrite.
 No automatic priority rules, normalization or consumer reporting calls exist.
 Every explicit scope change increments the workstream revision atomically.
 Local queues, status counts and exports include only concrete tasks from the
