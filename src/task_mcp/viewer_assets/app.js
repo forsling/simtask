@@ -1,10 +1,13 @@
 "use strict";
 // Every piece of task text is inserted with textContent or DOM nodes, never parsed as HTML.
 const $ = (id) => document.getElementById(id);
-const token =
-  location.hash.slice(1) || sessionStorage.getItem("task-token") || "";
+// The private launch link carries the token as a bare fragment (#<token>). Location
+// URLs are #/... routes and never contain it, so strip a launch token at once.
+const launchHash = location.hash.slice(1);
+const launchToken = launchHash && !launchHash.startsWith("/") ? launchHash : "";
+const token = launchToken || sessionStorage.getItem("task-token") || "";
 if (token) sessionStorage.setItem("task-token", token);
-history.replaceState(null, "", "/");
+history.replaceState(null, "", launchToken ? "/" : "/" + location.hash);
 
 const VIEWS = {
   signoff: { label: "Ready to sign off", short: "Sign off", tone: "go" },
@@ -337,6 +340,119 @@ function needsYou(stream) {
   return (c.signoff || 0) + (c.inbox || 0) + (c.unresolved_items || 0);
 }
 
+/* ---------- location URLs ---------- */
+
+// #/project/<id>/(all | workstream/<id> | groups | shared-groups)[/(task|group)/<id>]
+// names the selected project, view and task or group. The token is never part of it.
+function routeHash() {
+  if (!state.project) return "";
+  const e = encodeURIComponent;
+  let hash = "#/project/" + e(state.project);
+  hash += state.groups === "shared" ? "/shared-groups" : state.groups ? "/groups" : state.stream ? "/workstream/" + e(state.stream) : "/all";
+  if (state.selected) hash += (state.groups ? "/group/" : "/task/") + e(state.selected);
+  return hash;
+}
+// A parsed location, {} for the default location, or null for an unrecognized address.
+function parseRoute(hash) {
+  const path = hash.replace(/^#/, "").replace(/\/+$/, "");
+  if (!path) return {};
+  let parts;
+  try {
+    parts = path.replace(/^\//, "").split("/").map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  if (parts[0] !== "project" || !parts[1]) return null;
+  const route = { project: parts[1] };
+  let rest = parts.slice(2);
+  if (rest[0] === "all" || rest[0] === "groups" || rest[0] === "shared-groups") {
+    route.view = rest[0];
+    rest = rest.slice(1);
+  } else if (rest[0] === "workstream" && rest[1]) {
+    route.view = "workstream";
+    route.stream = rest[1];
+    rest = rest.slice(2);
+  } else if (rest.length) return null;
+  const itemKind = route.view === "groups" || route.view === "shared-groups" ? "group" : "task";
+  if (rest.length === 2 && rest[0] === itemKind && rest[1] && route.view) route.item = rest[1];
+  else if (rest.length) return null;
+  return route;
+}
+// The location this tab last wrote or opened; back/forward to anything else opens it.
+let shownHash = null;
+// Record the current location: "push" for a deliberate navigation, "replace" for
+// automatic selection, fallbacks and loads.
+function syncRoute(mode = "replace") {
+  const hash = routeHash();
+  if (!hash) return;
+  if (hash !== location.hash) history[mode === "push" ? "pushState" : "replaceState"](null, "", hash);
+  shownHash = hash;
+}
+// Open a location URL (on load, back/forward or an edited address). Anything that no
+// longer exists falls back to the nearest valid view with a short notice.
+async function openLocation(hash, { initial = false } = {}) {
+  const generation = ++state.generation;
+  const route = parseRoute(hash);
+  const notices = [];
+  if (!route) notices.push("That address is not a viewer location.");
+  let project = state.projects.find((p) => p.id === route?.project);
+  if (route?.project && !project) {
+    state.projects = await pages("projects");
+    if (generation !== state.generation) return;
+    project = state.projects.find((p) => p.id === route.project);
+  }
+  if (route?.project && !project) notices.push("That project no longer exists.");
+  const located = !!project;
+  project ||= state.projects[0];
+  if (!project) return void notices.forEach((n) => toast(n));
+  const streams = await pages("workstreams", { project: project.id });
+  if (generation !== state.generation) return;
+  const view = located ? route.view : route?.view === "shared-groups" ? "shared-groups" : null;
+  let item = located || view === "shared-groups" ? route.item || null : null, stream = null, groups = false;
+  if (view === "workstream") {
+    if (streams.some((s) => s.id === route.stream)) stream = route.stream;
+    else notices.push("That workstream no longer exists.");
+  } else if (view === "groups") groups = "project";
+  else if (view === "shared-groups") groups = "shared";
+  else if (!view) stream = streams[0]?.id || null;
+  if (item && groups) {
+    // A linked group may be outside the list (as when opened from a task), so check it exists.
+    const found = await api("details", { ids: [item] }).then((r) => r.items[0], () => null);
+    if (generation !== state.generation) return;
+    if (found?.object_type !== "group") {
+      notices.push("That task group no longer exists.");
+      item = null;
+    }
+  }
+  closeDrawer();
+  // On a narrow screen a reloaded task reopens its detail; back/forward shows the list.
+  if (initial && item) $("shell").classList.add("detail-open");
+  state.project = project.id;
+  state.streams = streams;
+  state.stream = stream;
+  state.groups = groups;
+  state.linkedGroup = groups ? item : null;
+  state.selected = item;
+  state.task = null;
+  const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : stream ? `${project.name} · ${streamName(stream)}` : `${project.name} · All tasks`;
+  notices.forEach((n) => toast(`${n} Showing ${name}.`));
+  syncRoute();
+  renderNav();
+  await reload({ requested: groups ? null : item });
+}
+function onLocationChange() {
+  if (location.hash === shownHash) return;
+  const hash = location.hash.slice(1);
+  shownHash = location.hash;
+  // A launch link pasted into this tab: reload so startup adopts and strips its token.
+  if (hash && !hash.startsWith("/")) return location.reload();
+  if (!state.projects.length || $("shell").classList.contains("stopped")) return;
+  closeMenu();
+  openLocation(location.hash).catch((e) => toast(e.message, true));
+}
+window.addEventListener("popstate", onLocationChange);
+window.addEventListener("hashchange", onLocationChange);
+
 /* ---------- navigation ---------- */
 
 async function boot() {
@@ -356,7 +472,8 @@ async function boot() {
       $("detail").replaceChildren();
       return;
     }
-    await chooseProject(state.projects[0].id);
+    shownHash = location.hash;
+    await openLocation(location.hash, { initial: true });
   } catch (e) {
     toast(e.message, true);
   }
@@ -374,6 +491,7 @@ async function chooseProject(id, { keepSelection = false } = {}) {
   if (generation !== state.generation) return;
   state.streams = streams;
   state.stream = keepSelection ? null : streams[0]?.id || null;
+  syncRoute("push");
   renderNav();
   await reload();
 }
@@ -420,6 +538,7 @@ async function chooseGroups(mode) {
   state.stream = null;
   state.selected = null;
   state.task = null;
+  syncRoute("push");
   renderNav();
   await reload();
 }
@@ -437,10 +556,11 @@ async function changeScope(id) {
   state.stream = id;
   state.selected = null;
   state.task = null;
+  syncRoute("push");
   renderNav();
   await reload();
 }
-async function reload({ quiet = false } = {}) {
+async function reload({ quiet = false, requested = null } = {}) {
   const generation = ++state.listGeneration;
   // A row click or navigation that starts while this board loads owns the detail pane
   // (and bumps state.generation); auto-selecting here would cancel it.
@@ -474,7 +594,7 @@ async function reload({ quiet = false } = {}) {
       try {
         const selected = await api("next-action", {workstream_id: state.stream});
         if (selected.action) {
-          await selectTask(selected.task.id);
+          await selectTask(selected.task.id, { entry: "push" });
           toast(selected.action === "review" ? "Next: fresh independent reviewer. Verify the actual checkout and saved proof." : "Next: implementer. Use the current checkout and relevant existing work.");
         } else toast(`No autonomous action. ${selected.diagnostics.signoff || 0} task(s) await human sign-off; other gates remain on the board.`);
       } catch (e) { toast(e.message, true); }
@@ -484,10 +604,16 @@ async function reload({ quiet = false } = {}) {
     if (detailGeneration !== state.generation) return;
     if (state.selected && (rows.some((r) => r.id === state.selected) || (groups && state.linkedGroup === state.selected))) await selectTask(state.selected, { quiet });
     else if (rows.length) {
+      // A location whose task has left this view falls back to the first task.
+      if (requested && requested === state.selected)
+        toast(`That task is not in ${stream ? streamName(stream) : "this project"}. Showing the first task.`);
       const first = orderedRows()[0] || rows[0];
       await selectTask(first.id);
     } else {
+      if (requested && requested === state.selected)
+        toast(`That task is not in ${stream ? streamName(stream) : "this project"}.`);
       state.selected = null;
+      syncRoute();
       $("detail").classList.remove("loading");
       $("detail").replaceChildren(
         state.groups
@@ -517,7 +643,7 @@ function orderedRows() {
   );
 }
 function row(r) {
-  const b = button("", () => selectTask(r.id, { open: true }), "row" + (r.id === state.selected ? " selected" : ""));
+  const b = button("", () => selectTask(r.id, { open: true, entry: "push" }), "row" + (r.id === state.selected ? " selected" : ""));
   b.dataset.id = r.id;
   b.setAttribute("role", "listitem");
   b.setAttribute("aria-current", r.id === state.selected ? "true" : "false");
@@ -757,9 +883,10 @@ async function includedWorkstreams(groupId) {
   return included;
 }
 
-async function selectTask(id, { open = false, quiet = false } = {}) {
+async function selectTask(id, { open = false, quiet = false, entry = "replace" } = {}) {
   const generation = ++state.generation;
   state.selected = id;
+  syncRoute(entry);
   document.querySelectorAll(".row").forEach((r) => {
     const on = r.dataset.id === id;
     r.classList.toggle("selected", on);
@@ -1068,6 +1195,7 @@ async function navigateWorkstream(w) {
   state.linkedGroup = null;
   state.selected = null;
   state.task = null;
+  syncRoute("push");
   renderNav();
   await reload();
 }
@@ -1090,6 +1218,7 @@ async function openGroup(id) {
   state.linkedGroup = id;
   state.stream = null;
   state.selected = id;
+  syncRoute("push");
   renderNav();
   await reload();
 }

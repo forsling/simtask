@@ -646,6 +646,13 @@ def test_frontend_drag_and_drop_order_and_conflict_reconciliation():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_frontend_location_urls_history_and_stale_fallbacks():
+    script = Path(__file__).with_name("viewer_routes.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_concerns_reach_real_viewer_details_and_status(viewer):
     server, store, context = viewer
     task = create(server, context)
