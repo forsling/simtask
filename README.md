@@ -261,19 +261,24 @@ and rework tasks, including those awaiting review or sign-off. Done, deferred an
 dropped tasks are omitted and counted per status in `hidden` (`queue_hidden` on
 init), for example `{"done": 217, "deferred": 150}`. Pass `include_inactive=true`
 to list them too (history or backlog); `list_tasks(state="done"|"deferred"|"dropped")`
-lists exactly that status. Positions keep the whole workstream order, so hidden
-tasks leave gaps rather than renumbering the board.
+lists exactly that status. `hidden` is omitted whenever `include_inactive=true` or
+any `state` filter is set: a filtered page counts only its own matches. Positions
+keep the whole workstream order, so hidden tasks leave gaps rather than
+renumbering the board.
 
 A slim card carries `id`, `title`, `summary`, `state`, `revision`, `position` (in the
 named workstream's order), `blockers` (unsatisfied prerequisite IDs), `question_count`,
 `concern_count` and `rejected` (a review or sign-off rejection awaits a newer
 recorded result). Empty, zero and false fields are omitted, as is `position`
-without a workstream. `state` is one word: `ready`, `rework`, `blocked`,
+without a workstream. Closed cards keep `question_count` (a deferred task keeps
+its open questions) but have no `blockers`; the `blockers` group still lists
+their prerequisites. `state` is one word: `ready`, `rework`, `blocked`,
 `question`, `review`, `signoff`, `inbox`, `out_of_scope`, or the closed status
 `done`/`deferred`/`dropped`. Groups have `state="group"` with `progress`,
 `complete` and `project_count`. The `state` filter accepts these words and the
 older view names `prerequisites` and `unresolved_items`; `ready` also matches
-`rework`.
+`rework`. Any other value, such as `sign-off`, is rejected with `invalid_state`
+and the list of accepted values.
 
 `list_tasks` and `get_tasks` accept `include=[...]` groups that restore what slim
 cards leave out, without a full specification read:

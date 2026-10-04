@@ -194,6 +194,12 @@ def test_state_words_and_existing_filters(board):
     assert filtered("ready") == {tasks[n]["id"] for n in ("ready", "blocker", "rework")}
     assert filtered("signoff") == {tasks["signoff"]["id"]}
     assert filtered("review") == {tasks["review"]["id"]}
+    assert filtered("inbox") == filtered("out_of_scope") == filtered("group") == set()
+    # Typos fail loudly with the accepted values instead of returning an empty board.
+    for typo in ("sign-off", "Ready", "open", 3):
+        with pytest.raises(TaskError, match=r"invalid_state: .*ready, rework, .*unresolved_items"):
+            store.list_tasks(project, ws, state=typo)
+    assert store.list_tasks(project, ws, state="")["total"] == 7  # empty means no filter
 
 
 def test_slim_cards_are_small_and_omit_empty_defaults(board):
@@ -245,20 +251,52 @@ def test_each_include_group_returns_its_fields_on_both_reads(board, group):
         assert card["status"] == "open" and card["view"] == "ready"
 
 
+def _old_value(card, key):
+    """Rebuild one old full-card field from a slim card with every include group."""
+    derived = {
+        "summary": lambda: card.get("summary"),
+        "unresolved_count": lambda: card.get("question_count", 0),
+        "workstream_ids": lambda: [w["id"] for w in card["workstreams"]],
+        "attempt_reference": lambda: card["attempt"],
+        "aggregate_attempt_counts": lambda: card["attempt_counts"],
+        "prerequisite_count": lambda: len(card["prerequisites"]),
+        "prerequisites": lambda: card["prerequisites"][:3],
+        "prerequisites_has_more": lambda: len(card["prerequisites"]) > 3,
+        "workstream_order_key": lambda: card["position"],
+        "concern_count": lambda: card.get("concern_count", 0),
+    }
+    return derived[key]() if key in derived else card[key]
+
+
 def test_every_old_card_field_is_reachable(board):
     store, project, ws, _, tasks = board
+    # A closed task keeps open questions and prerequisites the slim card must not lose.
+    shelved = store.create_task(project, "Shelved", workstream_id=ws)
+    shelved = store.add_unresolved(shelved["id"], shelved["revision"], "Which storage?")
+    shelved = store.add_prerequisite(shelved["id"], shelved["revision"], tasks["ready"]["id"])
+    tasks["shelved"] = store.set_disposition(
+        shelved["id"], shelved["revision"], "deferred", "Synthetic decision"
+    )
+    slim = store.read_tasks([tasks["shelved"]["id"]], workstream_id=ws)["items"][0]
+    assert slim["state"] == "deferred" and slim["question_count"] == 1
+    assert "blockers" not in slim  # closed work blocks nothing; the group lists it
+    listed = store.list_tasks(project, ws, state="deferred", include=["blockers"])["items"]
+    shelved_card = next(c for c in listed if c["id"] == tasks["shelved"]["id"])
+    assert shelved_card["question_count"] == 1
+    assert [p["id"] for p in shelved_card["prerequisites"]] == [tasks["ready"]["id"]]
     with store._connect() as db:
-        for name in ("signoff", "blocked", "done"):
+        for name in ("signoff", "blocked", "done", "review", "rework", "question", "shelved"):
             task = store._task(db, tasks[name]["id"], {})
-            old = set(store._card(db, task, ws)) | {"workstream_order_key"}
-            old_unscoped = set(store._card(db, task))
-            card = store.read_tasks(
-                [task["id"]], workstream_id=ws, include=list(CARD_INCLUDE_GROUPS)
-            )
-            unscoped = store.read_tasks([task["id"]], include=list(CARD_INCLUDE_GROUPS))
-            reachable = set(card["items"][0]) | set(unscoped["items"][0]) | SLIM_KEYS
-            missing = {RENAMED.get(k, k) for k in old | old_unscoped} - reachable
-            assert missing == set()
+            positions = {i: n for n, i in enumerate(store._ordered_scope_ids(db, ws), 1)}
+            old = store._card(db, task, ws) | {"workstream_order_key": positions[task["id"]]}
+            old_unscoped = store._card(db, task)
+            everything = list(CARD_INCLUDE_GROUPS)
+            card = store.read_tasks([task["id"]], workstream_id=ws, include=everything)
+            unscoped = store.read_tasks([task["id"]], include=everything)
+            for previous, current in ((old, card), (old_unscoped, unscoped)):
+                (current,) = current["items"]
+                rebuilt = {key: _old_value(current, key) for key in previous}
+                assert rebuilt == previous, name
 
 
 def test_groups_are_recognisable_and_unknown_groups_are_rejected(board):
@@ -327,6 +365,10 @@ def test_mcp_tools_expose_defaults_and_include_groups(board):
         with pytest.raises(Exception, match="blockers.*attempt.*concerns.*workstreams.*ids"):
             await server.call_tool(
                 "list_tasks", {"project": project, "workstream_id": ws, "include": ["history"]}
+            )
+        with pytest.raises(Exception, match="invalid_state: .*'sign-off'.* signoff, "):
+            await server.call_tool(
+                "list_tasks", {"project": project, "workstream_id": ws, "state": "sign-off"}
             )
 
     asyncio.run(exercise())

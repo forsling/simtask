@@ -340,11 +340,12 @@ def create_server(
         revision, position (workstream order), blockers (unsatisfied prerequisite IDs),
         question_count, concern_count, rejected (a rejection awaits a new result);
         empty/zero/false fields are omitted. state filters by these words or the
-        older view names (prerequisites, unresolved_items); ready includes rework.
-        include adds groups: blockers (prerequisite title/state/satisfied, gate
-        diagnostics), attempt (current result, implementer, summary, review state,
-        latest_rejection), concerns (texts, kind, author), workstreams (memberships and
-        positions), ids (project, spec revision, status, group and other bookkeeping).
+        older view names (prerequisites, unresolved_items); ready includes rework;
+        other values are rejected; any state filter omits hidden. include adds groups:
+        blockers (prerequisite title/state/satisfied, gate diagnostics), attempt
+        (current result, implementer, summary, review state, latest_rejection), concerns
+        (texts, kind, author), workstreams (memberships and positions), ids (project,
+        spec revision, status, group and other bookkeeping).
         """
         return store.list_tasks(
             project, workstream_id, state, limit, offset, include_inactive, include

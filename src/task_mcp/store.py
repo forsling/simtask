@@ -26,6 +26,20 @@ INACTIVE_STATUSES = ("done", "deferred", "dropped")
 CARD_INCLUDE_GROUPS = ("blockers", "attempt", "concerns", "workstreams", "ids")
 # Slim-card state words for gate views whose internal names are longer.
 STATE_WORDS = {"unresolved_items": "question", "prerequisites": "blocked"}
+# Values the list_tasks state filter accepts: slim state words, then older view names.
+STATE_FILTERS = (
+    "ready",
+    "rework",
+    "blocked",
+    "question",
+    "review",
+    "signoff",
+    "inbox",
+    "out_of_scope",
+    *INACTIVE_STATUSES,
+    "group",
+    *STATE_WORDS,
+)
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
@@ -1933,6 +1947,17 @@ class Store:
         return view, state
 
     @staticmethod
+    def _validate_state_filter(state):
+        """Reject typos such as 'sign-off' instead of silently matching nothing."""
+        if state is None or state == "":
+            return
+        if not isinstance(state, str) or state not in STATE_FILTERS:
+            raise TaskError(
+                f"invalid_state: unknown state filter {state!r}; "
+                f"use one of {', '.join(STATE_FILTERS)}"
+            )
+
+    @staticmethod
     def _state_matches(requested, view, state):
         """Old view names and slim state words both filter; ready includes rework."""
         return requested in {view, state}
@@ -1963,7 +1988,8 @@ class Store:
         """Slim card: identity, one state word and gate/attention counts.
 
         Fields at their empty default (no summary, blockers, questions, concerns or
-        waiting rejection) are omitted. Include groups restore the dropped detail.
+        waiting rejection) are omitted; closed tasks have no blockers. Include groups
+        restore the dropped detail.
         """
         cache = {} if cache is None else cache
         full = full if full is not None else Store._card(db, task, workstream_id)
@@ -1982,15 +2008,15 @@ class Store:
                 complete=full["complete"],
                 project_count=full["project_count"],
             )
-        active = task["status"] not in INACTIVE_STATUSES
-        if active:
+        if task["status"] not in INACTIVE_STATUSES:
             blockers = [
                 p["id"] for p in Store._prerequisite_references(db, task["id"]) if p["blocking"]
             ]
             if blockers:
                 card["blockers"] = blockers
-            if task["unresolved_items"]:
-                card["question_count"] = len(task["unresolved_items"])
+        # Open questions stay visible on closed cards: deferred work keeps its questions.
+        if task["unresolved_items"]:
+            card["question_count"] = len(task["unresolved_items"])
         if full.get("concern_count"):
             card["concern_count"] = full["concern_count"]
         if Store._rejection_waiting(db, task):
@@ -3916,6 +3942,7 @@ class Store:
         def operation(db, scope):
             self._page(limit, offset)
             self._validate_include_inactive(include_inactive)
+            self._validate_state_filter(state)
             groups = self._include_groups(include)
             project_id = self._project(db, project, scope)["id"]
             if workstream_id is not None:
