@@ -18,18 +18,8 @@ from task_mcp.export import FORMAT, render_markdown
 
 DATABASE_SCHEMA_REVISION = 7
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
-# Both supported envelopes keep concerns separate from the original context evidence.
-CONCERN_COUNT_SQL = (
-    "CASE WHEN json_valid(evidence) THEN CASE WHEN json_type(evidence,'$.concerns')='array' "
-    "AND ((json_extract(evidence,'$.format')='durable-result-v1' "
-    "AND json_type(evidence,'$.evidence') IS NOT NULL "
-    "AND json_type(evidence,'$.artifacts') IS NOT NULL "
-    "AND json_type(evidence,'$.verification') IS NOT NULL "
-    "AND json_type(evidence,'$.specification_etag') IS NOT NULL) "
-    "OR (json_extract(evidence,'$.format')='attempt-concerns-v1' "
-    "AND json_type(evidence,'$.original_evidence')='text')) "
-    "THEN json_array_length(evidence,'$.concerns') ELSE 0 END ELSE 0 END"
-)
+# Counts and full reads recognize exactly the same validated stored metadata.
+CONCERN_COUNT_SQL = "attempt_concern_count(evidence)"
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
@@ -348,6 +338,9 @@ class Store:
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
+        db.create_function(
+            "attempt_concern_count", 1, self._attempt_concern_count, deterministic=True
+        )
         db.execute("PRAGMA foreign_keys=ON")
         return db
 
@@ -2112,7 +2105,22 @@ class Store:
             proof = json.loads(evidence)
         except (ValueError, TypeError):
             return None
-        if not isinstance(proof, dict) or not isinstance(proof.get("concerns", []), list):
+        if not isinstance(proof, dict):
+            return None
+        concerns = proof.get("concerns", [])
+        if not isinstance(concerns, list) or any(
+            not isinstance(c, dict)
+            or set(c) != {"kind", "text", "source", "author"}
+            or not isinstance(c["kind"], str)
+            or c["kind"] not in {"value", "design"}
+            or not isinstance(c["text"], str)
+            or not c["text"].strip()
+            or not isinstance(c["source"], str)
+            or c["source"] not in {"implementer", "reviewer"}
+            or not isinstance(c["author"], str)
+            or not c["author"].strip()
+            for c in concerns
+        ):
             return None
         if (
             proof.get("format") == "durable-result-v1"
@@ -2122,10 +2130,16 @@ class Store:
         if (
             proof.get("format") == "attempt-concerns-v1"
             and isinstance(proof.get("original_evidence"), str)
-            and "concerns" in proof
+            and set(proof) == {"format", "original_evidence", "concerns"}
+            and concerns
         ):
             return proof
         return None
+
+    @staticmethod
+    def _attempt_concern_count(evidence):
+        proof = Store._attempt_proof(evidence)
+        return len(proof.get("concerns", [])) if proof else 0
 
     @staticmethod
     def _attempt_details(row):

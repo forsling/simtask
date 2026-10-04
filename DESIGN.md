@@ -222,6 +222,8 @@ sign-off and filtering to the current specification and local attempts. Historic
 concerns remain in deliberate attempt/history reads and exports, with provenance.
 The existing evidence TEXT envelope stores entries without a new schema migration;
 older plain evidence is losslessly wrapped only when reviewer concerns are added.
+Concern metadata is recognized only with valid kind, text, source and author;
+unsupported envelope lookalikes remain complete original evidence in every view.
 
 An active handler may add a task gate directly. An observer proposes a gate for
 review; the proposal is nonblocking until accepted. A coordinator may dismiss

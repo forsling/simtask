@@ -11,6 +11,11 @@ from mcp.client.stdio import StdioServerParameters
 from task_mcp.runtime import PROTOCOL_SCHEMA_REVISION
 from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
 
+LEGACY_CONCERNS_LOOKALIKE = (
+    '{"format":"attempt-concerns-v1","original_evidence":"Legacy inner text",'
+    '"concerns":[{"kind":"value","text":"Legacy JSON data, not a recorded concern"}]}'
+)
+
 
 @pytest.fixture
 def context(tmp_path):
@@ -107,6 +112,32 @@ def test_review_omission_preserves_original_envelope(context, supplied):
     assert store.get_attempt(ack["id"])["concerns"][0]["author"] == "builder"
 
 
+def assert_legacy_concern_projections(store, task, ws, attempt_id, legacy, concerns):
+    proof = store.get_attempt(attempt_id)
+    assert proof["evidence"] == legacy and proof["concerns"] == concerns
+    assert store.get_tasks([task["id"]])["items"][0]["attempts"][0] == proof
+    assert store.list_task_attempts(task["id"])["items"][0]["concern_count"] == len(concerns)
+    card = store.list_tasks(task["project_id"], ws)["items"][0]
+    assert card["concern_count"] == len(concerns)
+    assert card["concern_attempt_total"] == bool(concerns)
+    full = store.read_tasks([task["id"]], True, ws)["items"][0]
+    assert full["concern_count"] == len(concerns)
+    assert [c["text"] for c in full["concerns"]] == [c["text"] for c in concerns]
+    selected = store.read_tasks([task["id"]], True, ws, [attempt_id])["items"][0]
+    assert selected["concerns"] == [] and selected["attempts"][0] == proof
+    status = store.workstream_status(ws)
+    assert status["status"]["concern_count"] == len(concerns)
+    assert status["concern_tasks"]["total"] == bool(concerns)
+    if proof["state"] == "review":
+        assert store.get_next_action(ws)["attempt"] == proof
+    markdown = store.export_workstream(ws)["content"]
+    assert "> " + legacy.replace("\n", "\n> ") in markdown
+    assert markdown.count(" concern — ") == len(concerns)
+    exported = store.export_workstream(ws, format="legacy")["content"]
+    structured = json.loads(exported.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert structured["attempts"] == [proof]
+
+
 @pytest.mark.parametrize(
     "legacy",
     [
@@ -115,10 +146,13 @@ def test_review_omission_preserves_original_envelope(context, supplied):
         '{"format": "attempt-concerns-v1"}',
         '{"format": "durable-result-v1"}',
         '{"format":"durable-result-v1","concerns":[{"kind":"value","text":"Legacy context"}]}',
+        LEGACY_CONCERNS_LOOKALIKE,
+        '{"format":"attempt-concerns-v1","original_evidence":"Legacy inner text","concerns":[]}',
     ],
 )
 @pytest.mark.parametrize(
-    "supplied", [None, [], [{"kind": "value", "text": "Task priority needs reconsidering."}]]
+    "supplied",
+    ["omitted", None, [], [{"kind": "value", "text": "Task priority needs reconsidering."}]],
 )
 def test_legacy_proof_is_lossless_with_reviewer_concerns(context, legacy, supplied):
     store, project, ws = context
@@ -126,14 +160,76 @@ def test_legacy_proof_is_lossless_with_reviewer_concerns(context, legacy, suppli
     ack = result(store, task, ws)
     with sqlite3.connect(store.path) as db:
         db.execute("UPDATE attempts SET evidence=? WHERE id=?", (legacy, ack["id"]))
-    store.record_review(ack["id"], 1, "checker", "pass", "Checked", concerns=supplied)
-    proof = Store(store.path).get_attempt(ack["id"])
-    assert proof["evidence"] == legacy
-    assert len(proof["concerns"]) == bool(supplied)
+    assert_legacy_concern_projections(store, task, ws, ack["id"], legacy, [])
+    added = isinstance(supplied, list) and bool(supplied)
+    arguments = {} if supplied == "omitted" else {"concerns": supplied}
+    reviewed = store.compact_call(
+        "record_review", ack["id"], 1, "checker", "pass", "Checked", **arguments
+    )
+    assert reviewed["concern_count"] == added and "concerns" not in reviewed
+    concerns = [{**supplied[0], "source": "reviewer", "author": "checker"}] if added else []
+    assert_legacy_concern_projections(Store(store.path), task, ws, ack["id"], legacy, concerns)
     with sqlite3.connect(store.path) as db:
         raw = db.execute("SELECT evidence FROM attempts WHERE id=?", (ack["id"],)).fetchone()[0]
-        assert raw == legacy if not supplied else json.loads(raw)["original_evidence"] == legacy
-    assert store.list_task_attempts(task["id"])["items"][0]["concern_count"] == bool(supplied)
+        assert raw == legacy if not added else json.loads(raw)["original_evidence"] == legacy
+
+
+@pytest.mark.parametrize("format", ["durable-result-v1", "attempt-concerns-v1"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"kind": "quality"},
+        {"kind": ["value"]},
+        {"text": " "},
+        {"text": 7},
+        {"source": None},
+        {"source": ["reviewer"]},
+        {"source": "observer"},
+        {"author": None},
+        {"author": {"name": "legacy"}},
+        {"author": " "},
+        {"extra": "unsupported metadata"},
+    ],
+)
+def test_malformed_stored_concerns_remain_lossless_legacy_evidence(context, format, invalid):
+    store, project, ws = context
+    task = store.create_task(project, "Legacy metadata", workstream_id=ws)
+    ack = result(store, task, ws)
+    valid = {"kind": "value", "text": "Legacy JSON β", "source": "implementer", "author": "old"}
+    fields = (
+        {"original_evidence": "Inner legacy context"}
+        if format == "attempt-concerns-v1"
+        else {
+            "evidence": "Inner context",
+            "artifacts": [],
+            "verification": "old",
+            "specification_etag": "old",
+        }
+    )
+    legacy = json.dumps(
+        {"format": format, **fields, "concerns": [valid, {**valid, **invalid}]},
+        ensure_ascii=False,
+        indent=2,
+    )
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE attempts SET evidence=? WHERE id=?", (legacy, ack["id"]))
+    assert_legacy_concern_projections(store, task, ws, ack["id"], legacy, [])
+    addition = {"kind": "design", "text": "Actual reviewer addition"}
+    reviewed = store.compact_call(
+        "record_review", ack["id"], 1, "checker", "pass", "Checked", concerns=[addition]
+    )
+    assert reviewed["concern_count"] == 1
+    assert_legacy_concern_projections(
+        Store(store.path),
+        task,
+        ws,
+        ack["id"],
+        legacy,
+        [{**addition, "source": "reviewer", "author": "checker"}],
+    )
+    with sqlite3.connect(store.path) as db:
+        raw = db.execute("SELECT evidence FROM attempts WHERE id=?", (ack["id"],)).fetchone()[0]
+    assert json.loads(raw)["original_evidence"] == legacy
 
 
 @pytest.mark.parametrize(
@@ -318,10 +414,66 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
             assert "concerns" not in reviewed and len(json.dumps(reviewed)) < 1200
             status = await call("workstream_status", workstream_id=ws)
             assert status["concern_tasks"]["items"][0]["view"] == "signoff"
+            legacy_task = await call(
+                "create_task", project=ctx["project"]["id"], title="Legacy proof", workstream_id=ws
+            )
+            legacy_full = (await call("get_tasks", ids=[legacy_task["id"]], specification=True))[
+                "items"
+            ][0]
+            legacy_ack = await call(
+                "record_result",
+                **{
+                    **proof,
+                    "task_id": legacy_task["id"],
+                    "expected_revision": legacy_task["revision"],
+                    "specification_etag": legacy_full["specification_etag"],
+                },
+            )
+            # Historical evidence was arbitrary text/JSON before proof envelopes.
+            with sqlite3.connect(database) as db:
+                db.execute(
+                    "UPDATE attempts SET evidence=? WHERE id=?",
+                    (LEGACY_CONCERNS_LOOKALIKE, legacy_ack["id"]),
+                )
+            legacy_read = await call("get_attempt", attempt_id=legacy_ack["id"])
+            assert legacy_read["evidence"] == LEGACY_CONCERNS_LOOKALIKE
+            assert legacy_read["concerns"] == []
+            selected = await call("get_next_action", workstream_id=ws)
+            assert selected["attempt"] == legacy_read and selected["task"]["concern_count"] == 0
+            status = await call("workstream_status", workstream_id=ws)
+            assert status["concern_tasks"]["total"] == 1
+            exported = await call("export_workstream", workstream_id=ws)
+            assert LEGACY_CONCERNS_LOOKALIKE in exported["content"]
+            legacy_reviewed = await call(
+                "record_review",
+                attempt_id=legacy_ack["id"],
+                expected_revision=1,
+                reviewer="legacy-checker",
+                verdict="pass",
+                note="Checked historical proof",
+                concerns=[{"kind": "design", "text": "Actual reviewer addition"}],
+            )
+            assert legacy_reviewed["concern_count"] == 1 and "concerns" not in legacy_reviewed
         async with Client(parameters, read_timeout_seconds=30) as restarted:
             response = await restarted.call_tool("get_attempt", {"attempt_id": ack["id"]})
             assert not response.is_error
             assert len(response.structured_content["concerns"]) == 2
             assert response.structured_content["evidence"] == "Context"
+            response = await restarted.call_tool("get_attempt", {"attempt_id": legacy_ack["id"]})
+            assert not response.is_error
+            assert response.structured_content["evidence"] == LEGACY_CONCERNS_LOOKALIKE
+            assert response.structured_content["concerns"] == [
+                {
+                    "kind": "design",
+                    "text": "Actual reviewer addition",
+                    "source": "reviewer",
+                    "author": "legacy-checker",
+                }
+            ]
+            with sqlite3.connect(database) as db:
+                raw = db.execute(
+                    "SELECT evidence FROM attempts WHERE id=?", (legacy_ack["id"],)
+                ).fetchone()[0]
+            assert json.loads(raw)["original_evidence"] == LEGACY_CONCERNS_LOOKALIKE
 
     asyncio.run(exercise())
