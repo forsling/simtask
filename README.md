@@ -48,7 +48,11 @@ that the existing client has refreshed its process and discovered tools.
 
 ## Local browser workspace
 
-An optional browser viewer/editor works without an agent or model:
+An optional browser viewer/editor works without an agent or model. The quickest
+way is `./run.sh`, which starts the viewer (or reuses the running one) and prints
+its link; `./run.sh --restart` and `./run.sh --stop` restart or stop it, and
+`TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh` selects another database. The script
+wraps:
 
 ```sh
 .venv/bin/task-mcp ui
