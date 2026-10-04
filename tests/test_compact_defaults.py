@@ -202,9 +202,10 @@ def test_groups_init_events_and_scope_pages_stay_bounded(context):
         and "members" not in card
         and "by_project" not in card["progress"]
     )
-    first = store.list_group_members(group["id"])
-    second = store.list_group_members(group["id"], cursor=first["next_cursor"])
+    first = store.list_tasks(group_id=group["id"])
+    second = store.list_tasks(group_id=group["id"], offset=first["next_offset"])
     assert len(first["items"]) == 20 and len(second["items"]) == 4
+    assert first["total"] == 24 and second["next_offset"] is None
     assert len({m["id"] for m in first["items"] + second["items"]}) == 24
     ready = store.init(store.workstream_status(ws)["workstream"]["checkout_path"], branch="main")
     assert (
@@ -253,24 +254,11 @@ def test_every_mcp_write_ack_is_compact_and_can_continue(context):
             item_id=gate["unresolved_id"],
             user_note="Resolved",
         )
-        proposal = await call(
-            "add_unresolved",
-            task_id=task["id"],
-            expected_revision=resolved["revision"],
-            text=secret,
-            handling="observer",
-        )
-        dismissed = await call(
-            "dismiss_gate_proposal",
-            proposal_id=proposal["proposal_id"],
-            expected_revision=proposal["task_revision"],
-            note="Unwanted",
-        )
         result = await call(
             "record_result",
             task_id=task["id"],
             workstream_id=ws,
-            expected_revision=dismissed["revision"],
+            expected_revision=resolved["revision"],
             implementer="worker",
             summary="Actual result",
             evidence=secret,
@@ -318,33 +306,29 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             assert len(json.dumps(data)) < 3000
             return data
 
-        await call(
-            "attach_checkout", project=project, path=str(tmp_path / "attached"), confirmed=True
-        )
         third = await call(
-            "init_workstream",
+            "init",
+            path=str(tmp_path / "attached"),
+            branch="third",
+            action="attach_workstream",
             project=project,
-            path=str(tmp_path / "attached"),
-            branch="third",
             confirmed=True,
         )
-        rebound = await call(
-            "rebind_workstream",
-            workstream_id=third["workstream"]["id"],
-            expected_revision=1,
+        resumed = await call(
+            "init",
             path=str(tmp_path / "attached"),
             branch="third",
-            confirmed=True,
-        )
-        assert not rebound["changed"] and rebound["revision"] == 1
-        scoped = await call(
-            "set_scope",
             workstream_id=third["workstream"]["id"],
-            expected_revision=1,
-            expression="none",
         )
-        assert not scoped["changed"] and scoped["revision"] == 1
-        group = await call("create_group", workstream_id=ws, title="Context", body=submitted)
+        assert not resumed["changed"] and resumed["workstream"]["revision"] == 1
+        group = await call(
+            "create_task",
+            project=project,
+            title="Context",
+            body=submitted,
+            workstream_id=ws,
+            kind="group",
+        )
         task = await call(
             "create_task",
             project=project,
@@ -353,53 +337,54 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             workstream_id=ws,
         )
         added = await call(
-            "add_group_member",
+            "update_task",
+            task_id=task["id"],
+            expected_revision=task["revision"],
             group_id=group["id"],
-            expected_revision=group["revision"],
-            task_id=task["id"],
-            expected_task_revision=task["revision"],
+            group_expected_revision=group["revision"],
         )
-        assert added["group"]["group_revision"] == 2 and added["member"]["task_revision"] == 2
-        proposed = await call(
-            "propose_prerequisite",
-            task_id=task["id"],
-            expected_revision=added["member"]["revision"],
+        assert added["group_revision"] == 2 and added["task_revision"] == 2
+        prerequisite = await call(
+            "create_task",
+            project=project,
             title="Prerequisite",
             body=submitted,
             workstream_id=ws,
         )
+        linked = await call(
+            "add_prerequisite",
+            task_id=task["id"],
+            expected_revision=added["revision"],
+            blocked_by_id=prerequisite["id"],
+        )
         reordered = await call(
             "reorder_tasks",
             workstream_id=ws,
-            task_ids=[proposed["proposal"]["id"]],
-            expected_order_revision=proposed["workstream_order_revision"],
+            task_ids=[prerequisite["id"]],
+            expected_order_revision=prerequisite["workstream_order_revision"],
         )
         assert reordered["changed"]
-        assert reordered["workstream_order_revision"] == proposed["workstream_order_revision"] + 1
+        assert (
+            reordered["workstream_order_revision"] == prerequisite["workstream_order_revision"] + 1
+        )
         duplicate = await call(
             "add_prerequisite",
             task_id=task["id"],
-            expected_revision=proposed["task"]["revision"],
-            blocked_by_id=proposed["proposal"]["id"],
+            expected_revision=linked["revision"],
+            blocked_by_id=prerequisite["id"],
         )
-        assert not duplicate["changed"] and duplicate["revision"] == proposed["task"]["revision"]
-        observer = await call(
+        assert not duplicate["changed"] and duplicate["revision"] == linked["revision"]
+        question = await call(
             "add_unresolved",
             task_id=task["id"],
             expected_revision=duplicate["revision"],
             text=submitted,
-            handling="observer",
-        )
-        activated = await call(
-            "accept_gate_proposal",
-            proposal_id=observer["proposal_id"],
-            expected_revision=observer["task_revision"],
         )
         resolved = await call(
             "resolve_unresolved",
             task_id=task["id"],
-            expected_revision=activated["revision"],
-            item_id=activated["unresolved_id"],
+            expected_revision=question["revision"],
+            item_id=question["unresolved_id"],
             user_note="Settled",
         )
         summary = await call(
@@ -455,10 +440,12 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             specification_etag=task["specification_etag"],
         )
         reviewed = await call(
-            "human_review",
+            "record_review",
             attempt_id=result["attempt_id"],
             expected_revision=result["attempt_revision"],
-            user_note="Synthetic explicit actual review",
+            reviewer="fresh reviewer",
+            verdict="pass",
+            note=submitted,
         )
         assert (
             reviewed["attempt_revision"] == 2
@@ -481,7 +468,7 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
         moved = await call(
             "reorder_tasks",
             workstream_id=ws,
-            task_ids=[split["members"][0]["id"], proposed["proposal"]["id"]],
+            task_ids=[split["members"][0]["id"], prerequisite["id"]],
             expected_order_revision=next(
                 w["order_revision"] for w in split["workstreams"] if w["id"] == ws
             ),

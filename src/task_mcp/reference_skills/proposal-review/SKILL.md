@@ -32,11 +32,7 @@ superseded text. Requirements advance spec revision and leave old proof
 historical. Preserve deferred context/history. Source/user_request are descriptive,
 never extra authority.
 
-Active sessions add necessary unresolved items/prerequisites directly; observers
-use `handling="observer"` for nonblocking proposals. The coordinator activates
-valid proposals with `accept_gate_proposal` or dismisses stale/unwanted ones
-with `dismiss_gate_proposal` and the actual reason, including dropped targets.
-Resolve IDs explicitly. Questions should risk material waste or need user-only
+Add necessary unresolved items/prerequisites directly; resolve IDs explicitly. Questions should risk material waste or need user-only
 decisions; routine reversible choices belong to the implementer.
 
 Use `add_prerequisite` for dependencies across canonical tasks/groups without
@@ -51,7 +47,7 @@ Inspect identity/milestone/satisfaction; fetch remote specs/proof when needed.
 Verify IDs/meaning before replacing prose gates with links. Remove mistaken/
 obsolete links with `remove_prerequisite(task_id, expected_revision,
 blocked_by_id, note)` and the actual reason. Memberships/spec/proof survive;
-absent links are no-ops. Dismiss pending proposals instead. Never remove real
+absent links are no-ops. Never remove real
 blockers merely to make work eligible.
 
 Use local order for scheduling intent. **Reorder tasks** is
@@ -60,8 +56,9 @@ prefix; unlisted members keep relative order. Reuse returned
 `workstream_order_revision` without routine reads/reshuffling. Other lists stay
 intact; new inclusions append deterministically.
 
-Settle questions/proposals before decomposition. Groups hold context/whole-group
-completion; concrete members hold execution gates. Creating/attaching members
+Settle questions before decomposition. Groups hold context/whole-group
+completion; concrete members hold execution gates. Creating members
+(`create_task(group_id=...)`) or attaching them (`update_task(group_id=...)`)
 requires the current group revision and respects dynamic inclusion/exclusions.
 Completed requirements/proof are immutable; changed needs become new tasks.
 
@@ -69,4 +66,4 @@ Reuse last revisions after writes/pauses; reconcile conflicts and inspect the
 board before retrying uncertain creation. No confirming read is needed. Cards
 are not specs. Whole body/criteria edits need the full-spec etag; valid updates
 return its successor. Fetch chosen proof with `get_tasks` attempt IDs or
-`get_attempt`; page `list_task_attempts`/`list_group_members` deliberately.
+`get_attempt`; page `list_task_attempts` or `list_tasks(group_id=...)` deliberately.

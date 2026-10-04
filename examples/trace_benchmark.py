@@ -53,7 +53,7 @@ async def benchmark(directory, samples):
             workstream_id=workstream,
         )
     methods = {
-        "runtime_info": ("runtime_info", {}),
+        "list_projects": ("list_projects", {}),
         "list_tasks": ("list_tasks", {"project": project, "workstream_id": workstream}),
         "card": ("get_tasks", {"ids": [task["id"]]}),
         "specification_and_proof": (

@@ -60,14 +60,14 @@ Inbox means zero effective memberships. Confirmed agent ideas may stay there.
 No scope edit transfers work between workstreams.
 
 Present split boundaries, criteria and dependencies. `decompose_task` needs an
-open concrete task with no parent group, attempts, unresolved items or gate
-proposals. It retains context and creates members in parent scopes, inheriting
+open concrete task with no parent group, attempts or unresolved items. It retains context and creates members in parent scopes, inheriting
 prerequisites. Resolve genuinely settled gates first; do not clear questions
 merely to permit conversion. If children need new gates before inclusion,
 create them outside included groups, gate them, then attach/add them instead.
 Attempts/existing structure may require follow-up tasks. Groups hold context/
-whole-group completion, not attempts. `set_scope` preserves live group references
-and exclusions; future local members enter included workstreams unless excluded.
+whole-group completion, not attempts. Group IDs in `add_to_workstream`/
+`remove_from_workstream` keep live group references and exclusions; future local
+members enter included workstreams unless excluded.
 Other workstreams remain intact.
 
 Use `add_prerequisite` for dependencies, including canonical task/group IDs
@@ -83,7 +83,7 @@ expected_revision, blocked_by_id, note)` and the actual reason.
 Use local order for scheduling intent. **Reorder tasks** is
 `reorder_tasks(workstream_id, task_ids, expected_order_revision)`: one exact
 prefix; unlisted members keep relative order. Reuse returned
-`workstream_order_revision`; no routine preflight/reshuffling. Other lists stay
+`workstream_order_revision`; no routine re-reads/reshuffling. Other lists stay
 intact; new inclusions append deterministically.
 
 Report IDs, decisions, remaining questions and eligibility. Implement only when
@@ -92,4 +92,4 @@ revisions after writes/pauses; reconcile conflicts and inspect the board before
 retrying uncertain creation/decomposition. Cards are not specs. Whole body/
 criteria edits need the full-spec etag; valid updates return its successor.
 Fetch chosen proof with `get_tasks` attempt IDs or `get_attempt`; page
-`list_task_attempts`/`list_group_members` deliberately.
+`list_task_attempts` or `list_tasks(group_id=...)` deliberately.

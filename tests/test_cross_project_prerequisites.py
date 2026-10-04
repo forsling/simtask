@@ -160,21 +160,19 @@ def test_remote_noncompletion_gates_remain_blocking(context, gate):
     assert store.get_next_action(a["workstream"]["id"])["task"] is None
 
 
-def test_observer_proposal_remote_acceptance_authority_revisions_and_audit(context):
+def test_remote_prerequisite_authority_revisions_and_audit(context):
     store, (a, b, _) = context
     dependent = create(store, a, "Dependent")
     blocker = create(store, b, "Remote blocker")
-    proposal = store.add_prerequisite(dependent["id"], 1, blocker["id"], handling="observer")
-    pending = detail(store, dependent["id"])
-    assert pending["revision"] == 1 and pending["prerequisites"] == []
-    assert store.get_next_action(a["workstream"]["id"])["task"]["id"] == dependent["id"]
+    with pytest.raises(TaskError, match="invalid_handling"):
+        store.add_prerequisite(dependent["id"], 1, blocker["id"], handling="observer")
+    assert detail(store, dependent["id"])["revision"] == 1
     store.add_unresolved(dependent["id"], 1, "Settled separately")
     with pytest.raises(TaskError, match="revision_conflict"):
-        store.accept_gate_proposal(proposal["id"], 1)
-    assert detail(store, dependent["id"])["gate_proposals"][0]["id"] == proposal["id"]
-    accepted = store.accept_gate_proposal(proposal["id"], 2)
+        store.add_prerequisite(dependent["id"], 1, blocker["id"])
+    accepted = store.add_prerequisite(dependent["id"], 2, blocker["id"])
     assert accepted["revision"] == 3 and accepted["workstream_ids"]
-    assert accepted["spec_revision"] == 1 and accepted["gate_proposals"] == []
+    assert accepted["spec_revision"] == 1
     assert accepted["prerequisites"][0]["project_id"] == b["project"]["id"]
     with pytest.raises(TaskError, match="invalid_handling"):
         store.add_prerequisite(dependent["id"], 3, blocker["id"], handling="untrusted")
@@ -184,15 +182,13 @@ def test_observer_proposal_remote_acceptance_authority_revisions_and_audit(conte
             "SELECT action,outcome,request_json FROM events WHERE task_id=?", (dependent["id"],)
         ).fetchall()
     assert any(
-        action == "gate.proposal_accepted" and outcome == "ok" and proposal["id"] in data
+        action == "gate.prerequisite_added" and outcome == "ok" and blocker["id"] in data
         for action, outcome, data in events
     )
     other = create(store, a, "Other")
-    dropped = store.add_prerequisite(other["id"], 1, blocker["id"], handling="observer")
     store.set_disposition(blocker["id"], 1, "dropped", "Stopped")
     with pytest.raises(TaskError, match="invalid_prerequisite"):
-        store.accept_gate_proposal(dropped["id"], 1)
-    assert detail(store, other["id"])["gate_proposals"][0]["id"] == dropped["id"]
+        store.add_prerequisite(other["id"], 1, blocker["id"])
     assert detail(store, other["id"])["prerequisites"] == []
 
 
@@ -209,10 +205,6 @@ def test_cross_project_cycles_self_edges_and_group_membership_fail_atomically(co
         store.add_prerequisite(alpha["id"], 2, alpha["id"])
     group = store.create_group(c["workstream"]["id"], "Global group")
     store.add_group_member(group["id"], 1, alpha["id"], 2)
-    proposal = store.add_prerequisite(gamma["id"], 1, group["id"], handling="observer")
-    with pytest.raises(TaskError, match="prerequisite_cycle"):
-        store.accept_gate_proposal(proposal["id"], 1)
-    assert detail(store, gamma["id"])["gate_proposals"][0]["id"] == proposal["id"]
     with pytest.raises(TaskError, match="prerequisite_cycle"):
         store.add_prerequisite(gamma["id"], 1, group["id"])
     outsider = create(store, b, "Would-be member")
@@ -413,16 +405,11 @@ def test_nonempty_group_uses_each_members_required_milestone(context, milestone)
 
 
 @pytest.mark.parametrize("milestone", ["review", "signoff"])
-def test_proposals_and_decomposition_preserve_milestone(context, milestone):
+def test_prerequisites_and_decomposition_preserve_milestone(context, milestone):
     store, (a, b, _) = context
     blocker = create(store, b, "Remote blocker")
     parent = create(store, a, "Parent")
-    observer = store.add_prerequisite(
-        parent["id"], 1, blocker["id"], handling="observer", milestone=milestone
-    )
-    assert observer["milestone"] == milestone
-    assert detail(store, parent["id"])["gate_proposals"][0]["milestone"] == milestone
-    accepted = store.accept_gate_proposal(observer["id"], 1)
+    accepted = store.add_prerequisite(parent["id"], 1, blocker["id"], milestone=milestone)
     assert prerequisite(store, parent["id"])["milestone"] == milestone
     assert not store.add_prerequisite(parent["id"], 2, blocker["id"], milestone=milestone)[
         "changed"
@@ -434,11 +421,12 @@ def test_proposals_and_decomposition_preserve_milestone(context, milestone):
     group = store.decompose_task(parent["id"], accepted["revision"], [{"title": "Child"}])
     child = group["members"][0]
     assert prerequisite(store, child)["milestone"] == milestone
-    proposed = store.propose_prerequisite(
-        child, 1, "Needed work", workstream_id=a["workstream"]["id"], milestone=milestone
+    needed = store.create_task(
+        a["project"]["id"], "Needed work", workstream_id=a["workstream"]["id"]
     )
-    assert {ref["milestone"] for ref in proposed["task"]["prerequisites"]} == {milestone}
-    assert proposed["proposal"]["workstream_ids"] == [a["workstream"]["id"]]
+    linked = store.add_prerequisite(child, 1, needed["id"], milestone=milestone)
+    assert {ref["milestone"] for ref in linked["prerequisites"]} == {milestone}
+    assert needed["workstream_ids"] == [a["workstream"]["id"]]
 
 
 @pytest.mark.parametrize("value", ["done", None, [], 1])
@@ -448,7 +436,5 @@ def test_invalid_milestone_fails_before_creating_or_linking_work(context, value)
     before = store.list_tasks(a["project"]["id"])["total"]
     with pytest.raises(TaskError, match="invalid_prerequisite_milestone"):
         store.add_prerequisite(dependent["id"], 1, blocker["id"], milestone=value)
-    with pytest.raises(TaskError, match="invalid_prerequisite_milestone"):
-        store.propose_prerequisite(dependent["id"], 1, "Needed", milestone=value)
     assert detail(store, dependent["id"])["revision"] == 1
     assert store.list_tasks(a["project"]["id"])["total"] == before

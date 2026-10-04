@@ -87,8 +87,8 @@ the first project, or the view's first item) with a short notice.
   fonts, scripts or image services load. Light and dark themes follow the OS.
 
 This first browser version does not create projects/workstreams, edit bulk group scope
-or group membership, record implementation results, or handle gate proposals.
-Those operations remain available in MCP. It intentionally has no general
+or group membership, or record implementation results. Those operations remain
+available in MCP. It intentionally has no general
 Store method, SQL or shell command endpoint.
 
 ## Concurrent edits

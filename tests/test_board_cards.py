@@ -23,7 +23,7 @@ SLIM_KEYS = {
 }
 GROUP_KEYS = {"progress", "complete", "project_count"}
 GROUP_FIELDS = {
-    "blockers": {"prerequisites", "gate_diagnostics", "pending_proposal_count"},
+    "blockers": {"prerequisites", "gate_diagnostics"},
     "attempt": {
         "attempt",
         "attempt_counts",

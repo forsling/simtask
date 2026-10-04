@@ -235,7 +235,7 @@ def test_daily_writes_expire_active_segments_by_observation_age(tmp_path, monkey
                         "call_id": f"{collector.connection_id}:{day}",
                         "sequence": day,
                         "method": "tools/call",
-                        "tool": "runtime_info",
+                        "tool": "list_projects",
                         "outcome": "success",
                     }
                 )
@@ -257,7 +257,7 @@ def test_retained_segments_keep_runtime_and_limits_without_connection_start(tmp_
     collector = TraceCollector(TraceConfig(tmp_path / "traces", max_bytes=5000, segment_bytes=1500))
     collector.start()
     for _ in range(20):
-        asyncio.run(observe(collector, "runtime_info", {}, {"body": "x" * 300}))
+        asyncio.run(observe(collector, "list_projects", {}, {"body": "x" * 300}))
     collector.close()
     retained = records(collector.config.directory)
     assert not any(r["event"] == "connection_start" for r in retained)
@@ -434,8 +434,8 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
             mode=mode,
             client_info=types.Implementation(name="trace-test", version="1"),
         ) as client:
-            assert len((await client.list_tools()).tools) == 42
-            assert not (await client.call_tool("runtime_info", {})).is_error
+            assert len((await client.list_tools()).tools) == 26
+            assert not (await client.call_tool("list_projects", {})).is_error
             assert not (
                 await client.call_tool("get_default_skills", {"name": "feature-design"})
             ).is_error
@@ -463,7 +463,6 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
     assert {
         "server/discover" if mode == "auto" else "initialize",
         "tools/list",
-        "runtime_info",
         "get_default_skills",
         "get_tasks",
         "missing_tool",
@@ -486,7 +485,7 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
 
     async def disabled_exercise():
         async with Client(params, read_timeout_seconds=15) as client:
-            await client.call_tool("runtime_info", {})
+            await client.call_tool("list_projects", {})
 
     asyncio.run(disabled_exercise())
     assert not disabled.exists()
@@ -513,7 +512,7 @@ def test_real_stdio_concurrent_connections_have_distinct_identity(tmp_path):
         )
         async with Client(params, read_timeout_seconds=15) as client:
             for _ in range(5):
-                assert not (await client.call_tool("runtime_info", {})).is_error
+                assert not (await client.call_tool("list_projects", {})).is_error
 
     async def exercise():
         await asyncio.gather(consumer(1), consumer(2))
@@ -521,5 +520,5 @@ def test_real_stdio_concurrent_connections_have_distinct_identity(tmp_path):
     asyncio.run(exercise())
     report = analyze(directory)
     assert len(report["connections"]) == 2
-    assert report["per_tool"]["runtime_info"]["calls"] == 10
+    assert report["per_tool"]["list_projects"]["calls"] == 10
     assert report["incomplete_calls"] == 0 and not report["reported_collection_failures"]

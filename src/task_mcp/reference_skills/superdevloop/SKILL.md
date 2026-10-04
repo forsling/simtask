@@ -68,9 +68,9 @@ The coordinator records actual independent reviewer, `pass`/`rework`, findings
 in `note` and optional structured concerns with `record_review`, using the latest
 attempt revision. Concerns retain attribution and implementer contributions;
 they change no gate/verdict. Review pass permits sign-off when gates allow,
-never task completion. Only the user approves through `signoff`. `human_review`
-requires actual user review or explicit direction to skip further review;
-never self-issue it. Rework repeats eligible implementation/fresh review using
+never task completion. Only the user approves through `signoff`; only their
+explicit approval may skip independent review, with reasons saying so. Never
+self-issue it. Rework repeats eligible implementation/fresh review using
 latest reasons. If normal recovery is exhausted, save a concrete unresolved
 question and move on.
 
@@ -88,7 +88,7 @@ expected_revision, blocked_by_id, note)` and the actual reason.
 Use local order for scheduling intent. **Reorder tasks** is
 `reorder_tasks(workstream_id, task_ids, expected_order_revision)`: one exact
 prefix; unlisted members keep relative order. Reuse returned
-`workstream_order_revision` without routine preflight/reordering. Other lists
+`workstream_order_revision` without routine re-reads/reordering. Other lists
 stay intact; new inclusions append deterministically. Project order is a baseline.
 
 Other-workstream/older-spec proof is history, not a local execution gate.
@@ -103,4 +103,4 @@ board before retrying uncertain creation. No confirming read is needed. Cards
 are not specs. Whole body/criteria edits need the full-spec etag; valid updates
 return its successor. Fetch missing requirements/chosen proof with
 `get_tasks(specification=true, attempt_ids=[...])` or `get_attempt`; page
-`list_task_attempts`/`list_group_members` deliberately.
+`list_task_attempts` or `list_tasks(group_id=...)` deliberately.

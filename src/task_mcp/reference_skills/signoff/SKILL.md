@@ -13,10 +13,11 @@ propose the matching verdict below and confirm the mapping.
 
 Fetch `get_tasks(ids=[...], specification=true, workstream_id=...,
 attempt_ids=[...])` for full spec and the scoped or known reviewed attempt.
-Select current-spec passed independent review or explicit human review.
+Select current-spec passed independent review (or an earlier human review).
 If missing, arrange/record fresh independent review before sign-off;
-your verification is not independent review. `human_review` requires actual
-user review or explicit direction to skip further review; never self-issue it.
+your verification is not independent review. Only when the user explicitly
+approves may `approve` accept a current-spec result awaiting independent review;
+its reasons must say so. Never self-issue that approval.
 
 Address every recorded concern with source/author. Use `concerns_has_more` and
 totals to page `list_task_attempts` and fetch omitted concern-bearing proof.

@@ -157,7 +157,8 @@ def test_review_and_signoff_use_separate_revisions_and_store_gates(viewer):
         "expected_attempt_revision": 2,
         "reasons": "I approve",
     }
-    assert request(server, "/api/signoff", signoff)[0] == 400
+    # Only an explicit approve may accept an unreviewed result; other verdicts need review.
+    assert request(server, "/api/signoff", {**signoff, "decision": "rework"})[0] == 400
     assert (
         request(
             server,

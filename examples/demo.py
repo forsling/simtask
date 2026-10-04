@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,13 +21,13 @@ async def exercise(database: Path):
     async with Client(server, read_timeout_seconds=60) as client:
         assert client.instructions
         tools = (await client.list_tools()).tools
-        assert len(tools) == 42
-        assert "runtime_info" in {tool.name for tool in tools}
+        assert len(tools) == 26
         assert "open_task_viewer" in {tool.name for tool in tools}
-        assert "dismiss_gate_proposal" in {tool.name for tool in tools}
-        assert {"init", "workstream_status", "create_group", "list_groups", "add_group_member"} <= {
+        assert {"init", "workstream_status", "list_tasks", "update_task"} <= {
             tool.name for tool in tools
         }
+        removed = {"runtime_info", "set_scope", "create_group", "human_review", "preflight"}
+        assert not removed & {tool.name for tool in tools}
         signoff_schema = next(tool.input_schema for tool in tools if tool.name == "signoff_task")
         assert signoff_schema["properties"]["decision"]["enum"] == [
             "approve",
@@ -49,7 +50,7 @@ async def exercise(database: Path):
         )
         assert "reasons" in signoff_schema["properties"]
         assert "reasons" not in signoff_schema["required"]
-        for name in ("add_prerequisite", "propose_prerequisite"):
+        for name in ("add_prerequisite",):
             descriptor = next(tool for tool in tools if tool.name == name)
             milestone = descriptor.input_schema["properties"]["milestone"]
             assert milestone["default"] == "review"
@@ -110,25 +111,25 @@ async def exercise(database: Path):
         )
         assert stale.is_error and "revision_conflict" in str(stale.content)
         print("Rejected an update from an outdated revision.")
-        proposal = await call(
+        question = await call(
             "add_unresolved",
             task_id=task_id,
             expected_revision=1,
-            text="Synthetic observer concern",
-            handling="observer",
+            text="Synthetic question",
         )
-        dismissed = await call(
-            "dismiss_gate_proposal",
-            proposal_id=proposal["proposal_id"],
-            expected_revision=1,
-            note="Synthetic coordinator decision: concern does not apply",
+        settled = await call(
+            "resolve_unresolved",
+            task_id=task_id,
+            expected_revision=question["revision"],
+            item_id=question["unresolved_id"],
+            user_note="Synthetic decision: the question does not apply",
         )
-        assert "gate_proposals" not in dismissed and dismissed["revision"] == 2
+        assert "unresolved_items" not in settled and settled["revision"] == 3
         result = await call(
             "record_result",
             task_id=task_id,
             workstream_id=workstream_id,
-            expected_revision=2,
+            expected_revision=3,
             implementer="demo-implementer",
             summary="Demo delivered",
             evidence="Synthetic demonstration passed.",
@@ -361,16 +362,23 @@ async def exercise(database: Path):
             confirmed=True,
         )
         group = await call(
-            "create_group", workstream_id=workstream_id, title="Shared three-repository feature"
+            "create_task",
+            project=project_id,
+            workstream_id=workstream_id,
+            title="Shared three-repository feature",
+            kind="group",
         )
         assert group["project_id"] is None and not group["complete"]
+        group_revision = group["revision"]
         for context in (second, third):
-            await call(
-                "set_scope",
+            included = await call(
+                "add_to_workstream",
+                task_id=group["id"],
                 workstream_id=context["workstream"]["id"],
-                expected_revision=1,
-                expression=f"none +{group['id']}",
+                expected_revision=group_revision,
             )
+            assert included["changed"] and included["included"]
+            group_revision = included["revision"]
         members = []
         for context, title in ((setup, "Service A"), (second, "Service B"), (third, "Service C")):
             current_group = (await call("get_tasks", specification=True, ids=[group["id"]]))[
@@ -394,11 +402,10 @@ async def exercise(database: Path):
             assert member["id"] in {item["id"] for item in status["items"]}
             foreign = {item["id"] for item in members} - {member["id"]}
             assert not foreign & {item["id"] for item in status["items"]}
-            groups = await call("list_groups", project=context["project"]["id"])
+            groups = await call("list_tasks", project=context["project"]["id"], state="group")
             assert groups["items"][0]["id"] == group["id"]
-        second_export = await call("export_workstream", workstream_id=second["workstream"]["id"])
-        assert members[1]["id"] in second_export["content"]
-        assert members[2]["id"] not in second_export["content"]
+        listed = await call("list_tasks", group_id=group["id"])
+        assert [item["id"] for item in listed["items"]] == [m["id"] for m in members]
         # Direct remote blockers do not need shared-group membership.
         remote_blocker = await call(
             "create_task",
@@ -432,17 +439,11 @@ async def exercise(database: Path):
             and linked["revision"] == 2
         )
         assert "attempts" not in linked and "Remote full requirements" not in str(linked)
-        proposal = await call(
+        accepted_gate = await call(
             "add_prerequisite",
             task_id=dependent["id"],
             expected_revision=2,
             blocked_by_id=members[2]["id"],
-            handling="observer",
-        )
-        accepted_gate = await call(
-            "accept_gate_proposal",
-            proposal_id=proposal["proposal_id"],
-            expected_revision=2,
         )
         assert accepted_gate["revision"] == 3 and accepted_gate["changed"]
         accepted_full = (await call("get_tasks", ids=[dependent["id"]], specification=True))[
@@ -508,22 +509,28 @@ async def exercise(database: Path):
         )
         assert completed_ref["complete"] and not completed_ref["blocking"]
         assert remote_blocker["id"] not in {row["id"] for row in queue["items"]}
-        exported = await call("export_workstream", workstream_id=workstream_id)
-        assert exported["format"] == "task-mcp/v5" and task_id in exported["content"]
-        assert "- Workflow: Done (done)" in exported["content"]
-        assert "```json" not in exported["content"]
-        open_export = await call(
-            "export_workstream", workstream_id=workstream_id, include_closed=False
-        )
-        assert task_id not in open_export["content"]
-        legacy = await call("export_workstream", workstream_id=workstream_id, format="legacy")
-        assert legacy["format"] == "task-mcp/v1" and "```json" in legacy["content"]
-        invalid = await client.call_tool(
-            "export_workstream", {"workstream_id": workstream_id, "format": "unsupported"}
-        )
-        assert invalid.is_error
+
+        # Export is a CLI surface, not an MCP tool.
+        def export(*options):
+            return subprocess.run(
+                [sys.executable, "-m", "task_mcp", "--db", str(database)]
+                + ["--export-workstream", workstream_id, *options],
+                env={"PYTHONPATH": str(root / "src")},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+        exported = export().stdout
+        assert "task-mcp/v5" in exported and task_id in exported
+        assert "- Workflow: Done (done)" in exported
+        assert "```json" not in exported
+        assert task_id not in export("--exclude-closed").stdout
+        legacy = export("--export-format", "legacy").stdout
+        assert "task-mcp/v1" in legacy and "```json" in legacy
+        assert export("--export-format", "unsupported").returncode != 0
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.17.0"
+        assert catalog["version"] == "1.18.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",

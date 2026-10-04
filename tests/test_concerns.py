@@ -415,7 +415,7 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
     async def exercise():
         async with Client(parameters, read_timeout_seconds=30) as client:
             tools = (await client.list_tools()).tools
-            assert len(tools) == 42
+            assert len(tools) == 26
             for name in ("record_result", "record_review"):
                 descriptor = next(t for t in tools if t.name == name)
                 schema = descriptor.input_schema
@@ -435,9 +435,9 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
                 assert not response.is_error, response.content
                 return response.structured_content
 
-            runtime = await call("runtime_info")
+            runtime = (await call("init", path=str(tmp_path / "probe"), branch="main"))["runtime"]
             assert runtime["package_path"] == str(root / "src/task_mcp")
-            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 14
+            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 15
             assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 10
             ctx = await call(
                 "init",
@@ -519,7 +519,8 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
             assert selected["attempt"] == legacy_read and selected["task"]["concern_count"] == 0
             status = await call("workstream_status", workstream_id=ws)
             assert status["concern_tasks"]["total"] == 1
-            exported = await call("export_workstream", workstream_id=ws)
+            # Export is a CLI/Store surface, no longer an MCP tool.
+            exported = Store(database).export_workstream(ws)
             assert "> " + ATTRIBUTED_LEGACY_LOOKALIKE.replace("\n", "\n> ") in exported["content"]
             assert "Value concern — reviewer historical" not in exported["content"]
             legacy_reviewed = await call(

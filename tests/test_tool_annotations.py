@@ -10,52 +10,37 @@ from task_mcp.store import Store
 # even when their business effect is observational or append-only.
 ADDITIVE = {
     "list_projects",
-    "init_project",
-    "attach_checkout",
-    "init_workstream",
     "list_workstreams",
     "workstream_status",
-    "list_groups",
-    "create_group",
-    "add_group_member",
-    "preflight",
     "create_task",
     "list_tasks",
     "get_tasks",
     "list_task_attempts",
     "get_attempt",
-    "list_group_members",
     "add_unresolved",
     "add_prerequisite",
-    "propose_prerequisite",
     "get_next_action",
     "record_result",
     "list_events",
-    "export_workstream",
 }
 
 # `init` can rebind an existing workstream, so its single descriptor must take
 # the most conservative classification among its possible actions.
 DESTRUCTIVE = {
     "init",
-    "rebind_workstream",
-    "set_scope",
     "update_task",
     "add_to_workstream",
     "remove_from_workstream",
     "set_disposition",
     "resolve_unresolved",
     "remove_prerequisite",
-    "accept_gate_proposal",
-    "dismiss_gate_proposal",
     "decompose_task",
     "reorder_tasks",
     "record_review",
-    "human_review",
     "signoff_task",
 }
 
-CATALOG = {"get_default_skills", "runtime_info"}
+CATALOG = {"get_default_skills"}
 LAUNCHER = {"open_task_viewer"}
 
 
@@ -131,27 +116,27 @@ def test_append_only_tools_preserve_existing_payload_and_audit_history(tmp_path)
     original_audit = _audit_rows(database)
 
     second_path = str(tmp_path / "second-checkout")
-    store.attach_checkout(project, second_path, confirmed=True)
-    second = store.init_workstream(project, second_path, branch="feature", confirmed=True)
+    second = store.init(
+        second_path, branch="feature", action="attach_workstream", project=project, confirmed=True
+    )
     assert second["workstream"]["id"] != workstream
     with sqlite3.connect(database) as db:
         assert db.execute(
             "SELECT branch,checkout_path FROM workstreams WHERE id=?", (workstream,)
         ).fetchone() == ("main", original_path)
 
-    group = store.create_group(workstream, "New group")
-    member = store.add_group_member(group["id"], group["revision"], anchor["id"], 1)
-    assert member["member"]["parent_group_id"] == group["id"]
+    group = store.create_task(project, "New group", workstream_id=workstream, kind="group")
+    member = store.update_task(
+        anchor["id"], 1, group_id=group["id"], group_expected_revision=group["revision"]
+    )
+    assert member["parent_group_id"] == group["id"] and member["group_changed"]
     assert _business_payload(database, anchor["id"]) == anchor_payload
 
     gated = store.create_task(project, "Gated task", "Keep this body", workstream_id=workstream)
     gated_payload = _business_payload(database, gated["id"])
     unresolved = store.add_unresolved(gated["id"], gated["revision"], "New question")
     linked = store.add_prerequisite(gated["id"], unresolved["revision"], anchor["id"])
-    proposed = store.propose_prerequisite(
-        gated["id"], linked["revision"], "New prerequisite", workstream_id=workstream
-    )
-    assert proposed["proposal"]["id"] != gated["id"]
+    assert linked["blocked_by"] == [anchor["id"]]
     assert _business_payload(database, gated["id"]) == gated_payload
 
     delivered = store.create_task(

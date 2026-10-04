@@ -22,8 +22,9 @@ explicit name binding. Each session calls `init` with its explicit target path
 and branch/name; an exact binding returns its scoped queue idempotently.
 Discovery returns `new_branch`, `unregistered_checkout`, or `mismatch` when
 setup needs a choice. Confirmed create, attach and rebind actions are atomic;
-rebind checks the workstream revision and preserves its scope and history. The
-old preflight and setup primitives remain available to existing clients. A new
+rebind checks the workstream revision and preserves its scope and history.
+Passing a known workstream ID checks that it is bound to the given checkout and
+branch and reports any mismatch; there are no separate setup tools. A new
 workstream chooses its scope explicitly; branch names and Git history do not
 imply scope. There is no cwd fallback to the sole project.
 
@@ -129,12 +130,16 @@ exposes `workstream_ids` and derived `adopted` in compact/full payloads.
 
 Groups store overarching context and aggregate completion. They are never
 implementable and carry no unresolved items, disposition, attempts, or execution
-gates. `create_group` creates an empty globally identified group in the caller's
-workstream scope; it does not require a home project. `add_group_member` or
+gates. `create_task(kind="group")` creates an empty globally identified group in
+the caller's workstream scope; it does not require a home project.
+`update_task(group_id=..., group_expected_revision=...)` or
 `create_task(group_id=..., group_expected_revision=...)` attaches a concrete
-task from any project with revision checks. `list_groups` discovers one group
-globally or through member/scoped projects. Existing decomposition converts a
-concrete task in place after resolving its unresolved items and proposals;
+task from any project with revision checks. `list_tasks(state="group")` discovers
+groups globally or through member/scoped projects, and `list_tasks(group_id=...)`
+lists members. Group IDs in `add_to_workstream`/`remove_from_workstream` include
+or remove a group in a workstream's scope; a member ID excludes just that member.
+Existing decomposition converts a
+concrete task in place after resolving its unresolved items;
 existing prerequisites move to the new concrete members. Legacy group IDs and
 their stored project origins survive migration, but origin is metadata rather
 than task ownership. Public group details expose `project_id=null` and optional
@@ -160,8 +165,8 @@ attempts, reviews or code integration. Compact prerequisite references expose
 ID, title, project identity, required milestone, satisfaction and canonical
 blocking/completion facts in full
 details and queues, without fetching remote proof/history. Cycle checks include
-prerequisite links and implicit group-to-member completion edges for additions,
-observer acceptance and membership/decomposition changes. SQLite write
+prerequisite links and implicit group-to-member completion edges for additions
+and membership/decomposition changes. SQLite write
 serialization and revision checks protect a race between membership changes and
 last-member sign-off. Protocol 8/schema 5 persist link milestones, including
 observer proposals, and migrate every existing link/proposal to `review`. A
@@ -232,7 +237,7 @@ requiring queue membership, active disposition and clear unresolved/prerequisite
 gates. Within a task, pending current-spec local review precedes implementation;
 newest first then ID ascending is deterministic. Passed/human_review waits for
 human sign-off; rework implementation carries its attempt/findings. One selected
-full spec includes the read token, pending proposals and local gates; review
+full spec includes the read token and local gates; review
 includes exactly one complete local proof and review provenance, without history.
 Null selection gives bounded counts/waiting reasons. Reads keep existing audit
 semantics and do not claim, reorder or write progress. Explicit manual reviews
@@ -245,7 +250,7 @@ A concern is a doubt that cannot be fixed without changing what the task says.
 Concern entries preserve implementer/reviewer source and author on the attempt;
 reviewer additions do not erase implementer contributions, and omission leaves
 stored evidence unchanged. They are a nonblocking channel to the user: gates,
-review outcomes, prerequisite satisfaction and observer proposals are unaffected.
+review outcomes and prerequisite satisfaction are unaffected.
 Complete attempt reads and viewer/sign-off show the prose. Explicit full task
 reads show a bounded applicable attempt window with concern totals/references;
 selected review proof carries its concerns in the same call. Current workstream
@@ -258,10 +263,9 @@ including historical JSON that resembles concern metadata. Reviewer additions
 never rewrite proof. The established durable-result proof decoder is unchanged;
 concerns come only from the explicit column, exposed as decoded entries.
 
-An active handler may add a task gate directly. An observer proposes a gate for
-review; the proposal is nonblocking until accepted. A coordinator may dismiss
-an unwanted or stale proposal with an audited reason, including when its target
-was later dropped. The default is agent autonomy. Unresolved items are for
+An active handler may add a task gate directly. Nonblocking observer gate
+proposals are retired; rows written by older servers stay readable and inert.
+The default is agent autonomy. Unresolved items are for
 questions that materially risk wasted work,
 expand authorization, require user-only information, or exhaust normal recovery.
 Cheap research and reversible choices proceed without ceremony.

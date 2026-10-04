@@ -42,10 +42,10 @@ def test_sdk_ordered_prefix_catalog_tokens_and_independent_lists(tmp_path):
             )
             project, a = ctx["project"]["id"], ctx["workstream"]["id"]
             bctx = await call(
-                "init_workstream",
-                project=project,
+                "init",
                 path=str(tmp_path / "repo"),
                 branch="b",
+                action="new_workstream",
                 confirmed=True,
             )
             b = bctx["workstream"]["id"]
@@ -77,7 +77,6 @@ def test_sdk_ordered_prefix_catalog_tokens_and_independent_lists(tmp_path):
             for response in (
                 await call("workstream_status", workstream_id=a),
                 await call("init", path=str(tmp_path / "repo"), branch="a"),
-                await call("export_workstream", workstream_id=a),
             ):
                 assert response["workstream_order_revision"] == ack["workstream_order_revision"]
             for ids in ([], [tasks[3]], expected):

@@ -171,7 +171,7 @@ def test_resume_and_rebind_keep_scope_and_history_but_do_not_prove_checkout(tmp_
     )
     store.record_review(attempt["id"], 1, "source reviewer", "pass", "Synthetic source review")
     history = detail(store, work["id"])["attempts"]
-    before = store.preflight(original["project"]["id"], str(source_path), "origin")
+    before = store.init(str(source_path), "origin")
     with sqlite3.connect(store.path) as db:
         exclusions = db.execute("SELECT * FROM scope_exclusions").fetchall()
 
@@ -188,8 +188,8 @@ def test_resume_and_rebind_keep_scope_and_history_but_do_not_prove_checkout(tmp_
         expected_revision=resumed["workstream"]["revision"],
         confirmed=True,
     )
-    after = store.preflight(original["project"]["id"], str(moved_path), "origin")
-    assert after["scope"] == before["scope"] == [work["id"]]
+    after = store.init(str(moved_path), "origin")
+    assert [c["id"] for c in after["queue"]] == [c["id"] for c in before["queue"]] == [work["id"]]
     assert after["groups"] == before["groups"] == [group["id"]]
     with sqlite3.connect(store.path) as db:
         assert db.execute("SELECT * FROM scope_exclusions").fetchall() == exclusions
@@ -290,9 +290,10 @@ def test_deliberate_cherry_pick_records_target_provenance_and_requires_fresh_rev
     assert integrated["reviewer"] is integrated["review_note"] is None
     assert detail(store, work["id"])["attempts"][0] == reviewed_source
     assert_view(store, target, work["id"], "review")
+    # Only the user's explicit approve may skip review; other verdicts need fresh review.
     with pytest.raises(TaskError, match="review_required"):
         store.signoff_task(
-            work["id"], current["revision"] + 1, "approve", "Synthetic verdict", integrated["id"], 1
+            work["id"], current["revision"] + 1, "rework", "Synthetic verdict", integrated["id"], 1
         )
     store.record_review(
         integrated["id"],

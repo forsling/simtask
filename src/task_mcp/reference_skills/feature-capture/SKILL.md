@@ -56,8 +56,7 @@ Tailor it to actual decisions. The prefix is a readable convention, not a task
 type/parsed field. Keep questions in the body; add separate unresolved items
 for independently settled gates. Gate existing mutable work before revising
 its brief; preserve other memberships, deferred status and unrelated gates.
-Observer proposals are nonblocking: do not use `handling="observer"` for actively
-requested capture. Completed work needs a new task. If gating fails, leave new
+Completed work needs a new task. If gating fails, leave new
 work outside workstreams and report incomplete capture. Gate before attaching
 to a dynamically included group.
 
@@ -84,4 +83,4 @@ Reuse last revisions after writes/pauses; reconcile conflicts and inspect the
 board before retrying uncertain creation. Cards are not specs. Whole body/
 criteria edits need the full-spec etag; valid updates return its successor.
 Fetch chosen proof with `get_tasks` attempt IDs or `get_attempt`; page
-`list_task_attempts`/`list_group_members` deliberately.
+`list_task_attempts` or `list_tasks(group_id=...)` deliberately.

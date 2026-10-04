@@ -96,12 +96,10 @@ def create_server(
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     )
 
-    @server.tool(annotations=catalog, structured_output=True)
-    def runtime_info() -> dict[str, Any]:
-        """Read startup-frozen runtime identity and the current database schema revision.
+    def runtime_identity() -> dict[str, Any]:
+        """Startup-frozen runtime identity and the current database schema revision.
 
-        No task state or audit event is written. Compare this identity after
-        reconnecting to distinguish an old server process from a stale tool catalog.
+        init returns it as its runtime block; no separate tool or audit event is needed.
         """
         return {
             **RUNTIME_IDENTITY,
@@ -153,8 +151,14 @@ def create_server(
     ) -> dict[str, Any]:
         """Discover or resume a checkout binding; confirmed actions change setup atomically.
 
-        A ready queue shows the first ten active slim cards (as list_tasks);
-        queue_hidden counts done/deferred/dropped unless include_inactive=true.
+        Actions: create_project (new project and workstream), new_workstream (another
+        branch of an attached checkout), attach_workstream (another checkout of `project`),
+        rebind_workstream (move workstream_id to this path/branch; expected_revision).
+        scope_expression seeds a new workstream: none, or a workstream base, +/-task/group.
+        Passing workstream_id checks that it is bound to this checkout/branch; any
+        mismatch returns state=mismatch with the binding found. A ready queue shows the
+        first ten active slim cards (as list_tasks); queue_hidden counts done/deferred/
+        dropped unless include_inactive=true. runtime is the server identity/schema revision.
         """
         result = store.init(
             path,
@@ -168,39 +172,7 @@ def create_server(
             confirmed,
             include_inactive,
         )
-        return {**result, "runtime": runtime_info()}
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def init_project(
-        path: str,
-        branch: str | None = None,
-        workstream_name: str | None = None,
-        confirmed: bool = False,
-    ) -> dict[str, Any]:
-        """Explicitly initialize a project and default workstream after user confirmation."""
-        return store.compact_call("init_project", path, branch, workstream_name, confirmed)
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def attach_checkout(project: str, path: str, confirmed: bool = False) -> dict[str, Any]:
-        """Attach another canonical checkout path to an existing project."""
-        return store.compact_call("attach_checkout", project, path, confirmed)
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def init_workstream(
-        project: str,
-        path: str,
-        branch: str | None = None,
-        name: str | None = None,
-        scope_expression: str = "none",
-        confirmed: bool = False,
-    ) -> dict[str, Any]:
-        """Initialize a distinct workstream and explicit initial scope."""
-        return store.compact_call(
-            "init_workstream", project, path, branch, name, scope_expression, confirmed
-        )
+        return {**result, "runtime": runtime_identity()}
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -231,65 +203,6 @@ def create_server(
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def list_groups(project: str | None = None, limit: int = 20, offset: int = 0) -> dict[str, Any]:
-        """Discover shared groups globally or through a member/scoped project."""
-        return store.list_groups(project, limit, offset)
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def create_group(
-        workstream_id: str,
-        title: str,
-        body: str = "",
-        acceptance_criteria: str = "",
-        summary: str | None = None,
-    ) -> dict[str, Any]:
-        """Create an empty global group and include it in this workstream's scope."""
-        return store.compact_call(
-            "create_group", workstream_id, title, body, acceptance_criteria, summary
-        )
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def add_group_member(
-        group_id: str, expected_revision: int, task_id: str, expected_task_revision: int
-    ) -> dict[str, Any]:
-        """Atomically attach a local task to a shared group with revision checks."""
-        return store.compact_call(
-            "add_group_member", group_id, expected_revision, task_id, expected_task_revision
-        )
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def rebind_workstream(
-        workstream_id: str,
-        expected_revision: int,
-        path: str,
-        branch: str | None = None,
-        name: str | None = None,
-        confirmed: bool = False,
-    ) -> dict[str, Any]:
-        """Preserve a workstream's identity/history when its branch or checkout changes."""
-        return store.compact_call(
-            "rebind_workstream", workstream_id, expected_revision, path, branch, name, confirmed
-        )
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def preflight(
-        project: str, path: str, branch: str | None = None, workstream_id: str | None = None
-    ) -> dict[str, Any]:
-        """Verify checkout and branch match a bound workstream before autonomous work."""
-        return store.preflight(project, path, branch, workstream_id)
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def set_scope(workstream_id: str, expected_revision: int, expression: str) -> dict[str, Any]:
-        """Replace local scope using none, a workstream base, +/-task/group and exclusions."""
-        return store.compact_call("set_scope", workstream_id, expected_revision, expression)
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
     def create_task(
         project: str,
         title: str,
@@ -301,11 +214,13 @@ def create_server(
         group_id: str | None = None,
         group_expected_revision: int | None = None,
         summary: str | None = None,
+        kind: Literal["task", "group"] = "task",
     ) -> dict[str, Any]:
         """Create with direct membership when workstream_id is supplied.
 
         Include agreed work; open design questions remain blocking gates.
-        Group membership follows existing dynamic inclusion and exclusions.
+        group_id creates a member; membership follows dynamic inclusion and exclusions.
+        kind=group creates an empty shared group included in workstream_id's scope.
         """
         return store.compact_call(
             "create_task",
@@ -319,18 +234,20 @@ def create_server(
             group_id,
             group_expected_revision,
             summary,
+            kind,
         )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def list_tasks(
-        project: str,
+        project: str | None = None,
         workstream_id: str | None = None,
         state: str | None = None,
         limit: int = 20,
         offset: int = 0,
         include_inactive: bool = False,
         include: list[CardInclude] | None = None,
+        group_id: str | None = None,
     ) -> dict[str, Any]:
         """Active work as slim cards in workstream order, or the project baseline.
 
@@ -345,10 +262,19 @@ def create_server(
         blockers (prerequisite title/state/satisfied, gate diagnostics), attempt
         (current result, implementer, summary, review state, latest_rejection), concerns
         (texts, kind, author), workstreams (memberships and positions), ids (project,
-        spec revision, status, group and other bookkeeping).
+        spec revision, status, group and other bookkeeping). state=group lists shared groups
+        (in workstream scope, related to project, or all) with progress; group_id lists that
+        group's members (project optional). project is otherwise required.
         """
         return store.list_tasks(
-            project, workstream_id, state, limit, offset, include_inactive, include
+            project,
+            workstream_id,
+            state,
+            limit,
+            offset,
+            include_inactive,
+            include,
+            group_id=group_id,
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -392,34 +318,31 @@ def create_server(
         """Read one complete proof/review with original task/workstream/spec provenance."""
         return store.get_attempt(attempt_id)
 
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def list_group_members(
-        group_id: str, limit: int = 20, cursor: str | None = None
-    ) -> dict[str, Any]:
-        """Page group member cards in creation order; ordinary group reads show three."""
-        return store.list_group_members(group_id, limit, cursor)
-
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def update_task(
         task_id: str,
         expected_revision: int,
-        changes: TaskPatch,
+        changes: TaskPatch | None = None,
         specification_etag: str | None = None,
+        group_id: str | None = None,
+        group_expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """Save edits while retaining memberships and all historical proof.
 
         Whole body/criteria replacements require the current full specification_etag.
         Actual requirement changes advance spec_revision; older proof stays historical.
         No-op patches retain revisions; every call checks expected_revision.
+        group_id (with group_expected_revision) attaches this task to a shared group.
         """
         return store.compact_call(
             "update_task",
             task_id,
             expected_revision,
-            changes.model_dump(exclude_unset=True),
+            changes.model_dump(exclude_unset=True) if changes is not None else {},
             specification_etag,
+            group_id,
+            group_expected_revision,
         )
 
     @server.tool(annotations=editing, structured_output=True)
@@ -427,7 +350,10 @@ def create_server(
     def add_to_workstream(
         task_id: str, workstream_id: str, expected_revision: int
     ) -> dict[str, Any]:
-        """Add to this workstream, retaining all others; starts no implementation."""
+        """Add to this workstream, retaining all others; starts no implementation.
+
+        A group ID includes the group, and so its live members, in this workstream.
+        """
         return store.compact_call("add_to_workstream", task_id, workstream_id, expected_revision)
 
     @server.tool(annotations=editing, structured_output=True)
@@ -435,7 +361,10 @@ def create_server(
     def remove_from_workstream(
         task_id: str, workstream_id: str, expected_revision: int
     ) -> dict[str, Any]:
-        """Remove only this named workstream, retaining other memberships and all proof."""
+        """Remove only this named workstream, retaining other memberships and all proof.
+
+        A group ID removes the group's inclusion; a member ID excludes just that member.
+        """
         return store.compact_call(
             "remove_from_workstream", task_id, workstream_id, expected_revision
         )
@@ -460,9 +389,9 @@ def create_server(
         task_id: str,
         expected_revision: int,
         text: str,
-        handling: Literal["active", "observer", "user"] = "active",
+        handling: Literal["active", "user"] = "active",
     ) -> dict[str, Any]:
-        """Add a blocking unresolved item; observers submit a nonblocking gate proposal."""
+        """Add a blocking unresolved item (a question awaiting a decision)."""
         return store.compact_call("add_unresolved", task_id, expected_revision, text, handling)
 
     @server.tool(annotations=editing, structured_output=True)
@@ -481,10 +410,10 @@ def create_server(
         task_id: str,
         expected_revision: int,
         blocked_by_id: str,
-        handling: Literal["active", "observer", "user"] = "active",
+        handling: Literal["active", "user"] = "active",
         milestone: Literal["review", "signoff"] = "review",
     ) -> dict[str, Any]:
-        """Link a canonical task/group in any project, or propose a nonblocking observer gate.
+        """Link a canonical task/group in any project as a blocking prerequisite.
 
         Default review clears on done or current-spec passed/human_review (every group member).
         Use signoff only exceptionally when proceeding before the user's verdict would very
@@ -511,48 +440,6 @@ def create_server(
         return store.compact_call(
             "remove_prerequisite", task_id, expected_revision, blocked_by_id, note
         )
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def propose_prerequisite(
-        task_id: str,
-        expected_revision: int,
-        title: str,
-        body: str = "",
-        acceptance_criteria: str = "",
-        workstream_id: str | None = None,
-        milestone: Literal["review", "signoff"] = "review",
-    ) -> dict[str, Any]:
-        """Create and link a prerequisite included here, or in the inbox.
-
-        Default review clears on done or current-spec passed/human_review. Use signoff only
-        exceptionally when work would very likely be wasted without the user's verdict.
-        Satisfaction is reversible; it neither includes work nor proves code integration.
-        """
-        return store.compact_call(
-            "propose_prerequisite",
-            task_id,
-            expected_revision,
-            title,
-            body,
-            acceptance_criteria,
-            workstream_id,
-            milestone,
-        )
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def accept_gate_proposal(proposal_id: str, expected_revision: int) -> dict[str, Any]:
-        """Activate an observer gate, checking global task/group cycles for prerequisites."""
-        return store.compact_call("accept_gate_proposal", proposal_id, expected_revision)
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def dismiss_gate_proposal(
-        proposal_id: str, expected_revision: int, note: str
-    ) -> dict[str, Any]:
-        """Dismiss a pending observer gate with a recorded coordinator decision."""
-        return store.compact_call("dismiss_gate_proposal", proposal_id, expected_revision, note)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -653,12 +540,6 @@ def create_server(
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def human_review(attempt_id: str, expected_revision: int, user_note: str) -> dict[str, Any]:
-        """Record an explicit user's review or instruction to skip further independent review."""
-        return store.compact_call("human_review", attempt_id, expected_revision, user_note)
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
     def signoff_task(
         task_id: str,
         expected_revision: int,
@@ -670,7 +551,9 @@ def create_server(
         """Record the actual user's verdict and reasons on an exact reviewed result.
         Approve completes; rework returns to implementation; revise opens a design
         question with the reasons; drop closes without approval. Reasons are required
-        for rework/revise and optional for approve/drop. Read full proof with get_tasks.
+        for rework/revise and optional for approve/drop. Only when the user explicitly
+        approves may approve accept a current-spec result awaiting independent review;
+        its reasons must say so. Read full proof with get_tasks.
         """
         return store.compact_call(
             "signoff_task",
@@ -696,20 +579,6 @@ def create_server(
         return store.list_events(
             project, task_id, after_sequence, through_sequence, limit, include_details
         )
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def export_workstream(
-        workstream_id: str,
-        include_closed: bool = True,
-        format: Literal["markdown", "legacy"] = "markdown",
-    ) -> dict[str, Any]:
-        """Return a readable v2 Markdown snapshot, or legacy v1 with embedded JSON.
-
-        Both include a content hash. Closed means done/dropped, not deferred.
-        Export returns text only; it never saves files or synchronizes edits.
-        """
-        return store.export_workstream(workstream_id, include_closed, format)
 
     @server.tool(annotations=catalog, structured_output=True)
     def get_default_skills(name: str | None = None) -> dict[str, Any]:

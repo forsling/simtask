@@ -271,8 +271,9 @@ def test_cross_project_and_group_membership_fail(context, tmp_path):
     group = store.create_group(ws, "Context")
     with pytest.raises(TaskError, match="unknown_workstream"):
         store.add_to_workstream(task["id"], remote, 1)
-    with pytest.raises(TaskError, match="group_not_executable"):
-        store.add_to_workstream(group["id"], ws, group["revision"])
+    # A group ID is scope inclusion, never execution; remote workstreams may include it.
+    included = store.add_to_workstream(group["id"], remote, group["revision"])
+    assert included["changed"] and included["included"]
     with sqlite3.connect(store.path) as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='queue_members'").fetchone()
 

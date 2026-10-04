@@ -270,8 +270,9 @@ def test_rework_requires_fresh_result_and_review_and_completion_checks_gates(con
     with pytest.raises(TaskError, match="review_required"):
         decide(store, full(store, task), store.get_attempt(attempt["id"]), "approve")
     retry = result(store, task, ws)
-    with pytest.raises(TaskError, match="review_required"):
-        decide(store, full(store, task), retry, "approve")
+    for decision in ("rework", "revise", "drop"):
+        with pytest.raises(TaskError, match="review_required"):
+            decide(store, full(store, task), retry, decision)
     store.record_review(retry["id"], 1, "reviewer", "pass", "Fresh independent proof")
     gate = store.add_unresolved(task["id"], ack["revision"] + 1, "Unanswered")
     blocker = store.create_task(project, "Blocker")
@@ -286,6 +287,33 @@ def test_rework_requires_fresh_result_and_review_and_completion_checks_gates(con
     gate = store.remove_prerequisite(task["id"], gate["revision"], blocker["id"], "Unneeded")
     done = decide(store, full(store, task), store.get_attempt(retry["id"]), "approve")
     assert done["status"] == "done" and len(full(store, task)["signoff_decisions"]) == 2
+
+
+def test_explicit_user_approve_accepts_a_result_awaiting_independent_review(context):
+    store, project, ws = context
+    task = store.create_task(project, "Unreviewed", body="Exact", workstream_id=ws)
+    attempt = store.get_attempt(result(store, task, ws)["id"])
+    assert attempt["state"] == "review"
+    with pytest.raises(TaskError, match="reasons_required"):
+        decide(store, full(store, task), attempt, "approve", reasons=None)
+    stale = store.update_task(
+        task["id"], full(store, task)["revision"], {"title": "Changed requirement"}
+    )
+    with pytest.raises(TaskError, match="review_required"):
+        decide(store, full(store, task), attempt, "approve")
+    current = store.get_attempt(result(store, task, ws)["id"])
+    reasons = "User explicitly approved this result without independent review"
+    done = decide(store, full(store, task), current, "approve", reasons=reasons)
+    assert stale["spec_changed"]
+    assert done["status"] == "done" and done["selected_attempt_id"] == current["id"]
+    assert done["attempt_state"] == "human_review" and done["independent_review"] is False
+    proof = store.get_attempt(current["id"])
+    assert proof["state"] == "human_review" and proof["human_review_note"] == reasons
+    assert proof["revision"] == current["revision"] + 1 == done["attempt_revision"]
+    decision = full(store, task)["signoff_decisions"][-1]
+    assert decision["reasons"] == reasons and decision["independent_review"] is False
+    reviewed_task, reviewed = delivered(context)
+    assert decide(store, reviewed_task, reviewed, "approve")["independent_review"] is True
 
 
 def test_removed_contract_invalid_decisions_and_exact_attempt_concurrency(context):

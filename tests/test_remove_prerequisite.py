@@ -246,7 +246,7 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
         async with Client(params, read_timeout_seconds=30) as client:
             tools = {tool.name: tool for tool in (await client.list_tools()).tools}
             tool = tools["remove_prerequisite"]
-            assert len(tools) == 42
+            assert len(tools) == 26
             assert tool.annotations.read_only_hint is False
             assert tool.annotations.destructive_hint is True
             assert set(tool.input_schema["required"]) == {
@@ -261,7 +261,7 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
                 assert not result.is_error, result.content
                 return result.structured_content
 
-            runtime = await call("runtime_info")
+            runtime = (await call("init", path=str(tmp_path / "probe"), branch="main"))["runtime"]
             assert runtime["package_path"] == str(root / "src/task_mcp")
             assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION
             assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION
