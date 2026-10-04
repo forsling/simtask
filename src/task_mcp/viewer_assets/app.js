@@ -41,6 +41,9 @@ const state = {
   task: null,
   selected: null,
   generation: 0,
+  // Board loads are cancelled only by a newer board load or a scope change, so a
+  // row click (which bumps generation for the detail pane) cannot leave the list stale.
+  listGeneration: 0,
   loadedAt: 0,
   // Drag-and-drop edits only this loaded workstream order, guarded by its revision.
   orderStream: null,
@@ -438,9 +441,11 @@ async function changeScope(id) {
   await reload();
 }
 async function reload({ quiet = false } = {}) {
-  const generation = ++state.generation;
+  const generation = ++state.listGeneration;
   const project = state.project;
   const groups = state.groups;
+  const stream = state.stream;
+  const stale = () => generation !== state.listGeneration || project !== state.project || groups !== state.groups || stream !== state.stream;
   if (!quiet) $("list").replaceChildren(skeleton());
   $("heading").replaceChildren(
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
@@ -453,7 +458,7 @@ async function reload({ quiet = false } = {}) {
       : board.items;
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
     const streams = state.groups ? state.streams : await pages("workstreams", { project });
-    if (generation !== state.generation) return;
+    if (stale()) return;
     state.rows = rows.map(r => ({ ...r, view: r.view || (r.object_type === "group" ? "group" : ["done", "deferred", "dropped"].includes(r.status) ? r.status : r.gate_diagnostics?.[0] || "open") }));
     state.streams = streams;
     state.loadedAt = Date.now();
@@ -487,7 +492,7 @@ async function reload({ quiet = false } = {}) {
       );
     }
   } catch (e) {
-    if (generation !== state.generation) return;
+    if (stale()) return;
     $("detail").classList.remove("loading");
     toast(e.message, true);
     $("list").replaceChildren(emptyState("Couldn't load tasks", "Refresh to try again."));
@@ -645,31 +650,42 @@ async function commitDrop(movedId, targetId, placement) {
   if (!orderEditable() || state.orderSaving) return false;
   const next = droppedOrder(state.rows.map((r) => r.id), movedId, targetId, placement);
   if (!next) return false;
-  const stream = state.stream, revision = state.orderRevision;
-  const byId = new Map(state.rows.map((r) => [r.id, r]));
+  const stream = state.stream, revision = state.orderRevision, before = state.rows;
+  const byId = new Map(before.map((r) => [r.id, r]));
+  const optimistic = next.map((id, i) => ({ ...byId.get(id), workstream_order_key: i + 1 }));
   state.orderSaving = true;
-  state.rows = next.map((id, i) => ({ ...byId.get(id), workstream_order_key: i + 1 }));
+  state.listGeneration++; // a board load already in flight predates this save; discard it
+  state.rows = optimistic;
   renderList();
   dropHint("Saving the new order…");
   let saved = false;
   try {
     // One prefix through the moved task; the store keeps every later member's order.
-    await api("reorder", {
+    const ack = await api("reorder", {
       workstream_id: stream,
       task_ids: next.slice(0, next.indexOf(movedId) + 1),
       expected_order_revision: revision,
     });
     saved = true;
+    // The shown order is now the recorded one; adopt its revision so the board stays
+    // consistent even if the reconciling reload below never completes.
+    if (state.rows === optimistic && state.orderStream === stream && state.orderRevision === revision)
+      state.orderRevision = Number.isInteger(ack?.workstream_order_revision) ? ack.workstream_order_revision : null;
     toast("Order saved");
   } catch (e) {
+    // Never keep an unconfirmed order: put back the loaded rows and disable dragging
+    // until a reconciling reload supplies the recorded order and its revision.
+    if (state.orderStream === stream) state.orderRevision = null;
+    if (state.rows === optimistic) state.rows = before;
     toast(e.conflict
       ? `${streamName(stream)} changed elsewhere, so this move was not saved. Showing the current order; drag again if you still want it.`
       : `Couldn't confirm the new order (${e.message}). Showing the saved order.`, true);
   } finally {
     state.orderSaving = false;
     dropHint("");
+    if (!state.groups && state.stream === stream) renderList();
   }
-  // Reconcile with recorded state either way: never keep an unconfirmed local order.
+  // Reconcile with recorded state either way.
   if (state.stream === stream && !state.groups) await reload({ quiet: true });
   return saved;
 }

@@ -24,8 +24,9 @@ and returns the link. No browser is launched automatically.
   members keep their relative order. Only the selected workstream changes; its
   members keep every membership, specification and proof. Escape, self drops
   and unchanged positions save nothing. A failed save or a stale order revision
-  shows an error and reloads the recorded order. All tasks and group views have
-  no order to edit.
+  shows an error, puts back the loaded order and locks dragging until the
+  recorded order has reloaded; clicking a task meanwhile does not cancel that
+  reload. All tasks and group views have no order to edit.
 - Each task opens with a single “next step” panel stating what, if anything,
   you can do now, with its buttons. A review/sign-off state does not remove
   open questions or prerequisites; Store still validates every decision.

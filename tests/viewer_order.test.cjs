@@ -202,6 +202,72 @@ async function test() {
   assert.equal(await saving, true);
   assert.equal(run("state.orderRevision"), 21);
 
+  // Reconciling reloads can be slow and the user may click a row meanwhile.
+  run(`
+    baseApi = api; tasksGate = null;
+    api = async (action, payload) => { if (action === "tasks" && tasksGate) await tasksGate; return baseApi(action, payload); };
+    hold = () => { tasksGate = new Promise(resolve => { releaseTasks = () => { tasksGate = null; resolve(); }; }); };
+  `);
+  const ticks = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const shown = () => Array.from(run("state.rows.map(r => r.id)"));
+  const recorded = ["done", "hidden", "beta", "alpha", "inbox"];
+
+  // Failed save, then a row click during the reconciling reload: the board shows the
+  // loaded order at once, dragging stays off until the reload lands, and the next move
+  // saves only what the user did after the failure.
+  run('hold(); nextReorder = async () => { throw new Error("transient"); };');
+  let pending = run('commitDrop("inbox", "done", "before")');
+  await ticks();
+  deq(shown(), recorded, "Failed move is not kept on the board");
+  assert.equal(run("state.orderRevision"), null);
+  assert.equal(rowsIn().some(r => r.draggable), false, "Dragging waits for the reconcile");
+  e = event(rowFor("beta"));
+  list.ondragstart(e);
+  assert.equal(e.prevented, true);
+  let count = reorders().length;
+  assert.equal(await run('commitDrop("beta", "hidden", "before")'), false);
+  assert.equal(reorders().length, count, "No save from an unreconciled board");
+  run("state.generation++; nextReorder = null;"); // a row click starts a detail load
+  run("releaseTasks()");
+  assert.equal(await pending, false);
+  deq(shown(), recorded);
+  assert.equal(run("state.orderRevision"), 21);
+  assert.equal(await run('commitDrop("alpha", "done", "before")'), true);
+  deq(reorders().at(-1).payload, {workstream_id: "a", task_ids: ["alpha"], expected_order_revision: 21});
+  deq(run("server.order.a"), ["alpha", "done", "hidden", "beta", "inbox"], "Only the later move was saved");
+
+  // Conflict, interrupted the same way: the concurrent order is shown, never overwritten.
+  run('server.order.a = ["inbox", "alpha", "done", "hidden", "beta"]; server.revision.a = 30; hold();');
+  pending = run('commitDrop("beta", "alpha", "before")');
+  await ticks();
+  deq(shown(), ["alpha", "done", "hidden", "beta", "inbox"], "Stale order restored, not the failed move");
+  assert.equal(run("state.orderRevision"), null);
+  run("state.generation++; releaseTasks();");
+  assert.equal(await pending, false);
+  deq(shown(), ["inbox", "alpha", "done", "hidden", "beta"]);
+  assert.equal(run("state.orderRevision"), 30);
+  assert.match(toasts().at(-1), /A changed elsewhere/);
+
+  // Success while the reconciling reload is still pending: the saved revision is adopted
+  // from the reorder response, so another move saves without a false conflict.
+  run("hold();");
+  pending = run('commitDrop("beta", "inbox", "before")');
+  await ticks();
+  deq(shown(), ["beta", "inbox", "alpha", "done", "hidden"]);
+  assert.equal(run("state.orderRevision"), 31, "Revision from the reorder response");
+  assert.equal(rowsIn().find(r => r.dataset.id === "beta").draggable, true);
+  run("state.generation++;");
+  const second = run('commitDrop("hidden", "inbox", "after")');
+  await ticks();
+  deq(reorders().at(-1).payload, {workstream_id: "a", task_ids: ["beta", "inbox", "hidden"], expected_order_revision: 31});
+  run("releaseTasks()");
+  assert.equal(await pending, true);
+  assert.equal(await second, true);
+  deq(run("server.order.a"), ["beta", "inbox", "hidden", "alpha", "done"]);
+  deq(shown(), ["beta", "inbox", "hidden", "alpha", "done"]);
+  assert.equal(run("state.orderRevision"), 32);
+  run("api = baseApi;");
+
   // Project-wide and group views have no workstream order to edit.
   await run("changeScope(null)");
   assert.equal(run("orderEditable()"), false);
@@ -220,6 +286,6 @@ async function test() {
   assert.equal(await run('commitDrop("done", "beta", "before")'), true);
   deq(reorders().at(-1).payload, {workstream_id: "b", task_ids: ["done"], expected_order_revision: 3});
   deq(run("server.order.b"), ["done", "beta", "alpha"]);
-  deq(run("server.order.a"), ["done", "hidden", "beta", "alpha", "inbox"]);
+  deq(run("server.order.a"), ["beta", "inbox", "hidden", "alpha", "done"]);
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});
