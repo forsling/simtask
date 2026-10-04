@@ -415,7 +415,7 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
     async def exercise():
         async with Client(parameters, read_timeout_seconds=30) as client:
             tools = (await client.list_tools()).tools
-            assert len(tools) == 27
+            assert len(tools) == 28
             for name in ("record_result", "record_review"):
                 descriptor = next(t for t in tools if t.name == name)
                 schema = descriptor.input_schema

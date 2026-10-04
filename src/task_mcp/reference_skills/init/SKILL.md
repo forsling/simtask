@@ -23,6 +23,13 @@ return ready. `runtime` reports the server identity. Names/history do not imply 
 Rebind retains scope/history, not files. Check the full current spec, actual
 checkout/diff and relevant commits before relying on proof, especially after rebind.
 
+Archived workstreams are stale bindings: `list_workstreams`, init candidates,
+`workstream_status` listings and `get_next_action` leave them out unless
+`include_archived=true`. `archived` means this checkout's binding is archived:
+do not resume it unless the user directs; then follow its `choices`. Archive or
+unarchive only when the user directs, with `archive_workstream(workstream_id,
+expected_revision, reason, archived)`; it changes no tasks, memberships or proof.
+
 ## Notes
 
 `ready` includes any nonempty project note (personal rules for this repository)

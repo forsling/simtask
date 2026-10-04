@@ -307,7 +307,7 @@ def test_previous_code_keeps_working_against_the_migrated_database(tmp_path, lab
         assert running.stdout.readline().strip() == "started"
         # The newer server migrates (with a backup) and writes notes meanwhile.
         current = Store(database, actor="simon")
-        assert current.migration_backup_path.name.startswith("tasks.sqlite3.pre-notes.")
+        assert current.migration_backup_path.name.startswith("tasks.sqlite3.pre-notes-")
         current.set_note("project", ids["project"], 0, "Project rules")
         current.set_note("workstream", ids["ws"], 0, "Live state")
         output, _ = running.communicate("go\n", timeout=60)

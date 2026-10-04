@@ -55,7 +55,7 @@ def run(coroutine):
 def test_removed_tools_are_gone_and_replacement_inputs_are_published(mcp):
     _, server, _, _ = mcp
     tools = {tool.name: tool for tool in run(server.list_tools())}
-    assert len(tools) == 27 and not REMOVED & tools.keys()
+    assert len(tools) == 28 and not REMOVED & tools.keys()
     init = tools["init"].input_schema["properties"]
     assert set(init["action"]["anyOf"][0]["enum"]) == {
         "create_project",
@@ -174,6 +174,10 @@ def test_init_actions_and_checkout_branch_match_check(mcp, tmp_path):
 def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
     repo, other = str(tmp_path / "repo"), str(tmp_path / "other")
     foreign_path, loose = str(tmp_path / "foreign"), str(tmp_path / "loose")
+    attic = str(tmp_path / "attic")
+
+    def archived(ws):
+        return bool(ws and (ws.get("archive") or {}).get("archived"))
 
     def tools(tag):
         server = create_server(Store(tmp_path / f"{tag}.sqlite3"), tracing=False)
@@ -217,9 +221,20 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 | {"action": "new_workstream"},
             ),
             ("rel2_name", {"path": repo, "workstream_name": "rel2", "action": "new_workstream"}),
+            # An archived snapshot checkout whose name differs from its branch, so it can
+            # hold a branch, a checkout and a name.
+            (
+                "old",
+                {"path": attic, "branch": "old-branch", "workstream_name": "old"}
+                | {"action": "attach_workstream", "project": project},
+            ),
         ):
             made = await call("init", confirmed=True, **extra)
             ids[key], ids[f"{key}_project"] = made["workstream"]["id"], made["project"]["id"]
+        archived_ack = await call(
+            "archive_workstream", workstream_id=ids["old"], expected_revision=0, reason="snapshot"
+        )
+        assert archived_ack["archive"]["archived"]
         return ids
 
     # label: (request built from the setup IDs, exact choices, choices withheld because they
@@ -381,6 +396,53 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
             ["rebind_workstream"],
             ["attach_workstream"],
         ),
+        # Archived workstreams: an archived binding is reported, never silently resumed,
+        # and every choice that resumes or moves one says include_archived=true.
+        "archived_binding_here": (
+            lambda ids: {"path": attic, "branch": "old-branch"},
+            ["include_archived", "unarchive_workstream"],
+            [],
+        ),
+        "archived_binding_here_named": (
+            lambda ids: {"path": attic, "branch": "old-branch", "workstream_id": ids["old"]},
+            ["include_archived", "unarchive_workstream"],
+            [],
+        ),
+        "bound_here_requested_archived": (
+            lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["old"]},
+            ["use_bound_workstream", "init_requested_binding"],
+            [],
+        ),
+        "archived_bound_here_other_requested": (
+            lambda ids: {"path": attic, "branch": "old-branch", "workstream_id": ids["feature"]},
+            ["use_bound_workstream", "init_requested_binding"],
+            [],
+        ),
+        "branch_bound_to_archived_elsewhere": (
+            lambda ids: {"path": repo, "branch": "old-branch"},
+            ["rebind_workstream", "init_requested_binding"],
+            [],
+        ),
+        "branch_bound_to_archived_elsewhere_other_requested": (
+            lambda ids: {"path": repo, "branch": "old-branch", "workstream_id": ids["feature"]},
+            ["rebind_bound_workstream", "init_requested_binding"],
+            [],
+        ),
+        "unbound_branch_requested_archived": (
+            lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["old"]},
+            ["rebind_workstream", "new_workstream"],
+            [],
+        ),
+        "unbound_branch_name_held_by_archived_target": (
+            lambda ids: {"path": other, "branch": "old", "workstream_id": ids["old"]},
+            ["rebind_workstream"],
+            ["new_workstream"],
+        ),
+        "unregistered_checkout_with_project_name_held_by_archived": (
+            lambda ids: {"path": loose, "branch": "old", "project": ids["project"]},
+            ["rebind_workstream"],
+            ["attach_workstream"],
+        ),
     }
 
     def moving(response, choice):
@@ -398,11 +460,22 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         keys = ("path", "branch", "workstream_name")
         here = {key: request[key] for key in keys if key in request}
         target = response.get("workstream")
+        # Resuming or moving an archived workstream needs the explicit include_archived.
+        include = {"include_archived": True}
         if choice in {"use_bound_workstream", "use_attached_project"}:
+            return here | (include if archived(response.get("bound_workstream")) else {})
+        if choice == "include_archived":
+            return here | include
+        if choice == "unarchive_workstream":
+            # The init that follows archive_workstream(archived=false).
             return here
         if choice == "init_requested_binding":
             own = {"branch": target["branch"]} if target["branch"] else {}
-            return {"path": target["checkout_path"], **(own or {"workstream_name": target["name"]})}
+            return {
+                "path": target["checkout_path"],
+                **(own or {"workstream_name": target["name"]}),
+                **(include if archived(target) else {}),
+            }
         if choice in {"rebind_workstream", "rebind_bound_workstream"}:
             moved = moving(response, choice)
             return here | {
@@ -410,6 +483,7 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 "workstream_id": moved["id"],
                 "expected_revision": moved["revision"],
                 "confirmed": True,
+                **(include if archived(moved) else {}),
             }
         project = response["project"]["id"]
         return here | {
@@ -420,11 +494,32 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
 
     async def follow(call, request, response, choice):
         target = response.get("workstream")
-        followed = await call("init", **arguments(request, response, choice))
+        if choice == "unarchive_workstream":
+            restored = await call(
+                "archive_workstream",
+                workstream_id=target["id"],
+                expected_revision=target["archive"]["revision"],
+                reason="back in use",
+                archived=False,
+            )
+            assert restored["changed"] and not restored["archive"]["archived"]
+            followed = await call("init", **arguments(request, response, choice))
+        else:
+            followed = await call("init", **arguments(request, response, choice))
         assert followed["state"] == "ready", (choice, followed)
+        # A followed choice keeps an archived workstream archived unless it unarchives it.
+        reported = ("workstream", "bound_workstream", "name_holder")
+        archived_ids = {response[k]["id"] for k in reported if archived(response.get(k))}
+        assert archived(followed["workstream"]) == (
+            followed["workstream"]["id"] in archived_ids and choice != "unarchive_workstream"
+        ), (choice, followed)
+        if archived(followed["workstream"]):
+            assert "Archived workstream resumed on request" in followed["message"]
         expected = {
             "use_bound_workstream": lambda: response["bound_workstream"]["id"],
             "init_requested_binding": lambda: target["id"],
+            "include_archived": lambda: target["id"],
+            "unarchive_workstream": lambda: target["id"],
             "rebind_workstream": lambda: moving(response, choice)["id"],
             "rebind_bound_workstream": lambda: response["bound_workstream"]["id"],
         }.get(choice)
@@ -442,9 +537,19 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
             assert not target or followed["workstream"]["id"] != target["id"]
             assert followed["workstream"]["checkout_path"] == response["path"]
             assert followed["workstream"]["branch"] == request.get("branch")
-        # A followed setup choice is now a stable binding: a plain resume returns it unchanged.
-        if choice not in {"use_bound_workstream", "init_requested_binding", "use_attached_project"}:
-            here = arguments(request, response, "use_bound_workstream")
+        # A followed setup choice is now a stable binding: a plain resume returns it unchanged
+        # (with include_archived=true while the followed workstream is archived).
+        if choice not in {
+            "use_bound_workstream",
+            "init_requested_binding",
+            "use_attached_project",
+            "include_archived",
+        }:
+            keys = ("path", "branch", "workstream_name")
+            here = {key: request[key] for key in keys if key in request}
+            if archived(followed["workstream"]):
+                assert (await call("init", **here))["state"] == "archived"
+                here["include_archived"] = True
             resumed = await call("init", **here)
             assert resumed["state"] == "ready" and not resumed["changed"]
             assert resumed["workstream"]["id"] == followed["workstream"]["id"]
@@ -454,7 +559,13 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         ids = await setup(call)
         request = build(ids)
         response = await call("init", **request)
-        state = "unregistered_checkout" if label.startswith("unregistered_checkout") else "mismatch"
+        state = (
+            "unregistered_checkout"
+            if label.startswith("unregistered_checkout")
+            else "archived"
+            if label.startswith("archived_binding")
+            else "mismatch"
+        )
         assert response["state"] == state, label
         assert response.get("choices") == choices, label
         assert "None" not in response["message"], label
@@ -473,6 +584,14 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
             if choice == "rebind_bound_workstream" or (choice == "rebind_workstream" and specific):
                 expected += [f"workstream_id={given['workstream_id']}"]
                 expected += [f"expected_revision={given['expected_revision']}"]
+            if given.get("include_archived"):
+                expected.append("include_archived=true")
+            if choice == "unarchive_workstream":
+                target = response["workstream"]
+                expected.append(
+                    f"archive_workstream workstream_id={target['id']} archived=false "
+                    f"expected_revision={target['archive']['revision']}"
+                )
             for text in expected:
                 assert text in response["message"], (label, choice, text)
         return request, response
@@ -496,7 +615,7 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                     "runtime": response["runtime"]
                 }
                 withheld_count += 1
-        assert (followed, withheld_count) == (38, 10)
+        assert (followed, withheld_count) == (54, 12)
 
         # The branch-bound-elsewhere report names both workstreams, not one for the other.
         call = tools("bound-elsewhere-report")

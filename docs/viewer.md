@@ -38,6 +38,13 @@ the first project, or the view's first item) with a short notice.
   workstream's note show as read-only plain text with when and by whom each was
   last updated; empty notes are not shown. Collapse either one with its header.
   Agents keep notes with the `set_note` MCP tool.
+- Archived workstreams are hidden from the sidebar and never opened by default.
+  **Show N archived** under a project's workstreams lists them, marked
+  *archived*, until **Hide archived** (remembered for the tab). A link to an
+  archived workstream still opens it, keeps it in the sidebar while open and
+  shows its archive reason next to the task count. The add-to-workstream picker
+  leaves archived workstreams out; removing a task from one still works.
+  Archiving and unarchiving are agent operations (`archive_workstream`).
 - In a named workstream, drag a task onto the upper or lower half of another
   task to place it before or after that task. Rows show their position in that
   workstream; a drop line and hint state the result, including when the task

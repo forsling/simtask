@@ -10,7 +10,7 @@ checkout and branch/name; retain its IDs and read its project/workstream notes.
 When work changes the live state the workstream note describes (deploy,
 rollback), update it with `set_note`, replacing outdated text within 2,000
 characters. Select one `implement`/`review` with
-`get_next_action(workstream_id)` in this workstream's order. It returns the full
+`get_next_action(workstream_id=...)` in this workstream's order. It returns the full
 current spec/token and `latest_rejection`; review/rework includes exactly one
 complete local attempt with proof/concerns/provenance. No second history read
 is needed. At `action:null`, finish with bounded waiting counts, including sign-off.

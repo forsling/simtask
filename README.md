@@ -73,7 +73,8 @@ uses POSIX file locking (Linux/macOS).
 
 Browse projects and workstreams, search/filter task titles, and read
 specifications, evidence and audit history. The project note and, in a
-workstream, its workstream note appear read-only above the task list. Each project's **Task groups** page shows
+workstream, its workstream note appear read-only above the task list. Archived
+workstreams are hidden from navigation until **Show archived**. Each project's **Task groups** page shows
 its discoverable groups, including shared groups and empty groups included in
 that project's scope. **Shared task groups** shows only groups with task members in
 more than one project. Both show whole-group progress and project counts;
@@ -181,7 +182,8 @@ of `workstream` / `bound_workstream` here), and `new_workstream` /
 `attach_workstream`. A rebind or new workstream whose name (`workstream_name` or
 the branch) is already used in the project is not offered; the message names the
 workstream holding it. Each message says which `init` arguments follow each offered
-choice.
+choice. Archived workstreams add one state and a flag; see
+[Archived workstreams](#archived-workstreams).
 Candidates are recorded bindings, not scanned Git refs or running agents. The
 initial call may append an audit event but changes no project, task, scope or
 workstream state.
@@ -203,9 +205,10 @@ is a global administrative catalog, not a current-project selector.
 When a new workstream snapshots an existing workstream as its first scope
 expression term, pass that source's last read revision as `expected_revision`.
 
-`list_workstreams(project?, limit?, offset?)` lists registered workstreams
+`list_workstreams(project?, limit?, offset?, include_archived?)` lists registered workstreams
 globally or within one project, with binding, revision and derived scoped task
-counts. `workstream_status(workstream_id, limit?, offset?, include_inactive?)` returns that
+counts; archived ones are only counted (`archived_hidden`) unless
+`include_archived=true`. `workstream_status(workstream_id, limit?, offset?, include_inactive?)` returns that
 workstream's active slim cards (see [Boards and cards](#boards-and-cards)) and count
 diagnostics without init or rebind; its `concern_tasks` page follows the same
 active-only default. Init returns at most ten active queue cards with
@@ -288,11 +291,62 @@ Notes live in their own `notes` table, created on startup without a schema
 revision bump (the database stays at schema 10), so a server running the
 previous code keeps working against the upgraded database, including after a
 restart. When an existing database lacks the table, startup first takes and
-verifies a private online backup named `*.pre-notes.*.sqlite3` next to the
-database. For the live rollout, also take a manual backup first, for example
+verifies a private online backup named after the missing tables, such as
+`*.pre-notes.*.sqlite3` (or `*.pre-notes-workstream_archive.*.sqlite3` when the
+archive table is missing too), next to the database. For the live rollout, also take a manual backup first, for example
 `sqlite3 ~/.local/share/task-mcp/tasks.sqlite3 ".backup /safe/place/tasks.pre-notes.sqlite3"`,
 then start the new server. Rolling back needs no restore: previous code ignores
 the table.
+
+## Archived workstreams
+
+A workstream bound to a stale checkout, such as an archived snapshot folder,
+misleads new sessions that discover it by path, branch or name. Archive it:
+
+```text
+archive_workstream(workstream_id, expected_revision=0, reason="Inactive snapshot")
+archive_workstream(workstream_id, expected_revision=1, reason="Back in use",
+                   archived=false)   # unarchive
+```
+
+`expected_revision` is the workstream's `archive.revision` (0 when it shows no
+`archive` block); a stale one fails with `revision_conflict`. The reason is
+required, at most 200 characters. Repeating the current state is a no-op that
+keeps the earlier reason. Every call is audited as `workstream.archived` or
+`workstream.unarchived` with the before/after archive state. Only discovery
+changes: tasks, memberships (including the same tasks in other workstreams),
+order, attempts, reviews, history, notes and the workstream's own revision are
+untouched, and the binding keeps its branch and name.
+
+Once archived, a workstream is left out unless a call passes
+`include_archived=true`:
+
+- `list_workstreams` omits it and counts it in `archived_hidden`.
+- `init` leaves it out of `new_branch` candidates and `unregistered_checkout`
+  workstream candidates (`archived_hidden` counts them). At its own checkout and
+  branch, with or without its `workstream_id`, `init` returns
+  `state=archived` instead of resuming, with the archive reason and the choices
+  `include_archived` (init again with `include_archived=true`; the ready result
+  keeps its `archive` block and says it is archived) and `unarchive_workstream`
+  (the `archive_workstream` call to make, then init again).
+- `init action=rebind_workstream` refuses to move it (`workstream_archived`).
+- `workstream_status` returns its header and counts with
+  `listing_skipped="archived"` but no task cards, concern list or scope pages.
+- `get_next_action` selects nothing (`diagnostics.workstream_archived`).
+
+Mismatch reports name an archived workstream as archived, and each offered choice
+that would resume or move one includes `include_archived=true`, so it still works
+when followed. An archived workstream still holds its branch and name in the
+project, so a new workstream cannot take them; rebind or unarchive it instead.
+Its `archive` block (`archived`, `reason`, `revision`, `updated_at`,
+`updated_by`) appears wherever the workstream does once it was ever archived.
+The viewer hides archived workstreams from navigation until **Show archived**.
+
+Archive state lives in its own `workstream_archive` table, added like `notes`
+without a schema revision bump: previous servers keep working against, and
+restarting on, the upgraded database, and simply keep listing archived
+workstreams. An existing database lacking the table gets a verified
+`*.pre-workstream_archive.*.sqlite3` backup first.
 
 ## Task lifecycle
 
@@ -578,7 +632,7 @@ those rare workflows are deferred.
 
 | Area | Tools |
 | --- | --- |
-| Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity; notes), `set_note`, `list_projects`, `list_workstreams`, `workstream_status` |
+| Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity; notes), `set_note`, `archive_workstream`, `list_projects`, `list_workstreams`, `workstream_status` (archived workstreams hidden unless `include_archived`) |
 | Scope and queue | `add_to_workstream`, `remove_from_workstream` (task or group IDs), `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
 | Groups | `create_task(kind="group")`, `update_task(group_id=...)`, `list_tasks(state="group")`, `list_tasks(group_id=...)`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `decompose_task` |

@@ -111,6 +111,29 @@ keeps running against, and restarting on, the upgraded database. An existing
 database without the table gets a verified `*.pre-notes.*.sqlite3` online backup
 before the table is created.
 
+A workstream can be archived when its binding is stale, such as a snapshot
+folder that would otherwise be found by path, branch or name and mislead a new
+session. `archive_workstream(workstream_id, expected_revision, reason, archived)`
+archives or unarchives with a required short reason (at most 200 characters),
+checked against the workstream's own archive revision (0 before any archive)
+and audited as `workstream.archived`/`workstream.unarchived`. It is a discovery
+flag, not a disposition: tasks, memberships, other workstreams' lists, order,
+attempts, history and the workstream revision are unchanged, so unarchiving
+restores everything as it was. Archived workstreams are skipped by
+`list_workstreams` (counted in `archived_hidden`), init candidates,
+`workstream_status` listings (header and counts only) and `get_next_action`,
+and `include_archived=true` includes them. `init` at an archived workstream's
+own checkout returns `state=archived` rather than resuming it, and a rebind of
+one needs the flag too. Init's mismatch invariants hold: a requested workstream
+is never swapped, and every offered choice works when followed, so a choice that
+resumes or moves an archived workstream carries `include_archived=true`. The
+archived workstream keeps its branch and name, which therefore stay unavailable
+to new workstreams in that project. The viewer hides archived workstreams from
+navigation unless the user shows them. Archive state lives in a separate
+`workstream_archive` table, added without a schema revision bump like `notes`
+(and after a verified `*.pre-workstream_archive.*` backup when missing); a
+previous server ignores it and keeps listing archived workstreams.
+
 ## Tasks and groups
 
 Task origin (`source`) and `user_request` remain descriptive metadata.

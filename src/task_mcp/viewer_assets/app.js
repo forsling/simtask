@@ -52,6 +52,8 @@ const state = {
   orderStream: null,
   orderRevision: null,
   orderSaving: false,
+  // Archived workstreams stay out of navigation unless shown (remembered per tab).
+  showArchived: (() => { try { return sessionStorage.getItem("task-viewer-show-archived") === "1"; } catch { return false; } })(),
 };
 let submitAction = null;
 let submissionPending = false;
@@ -335,6 +337,21 @@ function streamName(id) {
   const s = state.streams.find((s) => s.id === id);
   return s?.branch || s?.name || "another workstream";
 }
+// Every workstream of a project (or all), archived ones included: names, links and
+// memberships still resolve; navigation decides what to show.
+function workstreams(project) {
+  return pages("workstreams", { ...(project ? { project } : {}), include_archived: true });
+}
+function isArchived(stream) {
+  return !!stream?.archive?.archived;
+}
+function currentArchived() {
+  return isArchived(state.streams.find((s) => s.id === state.stream));
+}
+// The default workstream of a project: its first one that is not archived.
+function defaultStream(streams) {
+  return streams.find((s) => !isArchived(s))?.id || null;
+}
 function needsYou(stream) {
   const c = stream.status?.counts || {};
   return (c.signoff || 0) + (c.inbox || 0) + (c.unresolved_items || 0);
@@ -405,7 +422,7 @@ async function openLocation(hash, { initial = false } = {}) {
   const located = !!project;
   project ||= state.projects[0];
   if (!project) return void notices.forEach((n) => toast(n));
-  const streams = await pages("workstreams", { project: project.id });
+  const streams = await workstreams(project.id);
   if (generation !== state.generation) return;
   const view = located ? route.view : route?.view === "shared-groups" ? "shared-groups" : null;
   let item = located || view === "shared-groups" ? route.item || null : null, stream = null, groups = false;
@@ -414,7 +431,7 @@ async function openLocation(hash, { initial = false } = {}) {
     else notices.push("That workstream no longer exists.");
   } else if (view === "groups") groups = "project";
   else if (view === "shared-groups") groups = "shared";
-  else if (!view) stream = streams[0]?.id || null;
+  else if (!view) stream = defaultStream(streams);
   if (item && groups) {
     // A linked group may be outside the list (as when opened from a task), so check it exists.
     const found = await api("details", { ids: [item] }).then((r) => r.items[0], () => null);
@@ -487,10 +504,10 @@ async function chooseProject(id, { keepSelection = false } = {}) {
     state.selected = null;
     state.task = null;
   }
-  const streams = await pages("workstreams", { project: id });
+  const streams = await workstreams(id);
   if (generation !== state.generation) return;
   state.streams = streams;
-  state.stream = keepSelection ? null : streams[0]?.id || null;
+  state.stream = keepSelection ? null : defaultStream(streams);
   syncRoute("push");
   renderNav();
   await reload();
@@ -515,15 +532,29 @@ function renderNav() {
     const groups = button("", () => chooseGroups("project"), "nav-item" + (state.groups === "project" ? " active" : ""));
     groups.append(icon("layers", 14), node("span", "Task groups", "grow"));
     sub.append(groups);
+    // Archived workstreams are hidden unless shown; an opened one stays visible.
+    const archived = state.streams.filter(isArchived);
     state.streams.forEach((s) => {
-      const b = button("", () => changeScope(s.id), "nav-item" + (active && state.stream === s.id ? " active" : ""));
+      const old = isArchived(s);
+      if (old && !state.showArchived && !(active && state.stream === s.id)) return;
+      const b = button("", () => changeScope(s.id), "nav-item" + (active && state.stream === s.id ? " active" : "") + (old ? " archived" : ""));
       b.append(icon("branch", 14), branchLabel(s.branch || s.name));
-      const n = needsYou(s);
-      if (n) b.append(node("span", String(n), "count attention"));
+      const n = old ? 0 : needsYou(s);
+      if (old) b.append(node("span", "archived", "tag-archived"));
+      else if (n) b.append(node("span", String(n), "count attention"));
       else b.append(node("span", String(s.status?.scoped_count ?? ""), "count"));
-      b.title = `${s.branch || s.name} · ${s.status?.scoped_count || 0} tasks` + (n ? ` · ${n} need you` : "");
+      b.title = `${s.branch || s.name} · ${s.status?.scoped_count || 0} tasks` + (n ? ` · ${n} need you` : "") + (old ? ` · archived: ${s.archive.reason}` : "");
       sub.append(b);
     });
+    if (archived.length) {
+      const toggle = button(state.showArchived ? "Hide archived" : `Show ${archived.length} archived`, () => {
+        state.showArchived = !state.showArchived;
+        try { sessionStorage.setItem("task-viewer-show-archived", state.showArchived ? "1" : "0"); } catch {}
+        renderNav();
+      }, "nav-item nav-toggle");
+      toggle.setAttribute("aria-pressed", String(state.showArchived));
+      sub.append(toggle);
+    }
     nav.append(sub);
   });
   nav.append(node("div", "Across projects", "nav-label"));
@@ -582,7 +613,7 @@ async function reload({ quiet = false, requested = null } = {}) {
       ? await pages("groups", groups === "project" ? { project } : {})
       : board.items;
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
-    const streams = state.groups ? state.streams : await pages("workstreams", { project });
+    const streams = state.groups ? state.streams : await workstreams(project);
     const notes = (await notesLoad)?.notes || null;
     if (stale()) return;
     renderNotes(notes);
@@ -594,9 +625,18 @@ async function reload({ quiet = false, requested = null } = {}) {
     $("subheading").textContent = groups
       ? `${groups === "project" ? projectName(project) : "Across projects"} · ${rows.length} group${rows.length === 1 ? "" : "s"}`
       : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}`;
+    const shownStream = !groups && state.stream ? streams.find((s) => s.id === state.stream) : null;
+    if (isArchived(shownStream)) {
+      // A short tag beside the name keeps the subheading's actions visible; the reason
+      // is its tooltip.
+      const tag = node("span", "Archived", "tag-archived");
+      tag.title = "Archived: " + shownStream.archive.reason;
+      $("heading").append(tag);
+    }
     if (!groups && state.stream) $("subheading").append(" · ", button("Next agent action", async () => {
       try {
-        const selected = await api("next-action", {workstream_id: state.stream});
+        // An archived workstream the user opened is an explicit request to include it.
+        const selected = await api("next-action", {workstream_id: state.stream, include_archived: currentArchived()});
         if (selected.action) {
           await selectTask(selected.task.id, { entry: "push" });
           toast(selected.action === "review" ? "Next: fresh independent reviewer. Verify the actual checkout and saved proof." : "Next: implementer. Use the current checkout and relevant existing work.");
@@ -896,13 +936,13 @@ $("list").ondragend = endDrag;
 
 async function includedWorkstreams(groupId) {
   const included = [];
-  for (const w of await pages("workstreams")) {
+  for (const w of await workstreams()) {
     let found = w.groups.includes(groupId);
     if (!found && w.groups_has_more) {
       let offset = 0;
       do {
         const p = await api("workstream-status", {
-          workstream_id: w.id, include_scope: true, limit: 100, offset,
+          workstream_id: w.id, include_scope: true, include_archived: true, limit: 100, offset,
         });
         found = p.scope.groups.ids.includes(groupId);
         offset = p.scope.groups.next_offset;
@@ -1184,9 +1224,10 @@ function renderGroup(t) {
       icon("branch", 14),
       node("span", w.project_name, "muted"),
       branchLabel(w.branch || w.name),
+      ...(isArchived(w) ? [node("span", "archived", "tag-archived")] : []),
       icon("link", 14),
     );
-    b.title = `${w.project_name} · ${w.branch || w.name} · ${w.checkout_path}`;
+    b.title = `${w.project_name} · ${w.branch || w.name} · ${w.checkout_path}` + (isArchived(w) ? ` · archived: ${w.archive.reason}` : "");
     workstreams.append(b);
   });
   if (!t.included_workstreams.length)
@@ -1216,7 +1257,7 @@ function renderGroup(t) {
 async function navigateWorkstream(w) {
   closeDrawer();
   const generation = ++state.generation;
-  const streams = await pages("workstreams", { project: w.project_id });
+  const streams = await workstreams(w.project_id);
   if (generation !== state.generation) return;
   state.project = w.project_id;
   state.streams = streams;
@@ -1239,7 +1280,7 @@ async function openGroup(id) {
   if (generation !== state.generation) return;
   const projects = Object.keys(t.progress.by_project);
   if (projects.length === 1 && projects[0] !== state.project) {
-    const streams = await pages("workstreams", { project: projects[0] });
+    const streams = await workstreams(projects[0]);
     if (generation !== state.generation) return;
     state.project = projects[0];
     state.streams = streams;
@@ -1445,8 +1486,9 @@ function membershipLabel(t) {
 }
 async function membershipDialog(t, adding) {
   if (submissionPending) return;
-  const streams = (await pages("workstreams", { project: t.project_id }))
-    .filter(w => adding || t.workstream_ids?.includes(w.id));
+  // Archived workstreams take no new tasks here; their memberships can still be removed.
+  const streams = (await workstreams(t.project_id))
+    .filter(w => adding ? !isArchived(w) || t.workstream_ids?.includes(w.id) : t.workstream_ids?.includes(w.id));
   if (submissionPending) return;
   const title = adding ? "Add to workstream" : "Remove from workstream";
   openDialog(title, adding
@@ -1454,7 +1496,7 @@ async function membershipDialog(t, adding) {
     : `Remove “${t.title}” only from the chosen workstream. Other memberships, results and reviews are kept. The inbox contains tasks with no memberships.`, title);
   const picker = node("select"); picker.id = "field-workstream_id"; picker.name = "workstream_id"; picker.required = true;
   for (const w of streams) {
-    const option = node("option", (w.branch || w.name) + (adding && t.workstream_ids?.includes(w.id) ? " (already included)" : ""));
+    const option = node("option", (w.branch || w.name) + (adding && t.workstream_ids?.includes(w.id) ? " (already included)" : "") + (isArchived(w) ? " (archived)" : ""));
     option.value = w.id; picker.append(option);
   }
   picker.value = streams.some(w => w.id === state.stream) ? state.stream : streams[0]?.id || "";

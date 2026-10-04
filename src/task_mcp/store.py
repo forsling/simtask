@@ -128,10 +128,22 @@ SCHEMA = (
         revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
         CHECK(owner_id = coalesce(workstream_id, project_id)),
         CHECK((kind = 'workstream') = (workstream_id IS NOT NULL)))""",
+    # Workstream archive state, additive like notes: schema 10 servers never read it, so
+    # they keep listing an archived workstream as before. Unarchiving keeps the row
+    # (archived=0) so its revision never repeats; no row means never archived.
+    """CREATE TABLE IF NOT EXISTS workstream_archive (
+        workstream_id TEXT PRIMARY KEY REFERENCES workstreams(id),
+        archived INTEGER NOT NULL CHECK(archived IN (0,1)),
+        reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 200),
+        revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)""",
 )
 # Tables added after schema 10 without a revision bump, so older servers keep opening
 # the database. An existing database missing one is backed up before it is created.
-ADDITIVE_TABLES = ("notes",)
+ADDITIVE_TABLES = ("notes", "workstream_archive")
+# Archive reasons are a short label for why a workstream left discovery.
+ARCHIVE_REASON_LIMIT = 200
+# Archived workstreams are left out of discovery and selection SQL unless requested.
+ARCHIVED_IDS_SQL = "SELECT workstream_id FROM workstream_archive WHERE archived=1"
 # Notes are bounded so they stay a current summary rather than a growing log.
 NOTE_LIMIT = 2000
 NOTE_KINDS = ("project", "workstream")
@@ -746,7 +758,38 @@ class Store:
         row = db.execute("SELECT * FROM workstreams WHERE id=?", (workstream_id,)).fetchone()
         if row is None or (project_id and row["project_id"] != project_id):
             raise TaskError("unknown_workstream: initialize or select a workstream")
-        return dict(row)
+        return Store._with_archive(db, row)
+
+    @staticmethod
+    def _with_archive(db, row):
+        """A workstream row plus its archive state, present once it was ever archived."""
+        if row is None:
+            return None
+        ws = dict(row)
+        archive = db.execute(
+            "SELECT * FROM workstream_archive WHERE workstream_id=?", (ws["id"],)
+        ).fetchone()
+        if archive:
+            ws["archive"] = {
+                "archived": bool(archive["archived"]),
+                "reason": archive["reason"],
+                "revision": archive["revision"],
+                "updated_at": archive["updated_at"],
+                "updated_by": archive["updated_by"],
+            }
+        return ws
+
+    @staticmethod
+    def _archived(ws):
+        return bool(ws and (ws.get("archive") or {}).get("archived"))
+
+    @staticmethod
+    def _archive_hint(ws):
+        """How to unarchive ws, with the arguments that work when followed."""
+        return (
+            f"archive_workstream workstream_id={ws['id']} archived=false "
+            f"expected_revision={ws['archive']['revision']} reason=<why>"
+        )
 
     def init_project(self, path, branch=None, workstream_name=None, confirmed=False):
         request = locals().copy()
@@ -816,18 +859,24 @@ class Store:
             raise TaskError("workstream_exists: choose a distinct name and branch") from exc
         return ws
 
-    def list_workstreams(self, project=None, limit=50, offset=0):
+    def list_workstreams(self, project=None, limit=50, offset=0, include_archived=False):
         def operation(db, scope):
             self._page(limit, offset)
+            self._validate_include_archived(include_archived)
             selected = self._project(db, project, scope) if project is not None else None
+            where = (["w.project_id=?"] if selected else []) + (
+                [] if include_archived else [f"w.id NOT IN ({ARCHIVED_IDS_SQL})"]
+            )
+            where_sql = ("WHERE " + " AND ".join(where) + " ") if where else ""
+            values = (selected["id"],) if selected else ()
             rows = [
-                dict(row)
+                self._with_archive(db, row)
                 for row in db.execute(
                     "SELECT w.*, p.name AS project_name, p.canonical_path AS project_path "
                     "FROM workstreams w JOIN projects p ON p.id=w.project_id "
-                    + ("WHERE w.project_id=? " if selected else "")
+                    + where_sql
                     + "ORDER BY p.name,p.id,w.created_at,w.id LIMIT ? OFFSET ?",
-                    ((selected["id"],) if selected else ()) + (limit + 1, offset),
+                    values + (limit + 1, offset),
                 )
             ]
             for row in rows:
@@ -840,14 +889,34 @@ class Store:
                 row["groups_has_more"] = len(groups) > 3
                 row["group_total"] = len(groups)
                 row["status"] = self._status_summary(db, row["id"], all_ids)
-            return self._paged(rows, limit, offset)
+            page = self._paged(rows, limit, offset)
+            if not include_archived:
+                page["archived_hidden"] = db.execute(
+                    f"SELECT count(*) FROM workstreams WHERE id IN ({ARCHIVED_IDS_SQL})"
+                    + (" AND project_id=?" if selected else ""),
+                    values,
+                ).fetchone()[0]
+            return page
 
         return self._run(
-            "workstreams.listed", {"project": project, "limit": limit, "offset": offset}, operation
+            "workstreams.listed",
+            {
+                "project": project,
+                "limit": limit,
+                "offset": offset,
+                "include_archived": include_archived,
+            },
+            operation,
         )
 
     def workstream_status(
-        self, workstream_id, limit=20, offset=0, include_scope=False, include_inactive=False
+        self,
+        workstream_id,
+        limit=20,
+        offset=0,
+        include_scope=False,
+        include_inactive=False,
+        include_archived=False,
     ):
         request = dict(
             workstream_id=workstream_id,
@@ -855,16 +924,32 @@ class Store:
             offset=offset,
             include_scope=include_scope,
             include_inactive=include_inactive,
+            include_archived=include_archived,
         )
 
         def operation(db, scope):
             self._page(limit, offset)
             self._validate_include_inactive(include_inactive)
+            self._validate_include_archived(include_archived)
             ws = self._workstream(db, workstream_id)
             project = db.execute(
                 "SELECT * FROM projects WHERE id=?", (ws["project_id"],)
             ).fetchone()
             scope["project_id"] = ws["project_id"]
+            if self._archived(ws) and not include_archived:
+                # An archived workstream reports its state and counts, never its task list.
+                return {
+                    "project": {k: project[k] for k in project.keys() if k != "order_revision"},
+                    "workstream": ws,
+                    "status": self._status_summary(db, workstream_id),
+                    "workstream_order_revision": ws["order_revision"],
+                    "listing_skipped": "archived",
+                    "message": (
+                        f"Workstream {ws['name']!r} is archived ({ws['archive']['reason']}); "
+                        "its tasks are not listed. Pass include_archived=true to list them, "
+                        f"or unarchive it with {self._archive_hint(ws)}"
+                    ),
+                }
             queue = self._scoped_queue(db, workstream_id)
             hidden = (
                 [] if include_inactive else [c for c in queue if c["status"] in INACTIVE_STATUSES]
@@ -1046,6 +1131,7 @@ class Store:
         expected_revision=None,
         confirmed=False,
         include_inactive=False,
+        include_archived=False,
     ):
         request = dict(
             path=path,
@@ -1058,10 +1144,12 @@ class Store:
             expected_revision=expected_revision,
             confirmed=confirmed,
             include_inactive=include_inactive,
+            include_archived=include_archived,
         )
 
         def operation(db, scope):
             self._validate_include_inactive(include_inactive)
+            self._validate_include_archived(include_archived)
             canonical = self._canonical_path(path)
             if not branch and not workstream_name:
                 raise TaskError("workstream_name_required: detached or non-Git use needs a name")
@@ -1143,7 +1231,29 @@ class Store:
                         "AND name=?",
                         (chosen["id"], workstream_name),
                     ).fetchone()
+                candidate = self._with_archive(db, candidate)
             here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
+
+            # Following a choice that resumes or moves an archived workstream needs the
+            # explicit include_archived=true, so its instructions say so.
+            def archived_flag(ws):
+                return " include_archived=true" if self._archived(ws) else ""
+
+            def archived_note(ws):
+                return f" (archived: {ws['archive']['reason']})" if self._archived(ws) else ""
+
+            def archived_hidden(project_id):
+                # How many archived workstreams discovery left out, when any were.
+                count = (
+                    0
+                    if include_archived
+                    else db.execute(
+                        "SELECT count(*) FROM workstreams WHERE (? IS NULL OR project_id=?) "
+                        f"AND id IN ({ARCHIVED_IDS_SQL})",
+                        (project_id,) * 2,
+                    ).fetchone()[0]
+                )
+                return {"archived_hidden": count} if count else {}
 
             def binding(ws_branch, ws_name, ws_path):
                 # A name-bound (detached or non-Git) binding has no branch to report.
@@ -1154,11 +1264,11 @@ class Store:
             def requested_binding(target):
                 if target["project_id"] != chosen["id"]:
                     return (
-                        f"Workstream {target['name']!r} belongs to another project "
-                        f"({target['project_id']})"
+                        f"Workstream {target['name']!r}{archived_note(target)} belongs to "
+                        f"another project ({target['project_id']})"
                     )
                 return (
-                    f"Workstream {target['name']!r} is bound to "
+                    f"Workstream {target['name']!r}{archived_note(target)} is bound to "
                     f"{binding(target['branch'], target['name'], target['checkout_path'])}"
                 )
 
@@ -1173,12 +1283,12 @@ class Store:
                     "SELECT * FROM workstreams WHERE project_id=? AND name=? AND id IS NOT ?",
                     (chosen["id"], name, exclude),
                 ).fetchone()
-                return dict(row) if row else None
+                return self._with_archive(db, row)
 
             def name_taken(holder, blocked):
                 return (
                     f"; the workstream name {holder['name']!r} is already used by workstream "
-                    f"{holder['id']} "
+                    f"{holder['id']}{archived_note(holder)} "
                     f"({binding(holder['branch'], holder['name'], holder['checkout_path'])}), "
                     f"so {blocked} would conflict: pass another workstream_name"
                 )
@@ -1187,7 +1297,7 @@ class Store:
             def rebind_how(target):
                 return (
                     f"init action=rebind_workstream workstream_id={target['id']} "
-                    f"expected_revision={target['revision']} confirmed=true"
+                    f"expected_revision={target['revision']} confirmed=true" + archived_flag(target)
                 )
 
             def binding_how(target):
@@ -1196,7 +1306,7 @@ class Store:
                     if target["branch"]
                     else f"workstream_name={target['name']!r}"
                 )
-                return f"init path={target['checkout_path']!r} {own}"
+                return f"init path={target['checkout_path']!r} {own}" + archived_flag(target)
 
             def create_how(choice):
                 into = f" project={chosen['id']}" if choice == "attach_workstream" else ""
@@ -1207,13 +1317,14 @@ class Store:
                 if requested and requested["id"] != ws["id"]:
                     # Report the requested workstream's real binding, never the local one
                     # in its place.
+                    use = " and with include_archived=true" if self._archived(ws) else ""
                     return {
                         "state": "mismatch",
                         "message": (
                             f"{requested_binding(requested)}; this checkout's {here} is bound "
-                            f"to workstream {ws['name']!r} ({ws['id']}); init without "
-                            f"workstream_id (or with {ws['id']}) to use it, or "
-                            f"{binding_how(requested)} for the requested workstream"
+                            f"to workstream {ws['name']!r} ({ws['id']}){archived_note(ws)}; "
+                            f"init without workstream_id (or with {ws['id']}){use} to use it, "
+                            f"or {binding_how(requested)} for the requested workstream"
                         ),
                         "path": canonical,
                         "branch": branch,
@@ -1221,6 +1332,24 @@ class Store:
                         "workstream": requested,
                         "bound_workstream": ws,
                         "choices": ["use_bound_workstream", "init_requested_binding"],
+                    }
+                if self._archived(ws) and not include_archived:
+                    # Never silently resume an archived workstream at its own checkout.
+                    return {
+                        "state": "archived",
+                        "message": (
+                            f"This checkout's {here} is bound to workstream {ws['name']!r} "
+                            f"({ws['id']}), which is archived ({ws['archive']['reason']}; "
+                            f"{ws['archive']['updated_by']}, {ws['archive']['updated_at']}); "
+                            "it was not resumed. Init again with include_archived=true to "
+                            f"resume it as archived, or unarchive it with "
+                            f"{self._archive_hint(ws)} and init again"
+                        ),
+                        "path": canonical,
+                        "branch": branch,
+                        "project": selected,
+                        "workstream": ws,
+                        "choices": ["include_archived", "unarchive_workstream"],
                     }
                 return self._ready_init(db, selected, ws, include_inactive) | {"changed": False}
             if candidate and not (
@@ -1230,8 +1359,8 @@ class Store:
                 holder = name_holder(rebind_name, bound["id"])
                 located = (
                     f"{here} of project {chosen['name']!r} is bound to workstream "
-                    f"{bound['name']!r} ({bound['id']}) at another checkout "
-                    f"({bound['checkout_path']})"
+                    f"{bound['name']!r} ({bound['id']}){archived_note(bound)} at another "
+                    f"checkout ({bound['checkout_path']})"
                 )
                 rebind = (
                     name_taken(holder, "rebinding it here")
@@ -1319,12 +1448,18 @@ class Store:
                     "choices": choices,
                 }
             if not action or not confirmed:
+                # Discovery leaves archived workstreams out unless include_archived=true.
+                unarchived = "" if include_archived else f" AND id NOT IN ({ARCHIVED_IDS_SQL})"
                 if selected:
-                    rows = db.execute(
-                        "SELECT * FROM workstreams WHERE project_id=? "
-                        "ORDER BY created_at,id LIMIT 11",
-                        (selected["id"],),
-                    ).fetchall()
+                    rows = [
+                        self._with_archive(db, row)
+                        for row in db.execute(
+                            "SELECT * FROM workstreams WHERE project_id=?"
+                            + unarchived
+                            + " ORDER BY created_at,id LIMIT 11",
+                            (selected["id"],),
+                        ).fetchall()
+                    ]
                     message = (
                         "Choose an initial scope or an explicit workstream rebind: confirm "
                         f"{create_how('new_workstream')} (scope_expression optional, default "
@@ -1347,11 +1482,13 @@ class Store:
                         "message": message,
                         "path": canonical,
                         "project": selected,
-                        "candidates": [dict(row) for row in rows[:10]],
+                        "candidates": rows[:10],
                         "more_candidates": len(rows) > 10,
                         "candidate_total": db.execute(
-                            "SELECT count(*) FROM workstreams WHERE project_id=?", (selected["id"],)
+                            "SELECT count(*) FROM workstreams WHERE project_id=?" + unarchived,
+                            (selected["id"],),
                         ).fetchone()[0],
+                        **archived_hidden(selected["id"]),
                         **({"name_holder": holder} if holder else {}),
                         "choices": choices,
                     }
@@ -1366,8 +1503,9 @@ class Store:
                     dict(row)
                     for row in db.execute(
                         "SELECT id,project_id,name,branch,checkout_path,revision "
-                        "FROM workstreams WHERE ? IS NULL OR project_id=? "
-                        "ORDER BY created_at,id LIMIT 11",
+                        "FROM workstreams WHERE (? IS NULL OR project_id=?)"
+                        + unarchived
+                        + " ORDER BY created_at,id LIMIT 11",
                         (chosen and chosen["id"],) * 2,
                     ).fetchall()
                 ]
@@ -1416,6 +1554,7 @@ class Store:
                     "more_projects": len(projects) > 10,
                     "workstream_candidates": workstreams[:10],
                     "more_workstreams": len(workstreams) > 10,
+                    **archived_hidden(chosen and chosen["id"]),
                 }
             if action not in {
                 "create_project",
@@ -1490,6 +1629,12 @@ class Store:
                     raise TaskError("workstream_project_mismatch")
                 if type(expected_revision) is not int or ws["revision"] != expected_revision:
                     raise TaskError("revision_conflict: re-read the workstream")
+                if self._archived(ws) and not include_archived:
+                    raise TaskError(
+                        f"workstream_archived: workstream {ws['name']!r} is archived "
+                        f"({ws['archive']['reason']}); pass include_archived=true to move it "
+                        f"here as archived, or unarchive it first with {self._archive_hint(ws)}"
+                    )
                 selected = dict(
                     db.execute("SELECT * FROM projects WHERE id=?", (ws["project_id"],)).fetchone()
                 )
@@ -1519,7 +1664,12 @@ class Store:
         cache = {}
         return {
             "state": "ready",
-            "message": "Workstream ready",
+            "message": (
+                f"Archived workstream resumed on request ({ws['archive']['reason']}); it "
+                f"stays out of discovery until unarchived with {self._archive_hint(ws)}"
+                if self._archived(ws)
+                else "Workstream ready"
+            ),
             "project": {key: value for key, value in project.items() if key != "order_revision"},
             "workstream": ws,
             "scope_revision": ws["revision"],
@@ -1650,6 +1800,77 @@ class Store:
             }
 
         return self._run("note.set", request, operation)
+
+    def archive_workstream(self, workstream_id, expected_revision, reason, archived=True):
+        """Archive (or with archived=False unarchive) one workstream, with a short reason.
+
+        Only discovery changes: tasks, memberships, order, attempts and history are kept.
+        """
+        request = dict(
+            workstream_id=workstream_id,
+            expected_revision=expected_revision,
+            reason=reason,
+            archived=archived,
+        )
+
+        def operation(db, scope):
+            if not isinstance(workstream_id, str) or not workstream_id.strip():
+                raise TaskError("workstream_id_required: provide a workstream ID")
+            ws = self._workstream(db, workstream_id.strip())
+            scope["project_id"] = ws["project_id"]
+            if type(archived) is not bool:
+                raise TaskError("invalid_archived: use true to archive or false to unarchive")
+            if not isinstance(reason, str) or not reason.strip():
+                raise TaskError("archive_reason_required: give a short reason")
+            text = reason.strip()
+            if len(text) > ARCHIVE_REASON_LIMIT:
+                raise TaskError(
+                    f"archive_reason_too_long: a reason holds at most {ARCHIVE_REASON_LIMIT} "
+                    f"characters; this one has {len(text)}"
+                )
+            before = ws.get("archive")
+            current = before["revision"] if before else 0
+            if type(expected_revision) is not int or expected_revision != current:
+                raise TaskError(
+                    f"revision_conflict: expected {expected_revision}, current archive "
+                    f"revision {current}; re-read the workstream (its archive.revision, or 0 "
+                    "when it has none) before changing its archive state"
+                )
+            ack = {
+                "workstream_id": ws["id"],
+                "project_id": ws["project_id"],
+                "name": ws["name"],
+                "branch": ws["branch"],
+                "checkout_path": ws["checkout_path"],
+            }
+            if self._archived(ws) == archived:
+                return ack | {"archive": before, "changed": False}
+            after = {
+                "archived": archived,
+                "reason": text,
+                "revision": current + 1,
+                "updated_at": timestamp(),
+                "updated_by": self.actor,
+            }
+            db.execute(
+                "INSERT INTO workstream_archive (workstream_id,archived,reason,revision,"
+                "updated_at,updated_by) VALUES (?,?,?,?,?,?) ON CONFLICT(workstream_id) DO "
+                "UPDATE SET archived=excluded.archived,reason=excluded.reason,"
+                "revision=excluded.revision,updated_at=excluded.updated_at,"
+                "updated_by=excluded.updated_by",
+                (ws["id"], int(archived), text, after["revision"], after["updated_at"], self.actor),
+            )
+            scope.update(
+                before={"workstream_id": ws["id"], "archive": before},
+                after=ack | {"archive": after},
+            )
+            return ack | {"archive": after, "changed": True}
+
+        return self._run(
+            "workstream.archived" if archived is True else "workstream.unarchived",
+            request,
+            operation,
+        )
 
     def init_workstream(
         self, project, path, branch=None, name=None, scope_expression="none", confirmed=False
@@ -2246,6 +2467,11 @@ class Store:
     def _validate_include_inactive(include_inactive):
         if type(include_inactive) is not bool:
             raise TaskError("invalid_include_inactive: use true or false")
+
+    @staticmethod
+    def _validate_include_archived(include_archived):
+        if type(include_archived) is not bool:
+            raise TaskError("invalid_include_archived: use true or false")
 
     @staticmethod
     def _card_view(db, task, full, workstream_id=None):
@@ -3752,10 +3978,11 @@ class Store:
             reasons.append("signoff")
         return reasons
 
-    def get_next_action(self, workstream_id):
+    def get_next_action(self, workstream_id, include_archived=False):
         """One autonomous action in workstream order; selected proof is local/current only."""
 
         def operation(db, scope):
+            self._validate_include_archived(include_archived)
             ws = self._workstream(db, workstream_id)
             scope["project_id"] = ws["project_id"]
             ids = self._ordered_scope_ids(db, workstream_id)
@@ -3765,7 +3992,18 @@ class Store:
                 "attempt": None,
                 "workstream_order_revision": ws["order_revision"],
                 "diagnostics": {"scope_empty": not ids, "scoped": len(ids)},
+                **({"archive": ws["archive"]} if self._archived(ws) else {}),
             }
+            if self._archived(ws) and not include_archived:
+                # An archived workstream offers no action unless explicitly included.
+                return result | {
+                    "diagnostics": result["diagnostics"] | {"workstream_archived": True},
+                    "message": (
+                        f"Workstream {ws['name']!r} is archived ({ws['archive']['reason']}); "
+                        "no action is selected. Pass include_archived=true to select one "
+                        f"anyway, or unarchive it with {self._archive_hint(ws)}"
+                    ),
+                }
             counts = dict.fromkeys(
                 (
                     "inbox",
@@ -3803,7 +4041,11 @@ class Store:
                     counts[reason] += 1
             return result | {"diagnostics": result["diagnostics"] | counts}
 
-        return self._run("task.next_action_read", {"workstream_id": workstream_id}, operation)
+        return self._run(
+            "task.next_action_read",
+            {"workstream_id": workstream_id, "include_archived": include_archived},
+            operation,
+        )
 
     @staticmethod
     def _local_attempt(db, task, workstream_id, state):

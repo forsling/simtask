@@ -151,6 +151,7 @@ def create_server(
         expected_revision: int | None = None,
         confirmed: bool = False,
         include_inactive: bool = False,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
         """Discover or resume a checkout binding; confirmed actions change setup atomically.
 
@@ -165,7 +166,9 @@ def create_server(
         first ten active slim cards (as list_tasks); queue_hidden counts done/deferred/
         dropped unless include_inactive=true. runtime is the server identity/schema revision.
         Ready results carry nonempty notes (project/workstream: text, revision, updated_at,
-        updated_by); read them before working.
+        updated_by); read them before working. Archived workstreams are left out of
+        candidates, and an archived binding returns state=archived instead of resuming,
+        unless include_archived=true (also needed to rebind one).
         """
         result = store.init(
             path,
@@ -178,6 +181,7 @@ def create_server(
             expected_revision,
             confirmed,
             include_inactive,
+            include_archived,
         )
         return {**result, "runtime": runtime_identity()}
 
@@ -199,13 +203,33 @@ def create_server(
         """
         return store.set_note(kind, target_id, expected_revision, text)
 
+    @server.tool(annotations=editing, structured_output=True)
+    @domain_errors
+    def archive_workstream(
+        workstream_id: str, expected_revision: int, reason: str, archived: bool = True
+    ) -> dict[str, Any]:
+        """Archive a stale workstream (archived=false unarchives it) with a short reason.
+
+        Archived workstreams leave list_workstreams, init discovery, workstream_status
+        listings and get_next_action unless include_archived=true. Tasks, memberships,
+        order, attempts and history are unchanged. expected_revision is the workstream's
+        archive.revision, or 0 when it has no archive block. Audited.
+        """
+        return store.archive_workstream(workstream_id, expected_revision, reason, archived)
+
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def list_workstreams(
-        project: str | None = None, limit: int = 20, offset: int = 0
+        project: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
-        """List workstreams globally or by project with task counts, not agent liveness."""
-        return store.list_workstreams(project, limit, offset)
+        """List workstreams globally or by project with task counts, not agent liveness.
+
+        Archived workstreams are counted in archived_hidden unless include_archived=true.
+        """
+        return store.list_workstreams(project, limit, offset, include_archived)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -215,15 +239,17 @@ def create_server(
         offset: int = 0,
         include_scope: bool = False,
         include_inactive: bool = False,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
         """Read a paged list of active slim cards and current concern refs, with counts.
 
         Done/deferred/dropped tasks are counted in hidden (and status.counts) but not listed,
         here or in concern_tasks, unless include_inactive=true. concern_tasks is paged at
         limit/offset, prioritizing awaiting sign-off. include_scope=true also pages explicit scope.
+        An archived workstream lists nothing (listing_skipped) unless include_archived=true.
         """
         return store.workstream_status(
-            workstream_id, limit, offset, include_scope, include_inactive
+            workstream_id, limit, offset, include_scope, include_inactive, include_archived
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -490,15 +516,16 @@ def create_server(
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
-    def get_next_action(workstream_id: str) -> dict[str, Any]:
+    def get_next_action(workstream_id: str, include_archived: bool = False) -> dict[str, Any]:
         """Read one implement/review action in workstream order.
 
         Full current spec/token and exactly one applicable local proof for review
         (or rework) are included. Autonomous actions require workstream membership and clear
         gates; passed/human_review waits for the user. Null gives bounded counts.
+        An archived workstream selects none unless include_archived=true.
         Verify the actual checkout/artifacts before trusting recorded proof.
         """
-        return store.get_next_action(workstream_id)
+        return store.get_next_action(workstream_id, include_archived)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors

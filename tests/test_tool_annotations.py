@@ -29,6 +29,7 @@ ADDITIVE = {
 DESTRUCTIVE = {
     "init",
     "set_note",
+    "archive_workstream",
     "update_task",
     "add_to_workstream",
     "remove_from_workstream",
