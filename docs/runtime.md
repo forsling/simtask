@@ -1,11 +1,10 @@
 # Runtime identity and stale capabilities
 
-This document describes the isolated candidate's protocol
-revision `14` and database schema revision `10`. The protected live service retains
-its installed revision until coordinated rollout; inspect its own connection's
-runtime identity. During that protected period, use candidate code only with explicit disposable databases and
-prepare companion skills without installing or reloading them. Keep the live
-executable, database and connections unchanged.
+The coordinated main rollout is complete: the deployed protocol revision is
+`14` and database schema revision is `10`. Reconnect existing MCP clients to
+refresh their tool catalogs, and inspect each connection's runtime identity.
+Future changes that could break active clients must remain isolated until a
+coordinated rollout.
 
 Call `runtime_info` on the client connection being diagnosed. Successful `init`
 responses carry the same fields under `runtime`, so an existing client that
@@ -18,11 +17,11 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`14` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Candidate 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`14` in the deployed interface), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Protocol 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Protocol 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`10` after candidate startup). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`10` after deployed server startup). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is
@@ -52,7 +51,7 @@ membership and all specification/proof/history bytes survive. A private migratio
 archive preserves original task/scope facts and a verified online
 `*.pre-schema-9.*.sqlite3` backup supports rollback. Current tools expose
 `add_to_workstream`/`remove_from_workstream`, membership IDs and derived adoption;
-separate purpose-decision fields remain retired. Live rollout is held.
+separate purpose-decision fields remain retired.
 Protocol `3` introduced the `signoff_task` decision/attempt-revision contract and
 explicit dropped-task revival authorization. Historical purpose/result judgments,
 exact revisions and original decision references remain immutable audit facts;
@@ -78,8 +77,8 @@ Task/spec/proof revisions and other workstream lists never change on reorder.
 Verified online `*.pre-schema-10.*.sqlite3` backups include committed WAL data;
 DDL, list seeding and validation roll back together on failure. Existing project
 order columns remain private historical storage, without a public reorder surface.
-Refresh clients for the new schema only during the coordinated rollout; the live
-service and installed guidance remain held during the isolated experiment.
+The coordinated rollout deployed the new schema and packaged guidance together.
+Existing clients must reconnect to refresh their cached tool catalogs.
 
 Protocol revision `5` adds global concrete prerequisites and compact blocker
 references. Protocol revision `6` requires full-spec-bound artifact/commit

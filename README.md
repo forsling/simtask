@@ -73,7 +73,7 @@ that project's scope. **Shared task groups** shows only groups with task members
 more than one project. Both show whole-group progress and project counts;
 **Project group**, **Shared group** and **Empty group** labels distinguish them.
 Group details list workstreams that explicitly include the group, with
-project/branch links to their scoped queues. Independently scoped member tasks
+project/branch links to their task lists. Independently scoped member tasks
 do not imply that the whole group is included in a workstream.
 Dedicated dialogs
 record creation, edits, branch workstream membership or moves to the inbox,
@@ -321,7 +321,7 @@ atomically creates and links a pending prerequisite in the current scope or
 project inbox. The service records the asserted handling role but does not
 authenticate agent identity.
 
-Full task reads, scoped queues and project lists include compact `prerequisites`
+Full task reads, workstream task lists and project lists include compact `prerequisites`
 references with ID, title, project ID/name, canonical `state`/`complete`, required
 `milestone`, computed `satisfied` and `blocking` facts. `complete` still means
 human-signed-off completion; `satisfied` can become true earlier. Workstream
@@ -584,8 +584,9 @@ Before upgrading, the service takes and verifies a private SQLite online backup
 under its writer lock, including WAL commits. The adjacent
 `*.pre-schema-9.*.sqlite3` backup survives success or transactional rollback. Stop
 all writers before restoring with SQLite's backup API; reconnect matching clients.
-Rehearse on disposable copies. Live rollout/migration remains held, and packaged
-workflow guidance is synchronized in a separate task.
+Rehearse on disposable copies before deployment. The coordinated main rollout
+is complete; reconnect existing MCP clients to load the current tool catalog
+and packaged workflow guidance.
 
 `signoff_task` accepts exactly `approve`, `rework`, `revise` and `drop`. Send the
 actual user's `reasons`, exact reviewed `attempt_id`, and last returned task and
