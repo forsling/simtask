@@ -670,6 +670,7 @@ def test_concerns_reach_real_viewer_details_and_status(viewer):
     status, details = request(server, "/api/details", {"ids": [task["id"]]})
     assert status == 200
     proof = details["items"][0]["attempts"][0]
+    assert "concerns_json" not in json.dumps(details)
     assert [c["source"] for c in proof["concerns"]] == ["implementer", "reviewer"]
     assert proof["evidence"] == "Context"
     status, overview = request(server, "/api/workstream-status", {"workstream_id": ws})
@@ -690,3 +691,79 @@ def test_concerns_reach_real_viewer_details_and_status(viewer):
     )
     assert status == 200 and ack["status"] == "done"
     assert store.get_attempt(attempt["id"])["concerns"] == proof["concerns"]
+
+
+def test_legacy_json_never_becomes_concern_metadata_in_real_viewer(viewer):
+    server, store, context = viewer
+    task = create(server, context)
+    ws = context["workstream"]["id"]
+    attempt = store.record_result(
+        task["id"],
+        ws,
+        task["revision"],
+        "builder",
+        "Historical",
+        "Placeholder",
+        [{"kind": "artifact", "reference": "synthetic.txt"}],
+        "Synthetic verification",
+        task["specification_etag"],
+    )
+    original = (
+        " \n"
+        + json.dumps(
+            {
+                "format": "attempt-concerns-v1",
+                "original_evidence": "Historical inner β text",
+                "concerns": [
+                    {
+                        "kind": "value",
+                        "text": "Historical JSON data",
+                        "source": "reviewer",
+                        "author": "old",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n\t"
+    )
+    with store._connect() as db:
+        db.execute("UPDATE attempts SET evidence=? WHERE id=?", (original, attempt["id"]))
+    for after in (False, True):
+        if after:
+            store.record_review(
+                attempt["id"],
+                1,
+                "checker",
+                "pass",
+                "Checked historical proof",
+                concerns=[{"kind": "design", "text": "Actual review contribution"}],
+            )
+        status, details = request(server, "/api/details", {"ids": [task["id"]]})
+        assert status == 200 and "concerns_json" not in json.dumps(details)
+        proof = details["items"][0]["attempts"][0]
+        assert proof["evidence"] == original
+        assert proof["concerns"] == (
+            [
+                {
+                    "kind": "design",
+                    "text": "Actual review contribution",
+                    "source": "reviewer",
+                    "author": "checker",
+                }
+            ]
+            if after
+            else []
+        )
+        status, overview = request(server, "/api/workstream-status", {"workstream_id": ws})
+        assert status == 200 and overview["status"]["concern_count"] == int(after)
+        assert overview["concern_tasks"]["total"] == int(after)
+        assert "Historical JSON data" not in json.dumps(overview)
+    restarted = Store(store.path)
+    assert restarted.get_attempt(attempt["id"]) == proof
+    with restarted._connect() as db:
+        assert (
+            db.execute("SELECT evidence FROM attempts WHERE id=?", (attempt["id"],)).fetchone()[0]
+            == original
+        )

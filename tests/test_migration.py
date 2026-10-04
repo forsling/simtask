@@ -70,6 +70,7 @@ def legacy_database(database, version):
     # rather than assuming a copy of just the main file is sufficient.
     db = sqlite3.connect(database)
     db.execute("PRAGMA foreign_keys=OFF")
+    db.execute("ALTER TABLE attempts DROP COLUMN concerns_json")
     # Reconstruct the actual pre-queue authority and live scope tables.
     db.execute("INSERT INTO scope_members SELECT workstream_id,task_id FROM queue_members")
     db.execute("DROP TABLE queue_members")
@@ -262,6 +263,90 @@ def test_fresh_empty_database_needs_no_backup(tmp_path):
     )
     assert snapshot(database)[1]["tasks"] == []
     assert list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3")) == []
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_schema7_concern_metadata_preserves_proof_without_inventing_provenance(
+    tmp_path, monkeypatch, fail
+):
+    database = tmp_path / "schema7.sqlite3"
+    store = Store(database)
+    setup = store.init(str(tmp_path / "repo"), "main", action="create_project", confirmed=True)
+    project, ws = setup["project"]["id"], setup["workstream"]["id"]
+    task = store.create_task(project, "Completed original proof", workstream_id=ws)
+    attempt = store.record_result(
+        task["id"],
+        ws,
+        1,
+        "worker",
+        "Delivered",
+        "Exact β proof",
+        [{"kind": "artifact", "reference": "original.txt"}],
+        "Original verification",
+        task["specification_etag"],
+    )
+    store.record_review(attempt["id"], 1, "reviewer", "pass", "Checked")
+    store.signoff_task(task["id"], 2, "approve", "Synthetic verdict", attempt["id"], 2)
+    legacy = store.create_task(project, "Legacy reserved lookalike", workstream_id=ws)
+    legacy_attempt = store.record_result(
+        legacy["id"],
+        ws,
+        1,
+        "worker",
+        "Historical",
+        "Placeholder",
+        [{"kind": "artifact", "reference": "old.txt"}],
+        "Historical verification",
+        legacy["specification_etag"],
+    )
+    raw = (
+        ' \n{"format":"attempt-concerns-v1","original_evidence":"inner β",'
+        '"concerns":[{"kind":"value","text":"Historical data",'
+        '"source":"reviewer","author":"old"}]}\n\t'
+    )
+    with closing(sqlite3.connect(database)) as writer:
+        writer.execute("ALTER TABLE attempts DROP COLUMN concerns_json")
+        writer.execute("PRAGMA user_version=7")
+        writer.execute("UPDATE attempts SET evidence=? WHERE id=?", (raw, legacy_attempt["id"]))
+        writer.commit()
+        before = snapshot(database)
+        upgrade = Store._upgrade_schema
+        if fail:
+
+            def injected(db):
+                upgrade(db)
+                assert "concerns_json" in {r[1] for r in db.execute("PRAGMA table_info(attempts)")}
+                raise RuntimeError("Injected concern migration failure")
+
+            monkeypatch.setattr(Store, "_upgrade_schema", staticmethod(injected))
+            with pytest.raises(RuntimeError, match="Injected concern"):
+                Store(database)
+            assert snapshot(database) == before
+        else:
+            migrated = Store(database)
+            assert snapshot(database, before[0])[1] == before[1]
+            assert migrated.get_attempt(legacy_attempt["id"])["evidence"] == raw
+            assert migrated.get_attempt(legacy_attempt["id"])["concerns"] == []
+            proof = migrated.get_attempt(attempt["id"])
+            assert proof["evidence"] == "Exact β proof" and proof["state"] == "passed"
+            assert proof["artifacts"] == [{"kind": "artifact", "reference": "original.txt"}]
+            assert proof["verification"] == "Original verification"
+            assert migrated.workstream_status(ws)["concern_tasks"]["total"] == 0
+            assert Store(database).migration_backup_path is None
+        backups = list(tmp_path.glob("*.pre-schema-8.*.sqlite3"))
+        assert len(backups) == 1 and snapshot(backups[0]) == before
+        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+        restored = tmp_path / "restored-schema7.sqlite3"
+        with (
+            closing(sqlite3.connect(backups[0])) as source,
+            closing(sqlite3.connect(restored)) as dest,
+        ):
+            source.backup(dest)
+        assert snapshot(restored) == before
+        with closing(sqlite3.connect(database)) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == (7 if fail else 8)
+            assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
 def test_migration_reports_unapproved_and_multiscope_deterministic_owner(tmp_path):

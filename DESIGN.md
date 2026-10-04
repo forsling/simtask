@@ -220,10 +220,11 @@ selected review proof carries its concerns in the same call. Current workstream
 status has a separately paged task-with-concerns list, prioritizing awaiting
 sign-off and filtering to the current specification and local attempts. Historical
 concerns remain in deliberate attempt/history reads and exports, with provenance.
-The existing evidence TEXT envelope stores entries without a new schema migration;
-older plain evidence is losslessly wrapped only when reviewer concerns are added.
-Concern metadata is recognized only with valid kind, text, source and author;
-unsupported envelope lookalikes remain complete original evidence in every view.
+Schema 8 stores attributed concerns in a separate private attempt JSON column.
+Migration initializes it empty without inspecting or rewriting existing evidence,
+including historical JSON that resembles concern metadata. Reviewer additions
+never rewrite proof. The established durable-result proof decoder is unchanged;
+concerns come only from the explicit column, exposed as decoded entries.
 
 An active handler may add a task gate directly. An observer proposes a gate for
 review; the proposal is nonblocking until accepted. A coordinator may dismiss

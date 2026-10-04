@@ -16,10 +16,10 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 7
+DATABASE_SCHEMA_REVISION = 8
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
-# Counts and full reads recognize exactly the same validated stored metadata.
-CONCERN_COUNT_SQL = "attempt_concern_count(evidence)"
+# Concerns have explicit provenance in their own column, never in arbitrary proof text.
+CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
@@ -72,7 +72,9 @@ SCHEMA = (
         implementer TEXT NOT NULL, summary TEXT NOT NULL, evidence TEXT NOT NULL,
         spec_revision INTEGER NOT NULL, state TEXT NOT NULL, reviewer TEXT,
         review_note TEXT, human_review_note TEXT, revision INTEGER NOT NULL,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        concerns_json TEXT NOT NULL DEFAULT '[]'
+        CHECK(json_valid(concerns_json) AND json_type(concerns_json)='array'))""",
     "CREATE INDEX IF NOT EXISTS attempt_task ON attempts(task_id, created_at, id)",
     """CREATE TABLE IF NOT EXISTS events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
@@ -187,6 +189,14 @@ class Store:
         ):
             if name not in columns:
                 db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+        attempt_columns = {row["name"] for row in db.execute("PRAGMA table_info(attempts)")}
+        if "concerns_json" not in attempt_columns:
+            # Historical evidence is arbitrary text, including JSON that resembles
+            # metadata. Adding an empty column preserves every byte and invents none.
+            db.execute(
+                "ALTER TABLE attempts ADD COLUMN concerns_json TEXT NOT NULL DEFAULT '[]' "
+                "CHECK(json_valid(concerns_json) AND json_type(concerns_json)='array')"
+            )
         if columns["project_id"]["notnull"]:
             db.execute(
                 SCHEMA[2].replace("CREATE TABLE IF NOT EXISTS tasks (", "CREATE TABLE tasks_new (")
@@ -338,9 +348,6 @@ class Store:
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
-        db.create_function(
-            "attempt_concern_count", 1, self._attempt_concern_count, deterministic=True
-        )
         db.execute("PRAGMA foreign_keys=ON")
         return db
 
@@ -2107,57 +2114,27 @@ class Store:
             return None
         if not isinstance(proof, dict):
             return None
-        concerns = proof.get("concerns", [])
-        if not isinstance(concerns, list) or any(
-            not isinstance(c, dict)
-            or set(c) != {"kind", "text", "source", "author"}
-            or not isinstance(c["kind"], str)
-            or c["kind"] not in {"value", "design"}
-            or not isinstance(c["text"], str)
-            or not c["text"].strip()
-            or not isinstance(c["source"], str)
-            or c["source"] not in {"implementer", "reviewer"}
-            or not isinstance(c["author"], str)
-            or not c["author"].strip()
-            for c in concerns
-        ):
-            return None
         if (
             proof.get("format") == "durable-result-v1"
             and {"evidence", "artifacts", "verification", "specification_etag"} <= proof.keys()
         ):
             return proof
-        if (
-            proof.get("format") == "attempt-concerns-v1"
-            and isinstance(proof.get("original_evidence"), str)
-            and set(proof) == {"format", "original_evidence", "concerns"}
-            and concerns
-        ):
-            return proof
         return None
 
     @staticmethod
-    def _attempt_concern_count(evidence):
-        proof = Store._attempt_proof(evidence)
-        return len(proof.get("concerns", [])) if proof else 0
-
-    @staticmethod
     def _attempt_details(row):
-        """Decode structured proof/concerns without duplicating or changing context text."""
+        """Read explicit metadata and decode only the established durable proof format."""
         attempt = dict(row)
+        attempt["concerns"] = json.loads(attempt.pop("concerns_json", "[]"))
         proof = Store._attempt_proof(attempt["evidence"])
-        attempt["concerns"] = proof.get("concerns", []) if proof else []
         if not proof:
             return attempt
-        if proof["format"] == "attempt-concerns-v1":
-            attempt["evidence"] = proof["original_evidence"]
-        else:
-            attempt.update(
-                {
-                    key: proof[key]
-                    for key in ("evidence", "artifacts", "verification", "specification_etag")
-                }
-            )
+        attempt.update(
+            {
+                key: proof[key]
+                for key in ("evidence", "artifacts", "verification", "specification_etag")
+            }
+        )
         return attempt
 
     def get_tasks(self, ids):
@@ -3263,7 +3240,6 @@ class Store:
                         "artifacts": artifacts,
                         "verification": verification,
                         "specification_etag": specification_etag,
-                        **({"concerns": recorded_concerns} if recorded_concerns else {}),
                     }
                 ),
                 spec_revision=before["spec_revision"],
@@ -3274,11 +3250,12 @@ class Store:
                 revision=1,
                 created_at=now,
                 updated_at=now,
+                concerns_json=_json(recorded_concerns),
             )
             db.execute(
                 """INSERT INTO attempts VALUES (:id,:task_id,:workstream_id,:implementer,
                 :summary,:evidence,:spec_revision,:state,:reviewer,:review_note,:human_review_note,:revision,
-                :created_at,:updated_at)""",
+                :created_at,:updated_at,:concerns_json)""",
                 attempt,
             )
             after = {**before, "revision": before["revision"] + 1, "updated_at": now}
@@ -3320,15 +3297,11 @@ class Store:
         return [{**c, "source": source, "author": author} for c in concerns]
 
     @staticmethod
-    def _add_concerns(evidence, concerns):
-        """No supplied concerns means no evidence rewrite, including legacy proof."""
+    def _add_concerns(stored, concerns):
+        """Append attributed contributions; omission preserves the stored bytes."""
         if not concerns:
-            return evidence
-        proof = Store._attempt_proof(evidence)
-        if proof is None:
-            proof = {"format": "attempt-concerns-v1", "original_evidence": evidence}
-        proof["concerns"] = [*proof.get("concerns", []), *concerns]
-        return _json(proof)
+            return stored
+        return _json([*json.loads(stored), *concerns])
 
     def record_review(self, attempt_id, expected_revision, reviewer, verdict, note, concerns=None):
         request = dict(
@@ -3361,7 +3334,7 @@ class Store:
             recorded_concerns = self._validate_concerns(concerns, "reviewer", reviewer)
             after = {
                 **before,
-                "evidence": self._add_concerns(before["evidence"], recorded_concerns),
+                "concerns_json": self._add_concerns(before["concerns_json"], recorded_concerns),
                 "state": "passed" if verdict == "pass" else "rework",
                 "reviewer": reviewer,
                 "review_note": note,
@@ -3370,7 +3343,7 @@ class Store:
             }
             db.execute(
                 """UPDATE attempts SET state=:state, reviewer=:reviewer,
-                review_note=:review_note, evidence=:evidence, revision=:revision,
+                review_note=:review_note, concerns_json=:concerns_json, revision=:revision,
                 updated_at=:updated_at WHERE id=:id""",
                 after,
             )

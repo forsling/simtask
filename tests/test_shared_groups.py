@@ -313,7 +313,10 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
         "INSERT INTO prerequisites (task_id,blocked_by_id) VALUES (?,?)", (blocker_id, group_id)
     )
     db.execute(
-        "INSERT INTO attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO attempts (id,task_id,workstream_id,implementer,summary,evidence,"
+        "spec_revision,state,reviewer,review_note,human_review_note,revision,"
+        "created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             "att_legacy",
             child_id,

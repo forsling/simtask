@@ -593,9 +593,12 @@ synchronization. A complete Codex dogfood trial and then Claude Code, OpenCode
 and Pi access/catalog validation remain product proof beyond the unit and stdio
 suite. See [DESIGN.md](DESIGN.md) for the current design and boundary.
 
-Protocol 12 retains schema 7 and the same 42 tools. Optional concerns live in the
-existing attempt evidence envelope, with no database migration. Legacy context
-is preserved exactly when reviewer concerns require an envelope; omitted or empty
-concerns leave stored evidence untouched. Refresh client discovery to see the
+Protocol 12 uses schema 8 and the same 42 tools. Optional attributed concerns live
+in a separate private attempt JSON column. Existing databases receive a verified
+online `*.pre-schema-8.*.sqlite3` backup before transactional migration. Migration
+initializes empty metadata without inferring concerns from historical evidence;
+every original evidence byte survives, including reserved JSON lookalikes.
+Reviewer additions never rewrite evidence, and omitted/null/empty input preserves
+both evidence and existing metadata bytes. Refresh client discovery to see the
 optional inputs and concern projections. The fuller workflow skills guidance is
 separate from this tool contract.
