@@ -641,3 +641,52 @@ def test_frontend_atomic_order_form_and_conflict_reconciliation():
     script = Path(__file__).with_name("viewer_order.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_concerns_reach_real_viewer_details_and_status(viewer):
+    server, store, context = viewer
+    task = create(server, context)
+    ws = context["workstream"]["id"]
+    attempt = store.record_result(
+        task["id"],
+        ws,
+        task["revision"],
+        "builder",
+        "Built",
+        "Context",
+        [{"kind": "artifact", "reference": "synthetic.txt"}],
+        "Synthetic verification",
+        task["specification_etag"],
+        concerns=[{"kind": "value", "text": "Priority changes require changing this task."}],
+    )
+    store.record_review(
+        attempt["id"],
+        1,
+        "checker",
+        "pass",
+        "Checked",
+        concerns=[{"kind": "design", "text": "Another design changes scope."}],
+    )
+    status, details = request(server, "/api/details", {"ids": [task["id"]]})
+    assert status == 200
+    proof = details["items"][0]["attempts"][0]
+    assert [c["source"] for c in proof["concerns"]] == ["implementer", "reviewer"]
+    assert proof["evidence"] == "Context"
+    status, overview = request(server, "/api/workstream-status", {"workstream_id": ws})
+    assert status == 200 and overview["concern_tasks"]["items"][0]["view"] == "signoff"
+    assert overview["concern_tasks"]["items"][0]["concern_count"] == 2
+    assert "Another design" not in json.dumps(overview)
+    status, ack = request(
+        server,
+        "/api/signoff",
+        {
+            "task_id": task["id"],
+            "expected_revision": attempt["task_revision"],
+            "attempt_id": attempt["id"],
+            "expected_attempt_revision": 2,
+            "decision": "approve",
+            "reasons": "Synthetic verdict",
+        },
+    )
+    assert status == 200 and ack["status"] == "done"
+    assert store.get_attempt(attempt["id"])["concerns"] == proof["concerns"]

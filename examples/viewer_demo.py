@@ -53,9 +53,29 @@ def seed(path):
         "Synthetic evidence: keyboard flow and draft recovery checked.",
         artifacts=[{"kind": "artifact", "reference": "examples/viewer_demo.py"}],
         verification="Synthetic viewer fixture",
+        concerns=[
+            {
+                "kind": "value",
+                "text": "The canvas may not help users who mostly search existing notes; "
+                "changing that priority would change this task.",
+            }
+        ],
         specification_etag=store.get_tasks([tasks[0]["id"]])["items"][0]["specification_etag"],
     )
-    store.record_review(attempt["id"], 1, "demo-reviewer", "pass", "Synthetic independent review.")
+    store.record_review(
+        attempt["id"],
+        1,
+        "demo-reviewer",
+        "pass",
+        "Synthetic independent review.",
+        concerns=[
+            {
+                "kind": "design",
+                "text": "A separate recovery screen may be easier to explain; "
+                "this task requires restoring drafts on the canvas.",
+            }
+        ],
+    )
     store.add_unresolved(tasks[2]["id"], 1, "Should Markdown or plain text be the default?")
     store.set_disposition(tasks[3]["id"], 1, "deferred", "After the first writing-flow iteration.")
     store.add_group_member(group["id"], 1, tasks[1]["id"], 1)

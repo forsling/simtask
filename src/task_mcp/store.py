@@ -18,6 +18,18 @@ from task_mcp.export import FORMAT, render_markdown
 
 DATABASE_SCHEMA_REVISION = 7
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
+# Both supported envelopes keep concerns separate from the original context evidence.
+CONCERN_COUNT_SQL = (
+    "CASE WHEN json_valid(evidence) THEN CASE WHEN json_type(evidence,'$.concerns')='array' "
+    "AND ((json_extract(evidence,'$.format')='durable-result-v1' "
+    "AND json_type(evidence,'$.evidence') IS NOT NULL "
+    "AND json_type(evidence,'$.artifacts') IS NOT NULL "
+    "AND json_type(evidence,'$.verification') IS NOT NULL "
+    "AND json_type(evidence,'$.specification_etag') IS NOT NULL) "
+    "OR (json_extract(evidence,'$.format')='attempt-concerns-v1' "
+    "AND json_type(evidence,'$.original_evidence')='text')) "
+    "THEN json_array_length(evidence,'$.concerns') ELSE 0 END ELSE 0 END"
+)
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
@@ -437,6 +449,7 @@ class Store:
                 "changed": True,
                 "queue_workstream_id": task["queue_workstream_id"],
                 "status": task["status"],
+                "concern_count": len(result.get("concerns", [])),
                 "gate_diagnostics": [
                     r
                     for r in self._gate_reasons(db, task, result["workstream_id"])
@@ -777,6 +790,29 @@ class Store:
             ).fetchone()
             scope["project_id"] = ws["project_id"]
             queue = self._scoped_queue(db, workstream_id)
+            # A separate page keeps concerns visible even beyond the ordinary queue page.
+            concerned = [item for item in queue if item["concern_count"]]
+            concerned.sort(
+                key=lambda item: (item["view"] != "signoff", item["order_key"], item["id"])
+            )
+            concern_page = self._paged(concerned[offset : offset + limit + 1], limit, offset)
+            concern_page["items"] = [
+                {
+                    key: item[key]
+                    for key in (
+                        "id",
+                        "title",
+                        "view",
+                        "workstream_id",
+                        "spec_revision",
+                        "concern_count",
+                        "concern_attempt_total",
+                        "concern_attempt_references",
+                        "concern_attempts_has_more",
+                    )
+                }
+                for item in concern_page["items"]
+            ]
             scope_page = {}
             if include_scope:
                 for table, column, name in (
@@ -807,6 +843,7 @@ class Store:
                 "status": self._status_summary(db, workstream_id),
                 "project_order_revision": self._order_revision(db, ws["project_id"]),
                 "total": len(queue),
+                "concern_tasks": {"total": len(concerned), **concern_page},
                 **({"scope": scope_page} if include_scope else {}),
                 **self._paged(queue[offset : offset + limit + 1], limit, offset),
             }
@@ -871,7 +908,10 @@ class Store:
                 "signoff",
             )
         }
+        concerned_tasks = concern_count = 0
         for item in self._scoped_queue(db, workstream_id):
+            concerned_tasks += bool(item["concern_count"])
+            concern_count += item["concern_count"]
             counts[item["view"]] += 1
             for reason in item["gate_diagnostics"]:
                 if reason in overlapping:
@@ -905,6 +945,8 @@ class Store:
             "agent_liveness": "not_tracked",
             "scoped_count": len(ids),
             "counts": counts,
+            "concern_task_count": concerned_tasks,
+            "concern_count": concern_count,
             "overlapping_gate_diagnostics": overlapping,
             "referenced_groups": referenced_groups[:3],
             "referenced_group_total": len(referenced_groups),
@@ -1585,12 +1627,15 @@ class Store:
             "implementer": attempt["implementer"][:120],
             "implementer_truncated": len(attempt["implementer"]) > 120,
             "summary": " ".join(attempt["summary"].split())[:240],
+            "concern_count": attempt["concern_count"],
         }
 
     @staticmethod
     def _current_attempt_rows(db, task, workstream_id=None):
         return db.execute(
-            "SELECT id,task_id,workstream_id,spec_revision,state,revision,implementer,summary "
+            "SELECT id,task_id,workstream_id,spec_revision,state,revision,implementer,summary, "
+            + CONCERN_COUNT_SQL
+            + " AS concern_count "
             "FROM attempts WHERE task_id=? AND spec_revision=? "
             + ("AND workstream_id=? " if workstream_id else "")
             + "ORDER BY CASE WHEN state IN ('review','passed','human_review') THEN 0 ELSE 1 END, "
@@ -1656,6 +1701,26 @@ class Store:
             )
         else:
             rows = Store._current_attempt_rows(db, task, workstream_id)
+            concerned = [row for row in rows if row["concern_count"]]
+            card.update(
+                concern_count=sum(row["concern_count"] for row in concerned),
+                concern_attempt_total=len(concerned),
+                concern_attempt_references=[
+                    {
+                        key: row[key]
+                        for key in (
+                            "id",
+                            "workstream_id",
+                            "spec_revision",
+                            "state",
+                            "revision",
+                            "concern_count",
+                        )
+                    }
+                    for row in concerned[:3]
+                ],
+                concern_attempts_has_more=len(concerned) > 3,
+            )
             counts = {
                 state: sum(r["state"] == state for r in rows)
                 for state in ("review", "passed", "human_review", "rework")
@@ -1705,6 +1770,10 @@ class Store:
             attempts_has_more=len(rows) > 3,
             has_more=len(rows) > 3,
             attempt_scope=workstream_id or "cross_workstream",
+            concern_count=sum(row["concern_count"] for row in rows),
+            concern_attempt_total=sum(bool(row["concern_count"]) for row in rows),
+            concerns=Store._concern_window(db, rows[:3]),
+            concerns_has_more=any(row["concern_count"] for row in rows[3:]),
         )
         if task["object_type"] == "group":
             detail.update(
@@ -1714,6 +1783,25 @@ class Store:
             detail["member_details"] = detail["member_details"][:3]
             detail["progress"].pop("by_project")
         return detail
+
+    @staticmethod
+    def _concern_window(db, rows):
+        """Explicit full reads show the same bounded applicable attempt window."""
+        concerns = []
+        for reference in rows:
+            if not reference["concern_count"]:
+                continue
+            row = db.execute("SELECT * FROM attempts WHERE id=?", (reference["id"],)).fetchone()
+            concerns.extend(
+                {
+                    **concern,
+                    "attempt_id": row["id"],
+                    "workstream_id": row["workstream_id"],
+                    "spec_revision": row["spec_revision"],
+                }
+                for concern in Store._attempt_details(row)["concerns"]
+            )
+        return concerns
 
     def read_tasks(self, ids, specification=False, workstream_id=None, attempt_ids=None):
         """Bounded MCP projection; get_tasks retains full internal/viewer detail."""
@@ -1753,7 +1841,10 @@ class Store:
                         raise TaskError(
                             "invalid_attempt_owner: requested proof must belong to requested tasks"
                         )
-                    by_id[row["task_id"]]["attempts"].append(self._attempt_details(row))
+                    item = by_id[row["task_id"]]
+                    item["attempts"].append(self._attempt_details(row))
+                    # Chosen proof already includes its concerns, once, with its provenance.
+                    item["concerns"] = [c for c in item["concerns"] if c["attempt_id"] != identity]
             return {"items": items}
 
         return self._run("tasks.read", request, operation)
@@ -1825,7 +1916,9 @@ class Store:
                 dict(r)
                 for r in db.execute(
                     "SELECT id,task_id,workstream_id,implementer,summary,"
-                    "spec_revision,state,revision,created_at "
+                    "spec_revision,state,revision,created_at, "
+                    + CONCERN_COUNT_SQL
+                    + " AS concern_count "
                     "FROM attempts WHERE task_id=? ORDER BY created_at,id",
                     (task_id,),
                 )
@@ -2014,18 +2107,37 @@ class Store:
         return decisions
 
     @staticmethod
-    def _attempt_details(row):
-        """Decode new structured proof without rewriting historical text evidence."""
-        attempt = dict(row)
+    def _attempt_proof(evidence):
         try:
-            proof = json.loads(attempt["evidence"])
+            proof = json.loads(evidence)
         except (ValueError, TypeError):
-            return attempt
+            return None
+        if not isinstance(proof, dict) or not isinstance(proof.get("concerns", []), list):
+            return None
         if (
-            isinstance(proof, dict)
-            and proof.get("format") == "durable-result-v1"
+            proof.get("format") == "durable-result-v1"
             and {"evidence", "artifacts", "verification", "specification_etag"} <= proof.keys()
         ):
+            return proof
+        if (
+            proof.get("format") == "attempt-concerns-v1"
+            and isinstance(proof.get("original_evidence"), str)
+            and "concerns" in proof
+        ):
+            return proof
+        return None
+
+    @staticmethod
+    def _attempt_details(row):
+        """Decode structured proof/concerns without duplicating or changing context text."""
+        attempt = dict(row)
+        proof = Store._attempt_proof(attempt["evidence"])
+        attempt["concerns"] = proof.get("concerns", []) if proof else []
+        if not proof:
+            return attempt
+        if proof["format"] == "attempt-concerns-v1":
+            attempt["evidence"] = proof["original_evidence"]
+        else:
             attempt.update(
                 {
                     key: proof[key]
@@ -3041,11 +3153,15 @@ class Store:
                     if pending or "signoff" not in reasons:
                         selected = self._specification(db, task, workstream_id)
                         selected["gate_diagnostics"] = reasons
+                        proof = pending or self._local_attempt(db, task, workstream_id, "rework")
+                        if proof:
+                            selected["concerns"] = [
+                                c for c in selected["concerns"] if c["attempt_id"] != proof["id"]
+                            ]
                         return result | {
                             "action": "review" if pending else "implement",
                             "task": selected,
-                            "attempt": pending
-                            or self._local_attempt(db, task, workstream_id, "rework"),
+                            "attempt": proof,
                         }
                 for reason in reasons:
                     counts[reason] += 1
@@ -3073,6 +3189,7 @@ class Store:
         artifacts,
         verification,
         specification_etag,
+        concerns=None,
     ):
         request = dict(
             task_id=task_id,
@@ -3084,6 +3201,7 @@ class Store:
             artifacts=artifacts,
             verification=verification,
             specification_etag=specification_etag,
+            concerns=concerns,
         )
 
         def operation(db, scope):
@@ -3116,6 +3234,7 @@ class Store:
                 )
             ):
                 raise TaskError("durable_artifacts_required: concrete artifact/commit references")
+            recorded_concerns = self._validate_concerns(concerns, "implementer", implementer)
             now = timestamp()
             attempt = dict(
                 id=_id("att_"),
@@ -3130,6 +3249,7 @@ class Store:
                         "artifacts": artifacts,
                         "verification": verification,
                         "specification_etag": specification_etag,
+                        **({"concerns": recorded_concerns} if recorded_concerns else {}),
                     }
                 ),
                 spec_revision=before["spec_revision"],
@@ -3157,6 +3277,7 @@ class Store:
                 "task_revision": after["revision"],
                 "spec_revision": after["spec_revision"],
                 "state": attempt["state"],
+                "concern_count": len(recorded_concerns),
                 "queue_workstream_id": after["queue_workstream_id"],
                 "status": after["status"],
                 "gate_diagnostics": [
@@ -3168,13 +3289,41 @@ class Store:
 
         return self._run("attempt.recorded", request, operation)
 
-    def record_review(self, attempt_id, expected_revision, reviewer, verdict, note):
+    @staticmethod
+    def _validate_concerns(concerns, source, author):
+        if concerns is None:
+            return []
+        if not isinstance(concerns, list) or any(
+            not isinstance(c, dict)
+            or set(c) != {"kind", "text"}
+            or not isinstance(c["kind"], str)
+            or c["kind"] not in {"value", "design"}
+            or not isinstance(c["text"], str)
+            or not c["text"].strip()
+            for c in concerns
+        ):
+            raise TaskError("invalid_concerns: provide value/design kinds and nonempty text")
+        return [{**c, "source": source, "author": author} for c in concerns]
+
+    @staticmethod
+    def _add_concerns(evidence, concerns):
+        """No supplied concerns means no evidence rewrite, including legacy proof."""
+        if not concerns:
+            return evidence
+        proof = Store._attempt_proof(evidence)
+        if proof is None:
+            proof = {"format": "attempt-concerns-v1", "original_evidence": evidence}
+        proof["concerns"] = [*proof.get("concerns", []), *concerns]
+        return _json(proof)
+
+    def record_review(self, attempt_id, expected_revision, reviewer, verdict, note, concerns=None):
         request = dict(
             attempt_id=attempt_id,
             expected_revision=expected_revision,
             reviewer=reviewer,
             verdict=verdict,
             note=note,
+            concerns=concerns,
         )
 
         def operation(db, scope):
@@ -3195,8 +3344,10 @@ class Store:
                 raise TaskError("invalid_review_state")
             if not reviewer.strip() or reviewer == before["implementer"] or not note.strip():
                 raise TaskError("independent_review_required: reviewer differs from implementer")
+            recorded_concerns = self._validate_concerns(concerns, "reviewer", reviewer)
             after = {
                 **before,
+                "evidence": self._add_concerns(before["evidence"], recorded_concerns),
                 "state": "passed" if verdict == "pass" else "rework",
                 "reviewer": reviewer,
                 "review_note": note,
@@ -3205,7 +3356,7 @@ class Store:
             }
             db.execute(
                 """UPDATE attempts SET state=:state, reviewer=:reviewer,
-                review_note=:review_note, revision=:revision,
+                review_note=:review_note, evidence=:evidence, revision=:revision,
                 updated_at=:updated_at WHERE id=:id""",
                 after,
             )

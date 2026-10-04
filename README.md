@@ -376,6 +376,23 @@ become new tasks. The service records assertions and cannot authenticate
 reviewer independence or the actual human verdict. Workflows must obtain and
 record them truthfully.
 
+Implementers and independent reviewers may supply `concerns=[{kind: "value"|"design", text: ...}]`
+to `record_result` and `record_review`. A concern is a value or design doubt that
+cannot be fixed without changing what the task says. Concerns never change gates,
+review verdicts or prerequisite satisfaction. Omission preserves all existing
+contributions; reviewer additions retain the implementer's concerns and label
+both sources/authors. The write ACK returns a count, without concern prose.
+`get_attempt` and chosen attempt proof show complete concerns. Full specification
+reads show concern prose from the same three applicable attempt window as their
+attempt summaries, with totals and `concerns_has_more`; proof included in the same
+response carries its own concerns once. Older concerns remain available through
+explicit attempt/history reads. `get_next_action` includes the chosen local
+review proof and its implementer concerns in one call. `workstream_status` exposes
+`concern_tasks`, a separate page at its `limit`/`offset`, prioritizing tasks awaiting
+sign-off. These references/counts include only current-spec attempts on that
+workstream. The viewer shows full concerns on results and in the sign-off dialog;
+exports retain them in labelled attempt history.
+
 The ordinary path is:
 
 ```text
@@ -575,3 +592,10 @@ client packages, automatic client configuration, or editable export
 synchronization. A complete Codex dogfood trial and then Claude Code, OpenCode
 and Pi access/catalog validation remain product proof beyond the unit and stdio
 suite. See [DESIGN.md](DESIGN.md) for the current design and boundary.
+
+Protocol 12 retains schema 7 and the same 42 tools. Optional concerns live in the
+existing attempt evidence envelope, with no database migration. Legacy context
+is preserved exactly when reviewer concerns require an envelope; omitted or empty
+concerns leave stored evidence untouched. Refresh client discovery to see the
+optional inputs and concern projections. The fuller workflow skills guidance is
+separate from this tool contract.

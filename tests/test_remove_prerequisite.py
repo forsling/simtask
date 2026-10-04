@@ -9,6 +9,7 @@ import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
+from task_mcp.runtime import PROTOCOL_SCHEMA_REVISION
 from task_mcp.store import Store, TaskError
 
 
@@ -264,7 +265,7 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
 
             runtime = await call("runtime_info")
             assert runtime["package_path"] == str(root / "src/task_mcp")
-            assert runtime["protocol_schema_revision"] == 11
+            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION
             assert runtime["database_schema_revision"] == 7
             setup = await call(
                 "init",

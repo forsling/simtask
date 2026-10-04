@@ -1,0 +1,327 @@
+import asyncio
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+import pytest
+from mcp import Client
+from mcp.client.stdio import StdioServerParameters
+
+from task_mcp.runtime import PROTOCOL_SCHEMA_REVISION
+from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
+
+
+@pytest.fixture
+def context(tmp_path):
+    store = Store(tmp_path / "concerns.sqlite3")
+    setup = store.init(
+        str(tmp_path / "repo"), branch="main", action="create_project", confirmed=True
+    )
+    return store, setup["project"]["id"], setup["workstream"]["id"]
+
+
+def result(store, task, ws, concerns=None):
+    return store.compact_call(
+        "record_result",
+        task["id"],
+        ws,
+        task["revision"],
+        "builder",
+        "Built",
+        "Context",
+        [{"kind": "artifact", "reference": "synthetic.txt"}],
+        "Synthetic verification",
+        task["specification_etag"],
+        concerns=concerns,
+    )
+
+
+def test_concerns_persist_and_pass_review_clears_prerequisite(context):
+    store, project, ws = context
+    task = store.create_task(project, "Deliver", workstream_id=ws)
+    dependent = store.create_task(project, "Use delivery", workstream_id=ws)
+    store.add_prerequisite(dependent["id"], dependent["revision"], task["id"])
+    own = {"kind": "value", "text": "A different priority would change this task."}
+    review = {"kind": "design", "text": "An alternative interface needs a scope change."}
+    ack = result(store, task, ws, [own])
+    assert ack["concern_count"] == 1 and "concerns" not in ack
+    assert own["text"] not in json.dumps(ack)
+    next_action = store.get_next_action(ws)
+    assert next_action["action"] == "review"
+    assert next_action["attempt"]["concerns"] == [
+        {**own, "source": "implementer", "author": "builder"}
+    ]
+    assert own["text"] not in next_action["attempt"]["evidence"]
+    assert json.dumps(next_action).count(own["text"]) == 1
+    full = store.read_tasks([task["id"]], specification=True, workstream_id=ws)["items"][0]
+    assert full["concerns"][0]["attempt_id"] == ack["id"]
+    assert full["concerns"][0]["text"] == own["text"]
+    chosen = store.read_tasks([task["id"]], True, ws, [ack["id"]])["items"][0]
+    assert chosen["concerns"] == [] and json.dumps(chosen).count(own["text"]) == 1
+    reviewed = store.compact_call(
+        "record_review", ack["id"], 1, "checker", "pass", "Verified", concerns=[review]
+    )
+    assert reviewed["state"] == "passed" and reviewed["concern_count"] == 2
+    assert not {"concerns", "evidence", "review_note"} & reviewed.keys()
+    assert review["text"] not in json.dumps(reviewed)
+    restarted = Store(store.path)
+    proof = restarted.get_attempt(ack["id"])
+    assert proof["concerns"] == [
+        {**own, "source": "implementer", "author": "builder"},
+        {**review, "source": "reviewer", "author": "checker"},
+    ]
+    assert proof["evidence"] == "Context"
+    assert (
+        restarted.get_tasks([task["id"]])["items"][0]["attempts"][0]["concerns"]
+        == proof["concerns"]
+    )
+    cards = restarted.list_tasks(project, ws)["items"]
+    assert cards[0]["view"] == "signoff" and cards[0]["concern_count"] == 2
+    assert cards[1]["view"] == "ready" and cards[1]["prerequisites"][0]["satisfied"]
+    assert restarted.get_next_action(ws)["task"]["id"] == dependent["id"]
+    export = restarted.export_workstream(ws)["content"]
+    for concern in proof["concerns"]:
+        assert concern["text"] in export and concern["author"] in export
+    # Synthetic verdict demonstrates concerns do not add a sign-off gate.
+    done = restarted.signoff_task(
+        task["id"], ack["task_revision"], "approve", "Synthetic verdict", ack["id"], 2
+    )
+    assert done["status"] == "done"
+    assert restarted.get_attempt(ack["id"])["concerns"] == proof["concerns"]
+
+
+@pytest.mark.parametrize("supplied", [None, []])
+def test_review_omission_preserves_original_envelope(context, supplied):
+    store, project, ws = context
+    task = store.create_task(project, "Deliver", workstream_id=ws)
+    ack = result(store, task, ws, [{"kind": "design", "text": "Scope needs a different design."}])
+    with sqlite3.connect(store.path) as db:
+        before = db.execute("SELECT evidence FROM attempts WHERE id=?", (ack["id"],)).fetchone()[0]
+    store.record_review(ack["id"], 1, "checker", "pass", "Checked", concerns=supplied)
+    with sqlite3.connect(store.path) as db:
+        assert (
+            db.execute("SELECT evidence FROM attempts WHERE id=?", (ack["id"],)).fetchone()[0]
+            == before
+        )
+    assert store.get_attempt(ack["id"])["concerns"][0]["author"] == "builder"
+
+
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        "plain legacy proof\nβ",
+        '{"old": "proof"}',
+        '{"format": "attempt-concerns-v1"}',
+        '{"format": "durable-result-v1"}',
+        '{"format":"durable-result-v1","concerns":[{"kind":"value","text":"Legacy context"}]}',
+    ],
+)
+@pytest.mark.parametrize(
+    "supplied", [None, [], [{"kind": "value", "text": "Task priority needs reconsidering."}]]
+)
+def test_legacy_proof_is_lossless_with_reviewer_concerns(context, legacy, supplied):
+    store, project, ws = context
+    task = store.create_task(project, "Legacy delivery", workstream_id=ws)
+    ack = result(store, task, ws)
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE attempts SET evidence=? WHERE id=?", (legacy, ack["id"]))
+    store.record_review(ack["id"], 1, "checker", "pass", "Checked", concerns=supplied)
+    proof = Store(store.path).get_attempt(ack["id"])
+    assert proof["evidence"] == legacy
+    assert len(proof["concerns"]) == bool(supplied)
+    with sqlite3.connect(store.path) as db:
+        raw = db.execute("SELECT evidence FROM attempts WHERE id=?", (ack["id"],)).fetchone()[0]
+        assert raw == legacy if not supplied else json.loads(raw)["original_evidence"] == legacy
+    assert store.list_task_attempts(task["id"])["items"][0]["concern_count"] == bool(supplied)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        [{"kind": "quality", "text": "Wrong kind"}],
+        [{"kind": "VALUE", "text": "Wrong case"}],
+        [{"kind": "value", "text": " "}],
+        [{"kind": "design", "text": 7}],
+        [{"kind": None, "text": "Wrong type"}],
+        [{"kind": ["value"], "text": "Wrong type"}],
+        [{"kind": "design", "text": "OK", "source": "reviewer"}],
+        [{"text": "Missing kind"}],
+        [{"kind": "value", "text": "Valid first"}, {"kind": "wrong", "text": "Invalid last"}],
+        {},
+        "value",
+        [None],
+    ],
+)
+def test_invalid_concerns_roll_back_results_and_reviews(context, invalid):
+    store, project, ws = context
+    task = store.create_task(project, "Deliver", workstream_id=ws)
+    with pytest.raises(TaskError, match="invalid_concerns"):
+        result(store, task, ws, invalid)
+    assert store.get_tasks([task["id"]])["items"][0]["revision"] == task["revision"]
+    assert store.list_task_attempts(task["id"])["total"] == 0
+    ack = result(store, task, ws, [{"kind": "value", "text": "Existing concern"}])
+    before = store.get_attempt(ack["id"])
+    with pytest.raises(TaskError, match="invalid_concerns"):
+        store.record_review(ack["id"], 1, "checker", "pass", "Checked", concerns=invalid)
+    assert store.get_attempt(ack["id"]) == before
+    assert store.get_tasks([task["id"]])["items"][0]["revision"] == ack["task_revision"]
+
+
+def test_concerns_leave_existing_gates_unchanged(context):
+    store, project, ws = context
+    task = store.create_task(project, "Gated result", workstream_id=ws)
+    gate = store.add_unresolved(task["id"], task["revision"], "Actual unresolved requirement")
+    task = store.get_tasks([task["id"]])["items"][0]
+    ack = result(
+        store, task, ws, [{"kind": "design", "text": "Another design requires different scope."}]
+    )
+    assert store.get_next_action(ws)["action"] is None
+    assert "unresolved_items" in ack["gate_diagnostics"]
+    review = store.compact_call("record_review", ack["id"], 1, "checker", "pass", "Checked")
+    assert review["state"] == "passed" and "unresolved_items" in review["gate_diagnostics"]
+    full = store.get_tasks([task["id"]])["items"][0]
+    assert full["unresolved_items"] == gate["unresolved_items"]
+    with pytest.raises(TaskError, match="task_not_ready_for_signoff"):
+        store.signoff_task(
+            task["id"], ack["task_revision"], "approve", "Synthetic verdict", ack["id"], 2
+        )
+
+
+def test_status_and_full_read_windows_are_paged_current_and_local(context, tmp_path):
+    store, project, ws = context
+    other = store.init_workstream(project, str(tmp_path / "repo"), branch="other", confirmed=True)[
+        "workstream"
+    ]["id"]
+    plain = store.create_task(project, "First unremarkable task", workstream_id=ws)
+    task = store.create_task(project, "Delivery with many attempts", workstream_id=ws)
+    attempts = []
+    for i, stream in enumerate([ws] * 5 + [other]):
+        task = store.get_tasks([task["id"]])["items"][0]
+        attempts.append(result(store, task, stream, [{"kind": "design", "text": f"Concern {i}"}]))
+    status = store.workstream_status(ws, limit=1)
+    assert status["items"][0]["id"] == plain["id"]
+    assert status["concern_tasks"]["items"][0]["id"] == task["id"]
+    assert status["concern_tasks"]["items"][0]["concern_count"] == 5
+    assert status["concern_tasks"]["items"][0]["view"] == "review"
+    assert status["status"]["concern_task_count"] == 1
+    assert "Concern " not in json.dumps(status)
+    full = store.read_tasks([task["id"]], True, ws)["items"][0]
+    assert full["concern_count"] == full["concern_attempt_total"] == 5
+    assert len(full["concerns"]) == 3 and full["concerns_has_more"]
+    assert {c["workstream_id"] for c in full["concerns"]} == {ws}
+    assert store.workstream_status(other)["concern_tasks"]["total"] == 0  # Task is queued on ws.
+    second = store.create_task(project, "Ready to sign off", workstream_id=ws)
+    second_ack = result(
+        store, second, ws, [{"kind": "value", "text": "Change of priority needed."}]
+    )
+    store.record_review(second_ack["id"], 1, "checker", "pass", "Checked")
+    first_page = store.workstream_status(ws, limit=1)["concern_tasks"]
+    assert first_page["total"] == 2 and first_page["items"][0]["id"] == second["id"]
+    assert first_page["items"][0]["view"] == "signoff" and first_page["next_offset"] == 1
+    rest = store.workstream_status(ws, limit=1, offset=first_page["next_offset"])["concern_tasks"]
+    assert rest["items"][0]["id"] == task["id"] and rest["next_offset"] is None
+    updated = store.update_task(task["id"], task["revision"] + 1, {"title": "Changed requirements"})
+    assert updated["spec_revision"] == 2
+    assert store.read_tasks([task["id"]], True, ws)["items"][0]["concerns"] == []
+    assert store.workstream_status(ws)["concern_tasks"]["total"] == 1
+    history = store.list_task_attempts(task["id"], current_spec_only=False)
+    assert history["total"] == 6 and history["items"][0]["concern_count"] == 1
+    assert store.get_attempt(attempts[0]["id"])["concerns"][0]["text"] == "Concern 0"
+
+
+def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp_path):
+    database = tmp_path / "stdio.sqlite3"
+    root = Path(__file__).resolve().parents[1]
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "task_mcp", "--db", str(database)],
+        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+    )
+
+    async def exercise():
+        async with Client(parameters, read_timeout_seconds=30) as client:
+            tools = (await client.list_tools()).tools
+            assert len(tools) == 42
+            for name in ("record_result", "record_review"):
+                descriptor = next(t for t in tools if t.name == name)
+                schema = descriptor.input_schema
+                assert "concerns" in schema["properties"] and "concerns" not in schema["required"]
+                assert schema["$defs"]["ConcernInput"]["properties"]["kind"]["enum"] == [
+                    "value",
+                    "design",
+                ]
+                assert (
+                    "cannot be" in descriptor.description
+                    and "changing what the task says" in descriptor.description
+                )
+                assert "rare" not in descriptor.description
+
+            async def call(name, **arguments):
+                response = await client.call_tool(name, arguments)
+                assert not response.is_error, response.content
+                return response.structured_content
+
+            runtime = await call("runtime_info")
+            assert runtime["package_path"] == str(root / "src/task_mcp")
+            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 12
+            assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 7
+            ctx = await call(
+                "init",
+                path=str(tmp_path / "repo"),
+                branch="main",
+                action="create_project",
+                confirmed=True,
+            )
+            ws = ctx["workstream"]["id"]
+            task = await call(
+                "create_task", project=ctx["project"]["id"], title="Deliver", workstream_id=ws
+            )
+            full = (await call("get_tasks", ids=[task["id"]], specification=True))["items"][0]
+            proof = dict(
+                task_id=task["id"],
+                workstream_id=ws,
+                expected_revision=task["revision"],
+                implementer="builder",
+                summary="Built",
+                evidence="Context",
+                artifacts=[{"kind": "artifact", "reference": "synthetic.txt"}],
+                verification="Synthetic verification",
+                specification_etag=full["specification_etag"],
+            )
+            invalid = await client.call_tool(
+                "record_result", {**proof, "concerns": [{"kind": "wrong", "text": "Invalid"}]}
+            )
+            assert invalid.is_error
+            ack = await call(
+                "record_result",
+                **proof,
+                concerns=[
+                    {"kind": "value", "text": "Different priority requires a different task."}
+                ],
+            )
+            assert ack["concern_count"] == 1 and "concerns" not in ack
+            selected = await call("get_next_action", workstream_id=ws)
+            assert selected["attempt"]["concerns"][0]["source"] == "implementer"
+            reviewed = await call(
+                "record_review",
+                attempt_id=ack["id"],
+                expected_revision=1,
+                reviewer="checker",
+                verdict="pass",
+                note="Checked",
+                concerns=[
+                    {"kind": "design", "text": "A different interface requires changing scope."}
+                ],
+            )
+            assert reviewed["state"] == "passed" and reviewed["concern_count"] == 2
+            assert "concerns" not in reviewed and len(json.dumps(reviewed)) < 1200
+            status = await call("workstream_status", workstream_id=ws)
+            assert status["concern_tasks"]["items"][0]["view"] == "signoff"
+        async with Client(parameters, read_timeout_seconds=30) as restarted:
+            response = await restarted.call_tool("get_attempt", {"attempt_id": ack["id"]})
+            assert not response.is_error
+            assert len(response.structured_content["concerns"]) == 2
+            assert response.structured_content["evidence"] == "Context"
+
+    asyncio.run(exercise())

@@ -208,6 +208,21 @@ retain their existing authority and cannot clear remaining gates. Workflow clien
 check the actual checkout/artifacts and send reviews to fresh independent reviewers.
 No working/start/lease/checkpoint lifecycle or routine extra repository scan exists.
 
+Protocol 12 adds optional value/design concerns to result/review recording.
+A concern is a doubt that cannot be fixed without changing what the task says.
+Concern entries preserve implementer/reviewer source and author on the attempt;
+reviewer additions do not erase implementer contributions, and omission leaves
+stored evidence unchanged. They are a nonblocking channel to the user: gates,
+review outcomes, prerequisite satisfaction and observer proposals are unaffected.
+Complete attempt reads and viewer/sign-off show the prose. Explicit full task
+reads show a bounded applicable attempt window with concern totals/references;
+selected review proof carries its concerns in the same call. Current workstream
+status has a separately paged task-with-concerns list, prioritizing awaiting
+sign-off and filtering to the current specification and local attempts. Historical
+concerns remain in deliberate attempt/history reads and exports, with provenance.
+The existing evidence TEXT envelope stores entries without a new schema migration;
+older plain evidence is losslessly wrapped only when reviewer concerns are added.
+
 An active handler may add a task gate directly. An observer proposes a gate for
 review; the proposal is nonblocking until accepted. A coordinator may dismiss
 an unwanted or stale proposal with an audited reason, including when its target

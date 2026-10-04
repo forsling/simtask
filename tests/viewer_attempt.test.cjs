@@ -74,10 +74,17 @@ assert.equal(run('currentAttempt(task, ["review"]).id'), "a-pending");
 context.task.attempts.splice(-2);
 run('markdown = (text) => node("p", text);');
 context.proof = {...attempt("proof", "alt", "review"), summary: "Built", evidence: "Full context",
-  artifacts: [{kind: "commit", reference: "abcdef0123456789"}], verification: "Actual check passed"};
+  artifacts: [{kind: "commit", reference: "abcdef0123456789"}], verification: "Actual check passed",
+  concerns: [{kind: "value", text: "Changing priority changes scope.", source: "implementer", author: "Builder"},
+    {kind: "design", text: "<img src=x onerror=alert(1)>\nDifferent design needs a task change.", source: "reviewer", author: "Checker"}]};
 panel = descendants(run('attemptCard(proof, task)'));
 assert.ok(panel.some(n => n.textContent === "commit: abcdef0123456789"));
 assert.ok(panel.some(n => n.textContent === "Actual check passed"));
+assert.ok(panel.some(n => n.textContent === "Value · Implementer Builder"));
+assert.ok(panel.some(n => n.textContent === "Design · Reviewer Checker"));
+assert.ok(panel.some(n => n.textContent.includes("(alt) · spec 2")), "Concern provenance stays with the original result");
+assert.ok(panel.some(n => n.textContent === context.proof.concerns[1].text));
+assert.equal(run('concernPanel({...proof, concerns: []})'), null);
 // Check the actual detail body uses the same action candidate. Isolate unrelated
 // Markdown/activity rendering so the DOM double need not implement a browser.
 run('markdown = (text) => node("p", text); activity = () => null; attemptCard = (a) => node("article", a.id);');

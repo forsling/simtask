@@ -98,7 +98,9 @@ async function test() {
   context.task = {id: "task", title: "Purpose", revision: 8, spec_revision: 4,
     queue_workstream_id: "main", status: "open", attempts: []};
   context.attempt = {id: "attempt", revision: 2, spec_revision: 4, state: "passed",
-    summary: "Actual result", reviewer: "Independent reviewer", review_note: "Actual review proof"};
+    summary: "Actual result", reviewer: "Independent reviewer", review_note: "Actual review proof", workstream_id: "main",
+    concerns: [{kind: "value", text: "A priority change needs a scope change.", source: "implementer", author: "Builder"},
+      {kind: "design", text: "<img src=x onerror=alert(1)> Another design changes the task.", source: "reviewer", author: "Checker"}]};
   run(`state.task = task;
     api = async (action, payload) => {captured = {action, payload}; return {id: "task", revision: 9};};
     markdown = text => node("p", text);
@@ -107,6 +109,11 @@ async function test() {
   assert.doesNotMatch(allText, /Approval basis|Supporting approval/);
   assert.match(allText, /Actual result/);
   assert.match(allText, /Actual review proof/);
+  assert.match(allText, /Value · Implementer Builder/); assert.match(allText, /Design · Reviewer Checker/);
+  assert.match(allText, /Result attempt · .* \(main\) · spec 4/);
+  assert.match(allText, /A priority change needs a scope change/);
+  assert.match(allText, /<img src=x onerror=alert\(1\)>/);
+  assert.match(allText, /Concerns do not block review or sign-off/);
   const choice = get("field-decision"), reasons = get("field-reasons");
   assert.deepEqual(choice.children.map(node => node.value), ["approve", "rework", "revise", "drop"]);
   assert.equal(descendants(get("fields")).some(node => ["field-result_judgment", "field-specification_question", "field-result_note", "field-user_note"].includes(node.id)), false);

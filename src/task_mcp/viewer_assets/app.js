@@ -835,7 +835,18 @@ function attemptCard(a, t) {
   if (a.verification) card.append(el("div", "sub", node("h4", "Actual verification"), markdown(a.verification)));
   if (a.review_note) card.append(el("div", "sub", node("h4", "Review by " + (a.reviewer || "reviewer")), markdown(a.review_note)));
   if (a.human_review_note) card.append(el("div", "sub", node("h4", "Your review"), markdown(a.human_review_note)));
+  const concerns = concernPanel(a);
+  if (concerns) card.append(concerns);
   return card;
+}
+function concernPanel(a) {
+  if (!a.concerns?.length) return null;
+  const panel = el("div", "sub", node("h4", "Value and design concerns"),
+    node("p", `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
+  for (const concern of a.concerns) {
+    panel.append(node("h4", `${concern.kind === "value" ? "Value" : "Design"} · ${concern.source === "implementer" ? "Implementer" : "Reviewer"} ${concern.author}`), markdown(concern.text));
+  }
+  return panel;
 }
 function renderGroup(t) {
   const d = $("detail");
@@ -1281,6 +1292,8 @@ function signoff(t, a, initial = "approve") {
       $("fields").append(section("Reviewed result", el("div", "", markdown(a.summary || ""),
           node("p", a.state === "human_review" ? "Actual human review recorded." : `Independent review by ${a.reviewer || "reviewer"}.`),
           markdown(a.review_note || a.human_review_note || ""))));
+      const concerns = concernPanel(a);
+      if (concerns) $("fields").append(concerns);
       const choice = node("select");
       choice.id = "field-decision"; choice.name = "decision";
       for (const [value, label] of [

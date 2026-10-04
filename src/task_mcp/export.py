@@ -259,4 +259,12 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                 _section(lines, "Review note", attempt["review_note"], level=6)
             if attempt["human_review_note"]:
                 _section(lines, "Human review note", attempt["human_review_note"], level=6)
+            for concern in attempt.get("concerns", []):
+                _section(
+                    lines,
+                    f"{concern['kind'].title()} concern — {concern['source']} "
+                    f"{_inline(concern['author'])} (nonblocking)",
+                    concern["text"],
+                    level=6,
+                )
     return "\n".join(lines)

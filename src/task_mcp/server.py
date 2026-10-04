@@ -27,6 +27,12 @@ class TaskPatch(BaseModel):
     summary: str | None = None
 
 
+class ConcernInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["value", "design"]
+    text: str
+
+
 def domain_errors(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
@@ -204,7 +210,11 @@ def create_server(
     def workstream_status(
         workstream_id: str, limit: int = 20, offset: int = 0, include_scope: bool = False
     ) -> dict[str, Any]:
-        """Read a paged local queue/counts; include_scope=true pages explicit scope."""
+        """Read a paged local queue and current concerns refs, with counts and no prose.
+
+        concern_tasks is separately paged at limit/offset, prioritizing awaiting sign-off.
+        include_scope=true also pages explicit scope.
+        """
         return store.workstream_status(workstream_id, limit, offset, include_scope)
 
     @server.tool(annotations=additive, structured_output=True)
@@ -322,6 +332,8 @@ def create_server(
         """Read 1–20 cards; specification=true gives complete requirements and gates.
 
         Add up to 20 attempt_ids to retrieve exactly those full proofs in this call.
+        Current concern prose shares the three-attempt summary window; counts/has_more
+        expose omitted concerns. Chosen proof carries its concerns once in this response.
         Workstream scope filters current execution summaries, never proof provenance.
         Cards carry no specification_etag; full specs do. No preliminary card read is needed.
         """
@@ -564,13 +576,16 @@ def create_server(
         artifacts: list[dict[str, str]],
         verification: str,
         specification_etag: str,
+        concerns: list[ConcernInput] | None = None,
     ) -> dict[str, Any]:
         """Record factual durable proof, even with gates; this grants no execution authority.
 
         First check the actual checkout/artifacts and current full specification.
         Supply its etag, concrete artifacts ({kind: artifact|commit, reference: ...}),
         actual verification and context evidence. Queue placement, disposition and blockers
-        stay unchanged. The ACK omits proof; retrieve it deliberately with get_tasks.
+        stay unchanged. Optional concerns ({kind: value|design, text: ...}) are doubts
+        that cannot be fixed without changing what the task says; they never affect gates.
+        The ACK omits proof/concern prose; retrieve it deliberately with get_tasks.
         """
         return store.compact_call(
             "record_result",
@@ -583,6 +598,7 @@ def create_server(
             artifacts,
             verification,
             specification_etag,
+            [c.model_dump() for c in concerns] if concerns is not None else None,
         )
 
     @server.tool(annotations=editing, structured_output=True)
@@ -593,10 +609,22 @@ def create_server(
         reviewer: str,
         verdict: Literal["pass", "rework"],
         note: str,
+        concerns: list[ConcernInput] | None = None,
     ) -> dict[str, Any]:
-        """Record a declared independent review verdict on an implementation attempt."""
+        """Record a declared independent review verdict on an implementation attempt.
+
+        Optional concerns ({kind: value|design, text: ...}) are doubts that cannot be
+        fixed without changing what the task says. They never affect gates or verdicts.
+        Omission preserves existing concerns, including the implementer's contribution.
+        """
         return store.compact_call(
-            "record_review", attempt_id, expected_revision, reviewer, verdict, note
+            "record_review",
+            attempt_id,
+            expected_revision,
+            reviewer,
+            verdict,
+            note,
+            [c.model_dump() for c in concerns] if concerns is not None else None,
         )
 
     @server.tool(annotations=editing, structured_output=True)

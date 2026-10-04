@@ -1,7 +1,7 @@
 # Runtime identity and stale capabilities
 
 This document describes the isolated candidate's protocol
-revision `9` and database schema revision `5`. The protected live service retains
+revision `12` and database schema revision `7`. The protected live service retains
 its installed revision until coordinated rollout; inspect its own connection's
 runtime identity. During that protected period, use candidate code only with explicit disposable databases and
 prepare companion skills without installing or reloading them. Keep the live
@@ -18,7 +18,7 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`11` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Candidate 10/schema 6 add single-owner queues. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`12` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Candidate 10/schema 6 add single-owner queues. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Candidate 12 adds optional value/design concern inputs and compact current concern references, with schema 7 unchanged. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
@@ -33,11 +33,11 @@ version throughout development. The identifier detects changed resources but
 does not promise hot reload of resources or Python code.
 
 Existing unnumbered databases have revision `0`. Candidate Store startup creates
-fresh databases at revision `5`
-directly. Before upgrading an existing revision `0`, `1`, `2`, `3` or `4` database, it creates
+fresh databases at revision `7`
+directly. Before upgrading an existing revision `0`, `1`, `2`, `3`, `4`, `5` or `6` database, it creates
 and verifies a fresh SQLite online backup under the writer lock, including
 committed WAL data. It then transactionally upgrades the schema, checks integrity
-and foreign keys, and sets revision `5` only after those checks pass. Existing
+and foreign keys, and sets revision `7` only after those checks pass. Existing
 task IDs, content and audit history survive; the backup remains available after
 success or rollback. A database with a higher revision is rejected rather than
 downgraded. Future storage migrations must advance the revision after their
