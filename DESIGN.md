@@ -52,19 +52,33 @@ Membership is nonexclusive: adding a task to B keeps it in A. Adoption is derive
 from effective membership in at least one workstream; inbox means none. Workstream
 implementation/review state uses its own current-spec attempts. A task's global
 completion and historical proof remain canonical.
-Project task order is shared; scope and prerequisites remain gates. Scheduling
-metadata is separate from task revisions and immutable specifications/proof.
-An atomic `reorder_tasks` moves one concrete task immediately before/after a
-same-project anchor using the last board/queue `project_order_revision` and the
-actual supporting scheduling instruction. Stale/invalid/self/cross-project moves
-fail atomically. A no-op does not advance the order revision or normalize keys;
-a changed move advances it once. Insertions append and advance it; decomposition
-advances it for parent removal and member insertions. Existing projects start at
-order revision 0 during the explicit schema 3 migration. Completed rows may
-shift without touching queue membership, selected delivery or review. Each workstream
-filters shared order by local scope and eligibility. Reads/selection never
-reorder. Actual scheduling intent and actor attribution live in existing audit
-events; no automatic priority rules, normalization or usage-tracking calls exist.
+A workstream has an ordered list of shared tasks. Each list's ordering metadata
+is separate from canonical task revisions, immutable specifications/proof and
+branch-local attempts. `reorder_tasks(workstream_id, task_ids, expected_order_revision)`
+sets the supplied included-task IDs as the exact new prefix in one transaction.
+Every unlisted member follows in its previous relative order; membership does not
+change. Duplicate/nonmember IDs and stale revisions fail atomically. Empty lists
+and already-matching prefixes preserve the order revision and stored keys.
+Changed ordering advances only the named workstream's order revision once,
+including when completed tasks move. Compact ACKs contain identity, revision,
+change and count facts; actual ordered-ID requests and configured actors remain
+in existing audit events. Reads and selection never reorder or normalize work.
+
+Schema 10 adds `workstreams.order_revision` and `workstream_task_order`. Initial
+migration seeds every effective list in existing project baseline order at
+revision 0. Live scopes, group references and exclusions remain authoritative.
+Membership-changing transactions remove departing members, retain existing
+positions and append newly included members in deterministic project baseline
+order, advancing each affected list revision once. Removing and re-adding a task
+appends it. Copying a scope copies its expression and live references, not source
+ordering or a membership snapshot. Canonical `tasks.order_key` remains a stable
+project-wide baseline; old project order revisions remain private historical
+storage. There is no project-level reorder surface or shared execution order.
+Boards, action/init/status reads and exports expose `workstream_order_revision`;
+scoped cards also expose `workstream_order_key`. The viewer's Reorder tasks form
+names the workstream and translates simple relative choices into one complete
+ordered-ID call with its matching revision. It requires no explanatory prose.
+No automatic priority rules, normalization or consumer reporting calls exist.
 Every explicit scope change increments the workstream revision atomically.
 Local queues, status counts and exports include only concrete tasks from the
 workstream's project. Group references and whole-group progress are separate;
@@ -213,7 +227,7 @@ disposition, gates or completion. ACKs omit proof and expose attempt/task revisi
 plus unchanged queue membership/disposition and active gate diagnostics.
 
 `get_next_action` replaces the old implementation-only selector with no alias or
-extra tool. It follows shared order across eligible implementation and review,
+extra tool. It follows local workstream order across eligible implementation and review,
 requiring queue membership, active disposition and clear unresolved/prerequisite
 gates. Within a task, pending current-spec local review precedes implementation;
 newest first then ID ascending is deterministic. Passed/human_review waits for
@@ -314,7 +328,7 @@ superseded-specification attempts remain visible as labelled history, not as
 current delivery claims. The legacy `task-mcp/v1` embedded-JSON layout remains an
 explicit compatibility option; neither export is an import or database backup.
 
-Deferred: TASKS.md import, nested groups, per-workstream ordering, persistent
+Deferred: TASKS.md import, nested groups, persistent
 dynamic filters, claims or leases, native client installers, automatic client
 configuration, editable export synchronization, peer group links, cross-project scheduling,
 joint attempts, synchronized lifecycle, and full

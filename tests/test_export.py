@@ -327,12 +327,9 @@ def test_export_determinism_hash_order_escaping_and_no_state_mutation(context):
     )
     second = create(context, "Second")
     store.reorder_tasks(
-        project,
-        second["id"],
-        first["id"],
-        "before",
-        store.list_tasks(project)["project_order_revision"],
-        "Synthetic scheduling decision",
+        ws,
+        [second["id"]],
+        store.list_tasks(project, ws)["workstream_order_revision"],
     )
     before = business_state(store)
     one = store.export_workstream(ws)
@@ -393,6 +390,7 @@ def test_legacy_export_preserves_v1_layout(context):
     )
     assert result == {
         "format": "task-mcp/v1",
+        "workstream_order_revision": store.list_tasks(project, ws)["workstream_order_revision"],
         "content": expected,
         "sha256": hashlib.sha256(expected.encode()).hexdigest(),
     }

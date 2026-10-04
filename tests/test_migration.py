@@ -72,6 +72,8 @@ def legacy_database(database, version):
     db = sqlite3.connect(database)
     db.execute("PRAGMA foreign_keys=OFF")
     db.execute("ALTER TABLE attempts DROP COLUMN concerns_json")
+    db.execute("DROP TABLE workstream_task_order")
+    db.execute("ALTER TABLE workstreams DROP COLUMN order_revision")
     # Reconstruct the actual pre-queue authority and live scope tables.
     db.execute("DROP TABLE legacy_membership_migration")
     db.execute(
@@ -146,9 +148,7 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
             assert all(item["user_request"] == "" for item in details)
         else:
             assert details[0]["source"] == "user" and details[0]["user_request"] == "Design first"
-        assert store.list_tasks(details[0]["project_id"])["project_order_revision"] == (
-            3 if version >= 3 else 0
-        )
+        assert store.list_tasks(details[0]["project_id"])["ordering"] == "project_baseline"
         assert all(item["summary"] is None and item["summary_stale"] is None for item in details)
         with closing(sqlite3.connect(database)) as db:
             archive = db.execute(
@@ -333,7 +333,7 @@ def test_schema7_concern_metadata_preserves_proof_without_inventing_provenance(
             assert proof["verification"] == "Original verification"
             assert migrated.workstream_status(ws)["concern_tasks"]["total"] == 0
             assert Store(database).migration_backup_path is None
-        backups = list(tmp_path.glob("*.pre-schema-9.*.sqlite3"))
+        backups = list(tmp_path.glob("*.pre-schema-10.*.sqlite3"))
         assert len(backups) == 1 and snapshot(backups[0]) == before
         assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
         restored = tmp_path / "restored-schema7.sqlite3"
@@ -584,6 +584,86 @@ def test_candidate_exclusion_conflict_aborts_with_backup_and_no_scope_guess(tmp_
     with pytest.raises(RuntimeError, match="membership_migration_conflict"):
         Store(database)
     assert snapshot(database) == before
-    backups = list(tmp_path.glob("*.pre-schema-9.*.sqlite3"))
+    backups = list(tmp_path.glob("*.pre-schema-10.*.sqlite3"))
     assert len(backups) == 1 and snapshot(backups[0]) == before
     writer.close()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_schema9_order_migration_seeds_effective_lists_and_preserves_history(
+    tmp_path, monkeypatch, fail
+):
+    database = tmp_path / "schema9-order.sqlite3"
+    store = Store(database)
+    ctx = store.init(str(tmp_path / "repo"), branch="a", action="create_project", confirmed=True)
+    project, a = ctx["project"]["id"], ctx["workstream"]["id"]
+    b = store.init_workstream(project, str(tmp_path / "repo"), branch="b", confirmed=True)[
+        "workstream"
+    ]["id"]
+    group = store.create_group(a, "Live group")
+    tasks = [
+        store.create_task(project, title, workstream_id=a) for title in ("First", "Second", "Third")
+    ]
+    store.add_group_member(group["id"], group["revision"], tasks[2]["id"], 1)
+    store.set_scope(b, 1, f"none +{group['id']} +{tasks[0]['id']}")
+    attempt = store.record_result(
+        tasks[0]["id"],
+        a,
+        1,
+        "builder",
+        "Proof",
+        "Original proof bytes",
+        artifacts=[{"kind": "artifact", "reference": __file__}],
+        verification="Actual fixture",
+        specification_etag=store.get_tasks([tasks[0]["id"]])["items"][0]["specification_etag"],
+        concerns=[{"kind": "design", "text": "Synthetic recorded design concern"}],
+    )
+    store.record_review(attempt["id"], 1, "independent reviewer", "pass", "Original review")
+    store.signoff_task(
+        tasks[0]["id"], attempt["task_revision"], "approve", "Synthetic verdict", attempt["id"], 2
+    )
+    with closing(sqlite3.connect(database)) as db:
+        # An authentic schema 9 has only canonical baseline positions.
+        db.execute("DROP TABLE workstream_task_order")
+        db.execute("ALTER TABLE workstreams DROP COLUMN order_revision")
+        db.execute("UPDATE tasks SET order_key=100-order_key WHERE object_type='task'")
+        db.execute("PRAGMA user_version=9")
+        db.commit()
+    columns, before = snapshot(database)
+    upgrade = Store._upgrade_schema
+    if fail:
+
+        def injected(db):
+            upgrade(db)
+            assert db.execute("SELECT count(*) FROM workstream_task_order").fetchone()[0] == 5
+            raise RuntimeError("after local order migration")
+
+        monkeypatch.setattr(Store, "_upgrade_schema", staticmethod(injected))
+        with pytest.raises(RuntimeError, match="after local order migration"):
+            Store(database)
+        assert snapshot(database) == (columns, before)
+        with closing(sqlite3.connect(database)) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+    else:
+        upgraded = Store(database)
+        assert snapshot(database, columns)[1] == before
+        for ws, expected in ((a, list(reversed(tasks))), (b, [tasks[2], tasks[0]])):
+            board = upgraded.list_tasks(project, ws)
+            assert board["workstream_order_revision"] == 0
+            assert [task["id"] for task in board["items"]] == [task["id"] for task in expected]
+        assert (
+            upgraded.get_tasks([tasks[0]["id"]])["items"][0]["selected_attempt_id"] == attempt["id"]
+        )
+        assert (
+            upgraded.get_attempt(attempt["id"])["concerns"][0]["text"]
+            == "Synthetic recorded design concern"
+        )
+        with closing(sqlite3.connect(database)) as db:
+            assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert not db.execute("PRAGMA foreign_key_check").fetchall()
+    backup = next(tmp_path.glob("schema9-order.sqlite3.pre-schema-10.*.sqlite3"))
+    assert snapshot(backup) == (columns, before)
+    restored = tmp_path / "restored-schema9.sqlite3"
+    with closing(sqlite3.connect(backup)) as source, closing(sqlite3.connect(restored)) as target:
+        source.backup(target)
+    assert snapshot(restored) == (columns, before)

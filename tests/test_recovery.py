@@ -201,7 +201,7 @@ def test_restart_selects_one_complete_local_current_pending_proof_and_preserves_
         assert len(selected["attempt"]["evidence"]) > 5000
 
 
-def test_shared_order_actions_rework_findings_and_human_waiting_are_read_only(tmp_path):
+def test_workstream_order_actions_rework_findings_and_human_waiting_are_read_only(tmp_path):
     store, project, ws = setup(tmp_path)
     first = task(store, project, ws, "First implementation")
     later = task(store, project, ws, "Later pending review")
@@ -210,12 +210,9 @@ def test_shared_order_actions_rework_findings_and_human_waiting_are_read_only(tm
     assert selected["action"] == "implement" and selected["task"]["id"] == first["id"]
     board = store.list_tasks(project, ws)
     store.reorder_tasks(
-        project,
-        later["id"],
-        first["id"],
-        "before",
-        board["project_order_revision"],
-        "Synthetic priority instruction",
+        ws,
+        [later["id"]],
+        board["workstream_order_revision"],
     )
     selected = dispatch(store, "next-action", {"workstream_id": ws})
     assert selected["action"] == "review" and selected["attempt"]["id"] == pending["id"]

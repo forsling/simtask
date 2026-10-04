@@ -1,7 +1,7 @@
 # Runtime identity and stale capabilities
 
 This document describes the isolated candidate's protocol
-revision `13` and database schema revision `9`. The protected live service retains
+revision `14` and database schema revision `10`. The protected live service retains
 its installed revision until coordinated rollout; inspect its own connection's
 runtime identity. During that protected period, use candidate code only with explicit disposable databases and
 prepare companion skills without installing or reloading them. Keep the live
@@ -18,11 +18,11 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`13` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Candidate 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`14` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Candidate 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`9` after candidate startup). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`10` after candidate startup). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is
@@ -33,11 +33,11 @@ version throughout development. The identifier detects changed resources but
 does not promise hot reload of resources or Python code.
 
 Existing unnumbered databases have revision `0`. Candidate Store startup creates
-fresh databases at revision `9`
-directly. Before upgrading an existing revision `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7` or `8` database, it creates
+fresh databases at revision `10`
+directly. Before upgrading an existing revision `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` or `9` database, it creates
 and verifies a fresh SQLite online backup under the writer lock, including
 committed WAL data. It then transactionally upgrades the schema, checks integrity
-and foreign keys, and sets revision `9` only after those checks pass. Existing
+and foreign keys, and sets revision `10` only after those checks pass. Existing
 task IDs, content and audit history survive; the backup remains available after
 success or rollback. A database with a higher revision is rejected rather than
 downgraded. Future storage migrations must advance the revision after their
@@ -65,14 +65,21 @@ records.
 Roll out code, stored schema, companion skills and refreshed client tool catalogs
 together, then use the reconnect procedure below to verify the affected client.
 
-Database schema revision `3` adds `projects.order_revision` (default 0 on
-migration) for atomic shared-order concurrency. Protocol revision `4` replaces
-`reorder_tasks` whole-order arguments/results with one before/after task move,
-required `expected_order_revision` and the actual scheduling `instruction`.
-Board/queue envelopes return `project_order_revision`; creation appends tasks and
-advances it, while reads/no-op moves never advance it. Candidate schema 0/1/2
-upgrades use a fresh verified `*.pre-schema-3.*.sqlite3` online backup before DDL,
-with transactional rollback and all prior columns/rows preserved.
+Protocol `14` / schema `10` replace project-level anchor moves with
+`reorder_tasks(workstream_id, task_ids, expected_order_revision)`: one ordered-ID
+prefix, with all unlisted members following in their previous relative order.
+Workstreams store independent order revisions and local positions. Every effective
+list initially preserves existing project baseline order at revision 0. Scope,
+group and exclusion expressions remain live; membership changes append new
+members and remove departed ones transactionally. Boards/action/init/status and
+exports expose `workstream_order_revision`; project-wide boards expose only a
+deterministic baseline. Empty/already-matching requests preserve revision/keys.
+Task/spec/proof revisions and other workstream lists never change on reorder.
+Verified online `*.pre-schema-10.*.sqlite3` backups include committed WAL data;
+DDL, list seeding and validation roll back together on failure. Existing project
+order columns remain private historical storage, without a public reorder surface.
+Refresh clients for the new schema only during the coordinated rollout; the live
+service and installed guidance remain held during the isolated experiment.
 
 Protocol revision `5` adds global concrete prerequisites and compact blocker
 references. Protocol revision `6` requires full-spec-bound artifact/commit

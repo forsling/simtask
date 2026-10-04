@@ -33,7 +33,7 @@ MCP connections need to discover the updated tool schema before using the new
 
 - The header identifies the project, checkout, branch/name and workstream scope
   revision. A scope revision is not a version of every task in the report.
-- The overview counts the exported tasks and lists them in project order.
+- The overview counts the exported tasks and lists them in workstream order.
   Workflow views match `list_tasks(project, workstream_id)`, including blockers, review and sign-off. A task's stored disposition is
   shown separately in its details; "open" alone is not its workflow state.
 - Group context and progress cover all member repositories, even if the local

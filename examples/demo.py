@@ -56,11 +56,15 @@ async def exercise(database: Path):
             assert milestone["enum"] == ["review", "signoff"]
             assert "exceptionally" in descriptor.description
         move_schema = next(tool.input_schema for tool in tools if tool.name == "reorder_tasks")
-        assert move_schema["properties"]["position"]["enum"] == ["before", "after"]
-        assert {"task_id", "anchor_id", "expected_order_revision", "instruction"} <= set(
-            move_schema["required"]
+        assert move_schema["properties"]["task_ids"]["type"] == "array"
+        assert set(move_schema["required"]) == {
+            "workstream_id",
+            "task_ids",
+            "expected_order_revision",
+        }
+        assert (
+            not {"project", "task_id", "anchor_id", "position"} & move_schema["properties"].keys()
         )
-        assert not {"ordered_ids", "expected_order"} & move_schema["properties"].keys()
         print(f"Connected over stdio; discovered {len(tools)} tools.")
 
         async def call(tool_name, **arguments):
@@ -173,20 +177,17 @@ async def exercise(database: Path):
             title="Prioritized remaining work",
             workstream_id=workstream_id,
         )
-        board = await call("list_tasks", project=project_id)
+        board = await call("list_tasks", project=project_id, workstream_id=workstream_id)
         move_args = dict(
-            project=project_id,
-            task_id=prioritized["id"],
-            anchor_id=task_id,
-            position="before",
-            expected_order_revision=board["project_order_revision"],
-            instruction="Synthetic user scheduling decision",
+            workstream_id=workstream_id,
+            task_ids=[prioritized["id"]],
+            expected_order_revision=board["workstream_order_revision"],
         )
         moved = await call("reorder_tasks", **move_args)
         assert moved["changed"] and not {"ordered_ids", "items"} & moved.keys()
         stale_move = await client.call_tool("reorder_tasks", move_args)
         assert stale_move.is_error and "revision_conflict" in str(stale_move.content)
-        move_args["expected_order_revision"] = moved["project_order_revision"]
+        move_args["expected_order_revision"] = moved["workstream_order_revision"]
         assert not (await call("reorder_tasks", **move_args))["changed"]
         selected = await call("get_next_action", workstream_id=workstream_id)
         assert selected["task"]["id"] == prioritized["id"]

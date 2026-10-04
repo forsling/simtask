@@ -327,7 +327,7 @@ def create_server(
         limit: int = 20,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Compact project or workstream queue in one project-level order."""
+        """Compact workstream list in its local order, or deterministic project baseline."""
         return store.list_tasks(project, workstream_id, state, limit, offset)
 
     @server.tool(annotations=additive, structured_output=True)
@@ -542,32 +542,21 @@ def create_server(
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def reorder_tasks(
-        project: str,
-        task_id: str,
-        anchor_id: str,
-        position: Literal["before", "after"],
-        expected_order_revision: int,
-        instruction: str,
+        workstream_id: str, task_ids: list[str], expected_order_revision: int
     ) -> dict[str, Any]:
-        """Move one task before/after an anchor with the board's project_order_revision.
+        """Set the named workstream's ordered task-ID prefix in one atomic call.
 
-        Use only for actual scheduling intent; record its supporting instruction or
-        authority. Shared ordering never changes requirements/proof or workstream gates.
+        Unlisted members follow in their previous relative order; membership is unchanged.
+        Use workstream_order_revision from the board/action/init/status. Empty or already
+        matching requests are no-ops. Duplicate/nonmember IDs and stale revisions fail.
+        Specifications, proof, completion and every other workstream list are unchanged.
         """
-        return store.compact_call(
-            "reorder_tasks",
-            project,
-            task_id,
-            anchor_id,
-            position,
-            expected_order_revision,
-            instruction,
-        )
+        return store.compact_call("reorder_tasks", workstream_id, task_ids, expected_order_revision)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def get_next_action(workstream_id: str) -> dict[str, Any]:
-        """Read one implement/review action in shared order, without claiming or reordering.
+        """Read one implement/review action in workstream order, without claiming or reordering.
 
         Full current spec/token and exactly one applicable local proof for review
         (or rework) are included. Autonomous actions require workstream membership and clear

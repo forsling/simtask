@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 9
+DATABASE_SCHEMA_REVISION = 10
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
 # Concerns have explicit provenance in their own column, never in arbitrary proof text.
 CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
@@ -43,6 +43,7 @@ SCHEMA = (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
         name TEXT NOT NULL, branch TEXT, checkout_path TEXT,
         revision INTEGER NOT NULL, created_at TEXT NOT NULL,
+        order_revision INTEGER NOT NULL DEFAULT 0,
         UNIQUE(project_id, name), UNIQUE(project_id, branch))""",
     """CREATE TABLE IF NOT EXISTS scope_members (
         workstream_id TEXT NOT NULL REFERENCES workstreams(id),
@@ -87,6 +88,10 @@ SCHEMA = (
         WHERE outcome='ok' AND ((action='attempt.reviewed'
         AND json_extract(request_json,'$.verdict')='rework') OR (action='task.signoff'
         AND json_extract(request_json,'$.decision') IN ('rework','revise')))""",
+    """CREATE TABLE IF NOT EXISTS workstream_task_order (
+        workstream_id TEXT NOT NULL REFERENCES workstreams(id),
+        task_id TEXT NOT NULL REFERENCES tasks(id), order_key INTEGER NOT NULL,
+        PRIMARY KEY(workstream_id, task_id))""",
     """CREATE TABLE IF NOT EXISTS legacy_membership_migration (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id), source_schema INTEGER NOT NULL,
         task_json TEXT NOT NULL, scopes_json TEXT NOT NULL,
@@ -160,6 +165,11 @@ class Store:
         project_columns = {row["name"] for row in db.execute("PRAGMA table_info(projects)")}
         if "order_revision" not in project_columns:
             db.execute("ALTER TABLE projects ADD COLUMN order_revision INTEGER NOT NULL DEFAULT 0")
+        workstream_columns = {row["name"] for row in db.execute("PRAGMA table_info(workstreams)")}
+        if "order_revision" not in workstream_columns:
+            db.execute(
+                "ALTER TABLE workstreams ADD COLUMN order_revision INTEGER NOT NULL DEFAULT 0"
+            )
         for table in ("prerequisites", "gate_proposals"):
             columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
             if "milestone" not in columns:
@@ -199,6 +209,8 @@ class Store:
             db.execute(SCHEMA[3])
         if source_version < 9:
             Store._migrate_membership(db, source_version)
+        if source_version < 10:
+            Store._sync_orders(db, advance=False)
         for statement in SCHEMA:
             if statement.startswith("CREATE TRIGGER"):
                 db.execute(statement)
@@ -391,6 +403,32 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             try:
                 result = operation(db, scope)
+                if action in {
+                    "project.initialized",
+                    "session.initialized",
+                    "workstream.initialized",
+                    "scope.changed",
+                    "task.workstream_added",
+                    "task.workstream_removed",
+                    "task.created",
+                    "task.decomposed",
+                    "group.member_added",
+                    "group.created",
+                    "gate.prerequisite_proposed",
+                }:
+                    # Persist effective membership changes with the original mutation/audit.
+                    # Reads never reconcile or reorder lists.
+                    self._sync_orders(db)
+                    if "workstream" in result:
+                        result["workstream"] = self._workstream(db, result["workstream"]["id"])
+                    identity = result.get("workstream_id") or (result.get("workstream") or {}).get(
+                        "id"
+                    )
+                    if action == "scope.changed":
+                        identity = result["id"]
+                        result["order_revision"] = self._order_revision(db, identity)
+                    if identity:
+                        result["workstream_order_revision"] = self._order_revision(db, identity)
                 if COMPACT_CALL.get():
                     result = self._mutation_ack(db, action, result, request, scope)
                 decision_ref = self._event(db, action, request, scope, "ok")
@@ -428,12 +466,14 @@ class Store:
                 return {k: result[k] for k in ("id", "project_id", "revision")} | {
                     "workstream_id": result["id"],
                     "workstream_revision": result["revision"],
+                    "workstream_order_revision": result["order_revision"],
                     "changed": result["changed"],
                     **{k + "_count": len(result[k]) for k in ("members", "groups", "exclusions")},
                 }
             if action == "workstream.initialized":
                 return {
                     "workstream": result["workstream"],
+                    "workstream_order_revision": result["workstream_order_revision"],
                     "changed": True,
                     **{k + "_count": len(result[k]) for k in ("members", "groups", "exclusions")},
                 }
@@ -489,26 +529,30 @@ class Store:
                 "changed": True,
                 "members": [{"id": identity, "revision": 1} for identity in result["members"]],
                 "workstreams": [
-                    {"id": r["id"], "revision": r["revision"]}
+                    {
+                        "id": r["id"],
+                        "revision": r["revision"],
+                        "order_revision": r["order_revision"],
+                    }
                     for r in db.execute(
-                        "SELECT w.id,w.revision FROM workstreams w JOIN scope_groups s "
+                        "SELECT w.id,w.revision,w.order_revision FROM workstreams w "
+                        "JOIN scope_groups s "
                         "ON s.workstream_id=w.id WHERE s.group_id=? ORDER BY w.id",
                         (result["id"],),
                     )
                 ],
-                "project_order_revision": self._order_revision(db, scope["project_id"]),
             }
         if action == "gate.prerequisite_proposed":
             ack = {
                 "task": self._task_ack(db, result["task"]),
                 "proposal": self._task_ack(db, result["proposal"]),
                 "changed": True,
-                "project_order_revision": self._order_revision(db, scope["project_id"]),
             }
             if request["workstream_id"]:
                 ack.update(
                     workstream_id=request["workstream_id"],
                     workstream_revision=self._workstream(db, request["workstream_id"])["revision"],
+                    workstream_order_revision=self._order_revision(db, request["workstream_id"]),
                 )
             return ack
         if action.startswith("gate."):
@@ -575,7 +619,11 @@ class Store:
                 GROUP BY p.id ORDER BY p.name, p.id LIMIT ? OFFSET ?""",
                 (limit + 1, offset),
             ).fetchall()
-            return self._paged([dict(row) for row in rows], limit, offset)
+            return self._paged(
+                [{key: row[key] for key in row.keys() if key != "order_revision"} for row in rows],
+                limit,
+                offset,
+            )
 
         return self._run("projects.listed", dict(limit=limit, offset=offset), operation)
 
@@ -663,6 +711,7 @@ class Store:
         if not rows:
             raise TaskError("project_not_initialized: use init_project before task operations")
         result = dict(rows[0])
+        result.pop("order_revision", None)
         scope["project_id"] = result["id"]
         return result
 
@@ -727,6 +776,7 @@ class Store:
             branch=branch,
             checkout_path=checkout_path,
             revision=1,
+            order_revision=0,
             created_at=timestamp(),
         )
         try:
@@ -776,7 +826,7 @@ class Store:
                 )
             ]
             for row in rows:
-                all_ids = self._scope_ids(db, row["id"])
+                all_ids = self._ordered_scope_ids(db, row["id"])
                 row["scope"] = all_ids[:3]
                 groups = self._scope_group_ids(db, row["id"])
                 row["groups"] = groups[:3]
@@ -807,7 +857,11 @@ class Store:
             # A separate page keeps concerns visible even beyond the ordinary queue page.
             concerned = [item for item in queue if item["concern_count"]]
             concerned.sort(
-                key=lambda item: (item["view"] != "signoff", item["order_key"], item["id"])
+                key=lambda item: (
+                    item["view"] != "signoff",
+                    item["workstream_order_key"],
+                    item["id"],
+                )
             )
             concern_page = self._paged(concerned[offset : offset + limit + 1], limit, offset)
             concern_page["items"] = [
@@ -847,10 +901,10 @@ class Store:
                         "next_offset": offset + limit if len(rows) > offset + limit else None,
                     }
             return {
-                "project": dict(project),
+                "project": {key: project[key] for key in project.keys() if key != "order_revision"},
                 "workstream": ws,
                 "status": self._status_summary(db, workstream_id),
-                "project_order_revision": self._order_revision(db, ws["project_id"]),
+                "workstream_order_revision": ws["order_revision"],
                 "total": len(queue),
                 "concern_tasks": {"total": len(concerned), **concern_page},
                 **({"scope": scope_page} if include_scope else {}),
@@ -860,18 +914,11 @@ class Store:
         return self._run("workstream.status_read", request, operation)
 
     def _scoped_queue(self, db, workstream_id):
-        ids = set(self._scope_ids(db, workstream_id))
-        queue = []
-        for row in db.execute(
-            "SELECT id FROM tasks WHERE project_id=(SELECT project_id FROM workstreams WHERE id=?) "
-            "ORDER BY order_key,id",
-            (workstream_id,),
-        ):
-            if row["id"] not in ids:
-                continue
-            task = self._task(db, row["id"], {})
-            queue.append(self._card(db, task, workstream_id))
-        return queue
+        return [
+            self._card(db, self._task(db, identity, {}), workstream_id)
+            | {"workstream_order_key": index}
+            for index, identity in enumerate(self._ordered_scope_ids(db, workstream_id), 1)
+        ]
 
     @staticmethod
     def _status_view(task, reasons):
@@ -1002,6 +1049,8 @@ class Store:
                 (canonical,),
             ).fetchone()
             selected = dict(attached) if attached else None
+            if selected:
+                selected.pop("order_revision", None)
             if project is not None:
                 chosen = self._project(db, project, scope)
                 if selected and selected["id"] != chosen["id"]:
@@ -1020,6 +1069,8 @@ class Store:
                         "SELECT * FROM projects WHERE id=?", (target["project_id"],)
                     ).fetchone()
                 )
+            if chosen:
+                chosen.pop("order_revision", None)
             candidate = None
             if chosen:
                 if branch:
@@ -1075,7 +1126,7 @@ class Store:
                         "choices": ["new_workstream", "rebind_workstream"],
                     }
                 projects = [
-                    dict(row)
+                    {key: row[key] for key in row.keys() if key != "order_revision"}
                     for row in db.execute(
                         "SELECT * FROM projects ORDER BY name,id LIMIT 11"
                     ).fetchall()
@@ -1191,10 +1242,10 @@ class Store:
         return {
             "state": "ready",
             "message": "Workstream ready",
-            "project": project,
+            "project": {key: value for key, value in project.items() if key != "order_revision"},
             "workstream": ws,
             "scope_revision": ws["revision"],
-            "project_order_revision": self._order_revision(db, project["id"]),
+            "workstream_order_revision": ws["order_revision"],
             "queue": self._scoped_queue(db, ws["id"])[:10],
             "queue_total": len(self._scope_ids(db, ws["id"])),
             "queue_next_offset": 10 if len(self._scope_ids(db, ws["id"])) > 10 else None,
@@ -2370,7 +2421,6 @@ class Store:
                 "unknown",
             ),
         )
-        db.execute("UPDATE projects SET order_revision=order_revision+1 WHERE id=?", (project_id,))
         return task_id
 
     @staticmethod
@@ -2478,7 +2528,6 @@ class Store:
             ack.update(
                 changed=True,
                 specification_etag=self._specification_etag(task),
-                project_order_revision=self._order_revision(db, project_id),
             )
             if workstream_id:
                 ack["workstream_id"] = workstream_id
@@ -2964,10 +3013,6 @@ class Store:
             }
             self._save_task(db, after)
             db.execute(
-                "UPDATE projects SET order_revision=order_revision+1 WHERE id=?",
-                (before["project_id"],),
-            )
-            db.execute(
                 "INSERT OR IGNORE INTO scope_groups "
                 "SELECT workstream_id,? FROM scope_members WHERE task_id=?",
                 (task_id, task_id),
@@ -2995,77 +3040,121 @@ class Store:
         return self._run("task.decomposed", request, operation)
 
     @staticmethod
-    def _order_revision(db, project_id):
-        return db.execute(
-            "SELECT order_revision FROM projects WHERE id=?", (project_id,)
-        ).fetchone()[0]
+    def _order_revision(db, workstream_id):
+        return Store._workstream(db, workstream_id)["order_revision"]
 
-    def reorder_tasks(
-        self, project, task_id, anchor_id, position, expected_order_revision, instruction
-    ):
-        """Move one concrete task immediately before/after an anchor in shared project order."""
+    @staticmethod
+    def _ordered_scope_ids(db, workstream_id):
+        """Read local order, with baseline append for an in-transaction new inclusion."""
+        effective = set(Store._scope_ids(db, workstream_id))
+        retained = [
+            row["task_id"]
+            for row in db.execute(
+                "SELECT task_id FROM workstream_task_order WHERE workstream_id=? "
+                "ORDER BY order_key,task_id",
+                (workstream_id,),
+            )
+            if row["task_id"] in effective
+        ]
+        added = effective - set(retained)
+        baseline = [
+            row["id"]
+            for row in db.execute(
+                "SELECT id FROM tasks WHERE project_id=(SELECT project_id FROM workstreams "
+                "WHERE id=?) AND object_type='task' ORDER BY order_key,id",
+                (workstream_id,),
+            )
+            if row["id"] in added
+        ]
+        return retained + baseline
+
+    @staticmethod
+    def _sync_orders(db, advance=True):
+        """Reconcile derived members without snapshotting scopes or changing retained order."""
+        for ws in db.execute("SELECT id FROM workstreams ORDER BY id").fetchall():
+            identity = ws["id"]
+            current = {
+                row["task_id"]: row["order_key"]
+                for row in db.execute(
+                    "SELECT task_id,order_key FROM workstream_task_order WHERE workstream_id=?",
+                    (identity,),
+                )
+            }
+            ordered = Store._ordered_scope_ids(db, identity)
+            effective = set(ordered)
+            removed = current.keys() - effective
+            added = effective - current.keys()
+            if not removed and not added:
+                continue
+            db.executemany(
+                "DELETE FROM workstream_task_order WHERE workstream_id=? AND task_id=?",
+                [(identity, task_id) for task_id in sorted(removed)],
+            )
+            last = max(current.values(), default=0)
+            for task_id in ordered:
+                if task_id in added:
+                    last += 1
+                    db.execute(
+                        "INSERT INTO workstream_task_order VALUES (?,?,?)",
+                        (identity, task_id, last),
+                    )
+            if advance:
+                db.execute(
+                    "UPDATE workstreams SET order_revision=order_revision+1 WHERE id=?", (identity,)
+                )
+
+    def reorder_tasks(self, workstream_id, task_ids, expected_order_revision):
+        """Set one workstream's ordered prefix; retain unlisted members in their old order."""
         request = dict(
-            project=project,
-            task_id=task_id,
-            anchor_id=anchor_id,
-            position=position,
+            workstream_id=workstream_id,
+            task_ids=task_ids,
             expected_order_revision=expected_order_revision,
-            instruction=instruction,
         )
 
         def operation(db, scope):
-            project_id = self._project(db, project, scope)["id"]
-            revision = self._order_revision(db, project_id)
+            ws = self._workstream(db, workstream_id)
+            scope["project_id"] = ws["project_id"]
+            revision = ws["order_revision"]
             if type(expected_order_revision) is not int or expected_order_revision != revision:
-                raise TaskError("revision_conflict: re-read the project order revision")
-            if not isinstance(position, str) or position not in {"before", "after"}:
-                raise TaskError("invalid_order: position must be before or after")
-            if not isinstance(instruction, str) or not instruction.strip():
-                raise TaskError(
-                    "scheduling_instruction_required: record the actual instruction or authority"
-                )
-            moving = self._task(db, task_id, {})
-            anchor = self._task(db, anchor_id, {})
-            if task_id == anchor_id:
-                raise TaskError("invalid_order: a task cannot anchor itself")
-            if any(
-                t["object_type"] != "task" or t["project_id"] != project_id
-                for t in (moving, anchor)
+                raise TaskError("revision_conflict: re-read this workstream's order revision")
+            if not isinstance(task_ids, list) or any(
+                not isinstance(identity, str) or not identity.strip() for identity in task_ids
             ):
+                raise TaskError("invalid_order: task_ids must be a list of task IDs")
+            if len(set(task_ids)) != len(task_ids):
+                raise TaskError("invalid_order: duplicate task IDs")
+            old_ids = self._ordered_scope_ids(db, workstream_id)
+            supplied = set(task_ids)
+            if supplied - set(old_ids):
                 raise TaskError(
-                    "invalid_order: task and anchor must be concrete tasks in this project"
+                    "invalid_order: every ID must be an included concrete task in this workstream"
                 )
-            current = [
-                dict(row)
-                for row in db.execute(
-                    "SELECT id,order_key FROM tasks WHERE project_id=? AND object_type='task' "
-                    "ORDER BY order_key,id",
-                    (project_id,),
-                )
-            ]
-            old_ids = [row["id"] for row in current]
-            new_ids = [identity for identity in old_ids if identity != task_id]
-            target = new_ids.index(anchor_id) + (position == "after")
-            new_ids.insert(target, task_id)
+            new_ids = task_ids + [identity for identity in old_ids if identity not in supplied]
             changed = new_ids != old_ids
             if changed:
-                # Order is scheduling metadata. Do not touch task/spec revisions,
-                # acceptance, selected attempts, reviews, or completed proof.
-                for index, identity in enumerate(new_ids, 1):
-                    db.execute("UPDATE tasks SET order_key=? WHERE id=?", (index, identity))
+                db.executemany(
+                    "UPDATE workstream_task_order SET order_key=? "
+                    "WHERE workstream_id=? AND task_id=?",
+                    [(index, workstream_id, identity) for index, identity in enumerate(new_ids, 1)],
+                )
                 db.execute(
-                    "UPDATE projects SET order_revision=order_revision+1 WHERE id=?", (project_id,)
+                    "UPDATE workstreams SET order_revision=order_revision+1 WHERE id=?",
+                    (workstream_id,),
                 )
             ack = {
-                "project_id": project_id,
-                "task_id": task_id,
-                "anchor_id": anchor_id,
-                "project_order_revision": revision + int(changed),
+                "project_id": ws["project_id"],
+                "workstream_id": workstream_id,
+                "workstream_order_revision": revision + int(changed),
                 "changed": changed,
+                "supplied_count": len(task_ids),
+                "total": len(old_ids),
             }
             scope.update(
-                task_id=task_id,
-                before={"project_order_revision": revision, "order_key": moving["order_key"]},
+                before={
+                    "workstream_id": workstream_id,
+                    "workstream_order_revision": revision,
+                    "total": len(old_ids),
+                },
                 after=ack,
             )
             return ack
@@ -3165,17 +3254,17 @@ class Store:
         return reasons
 
     def get_next_action(self, workstream_id):
-        """One autonomous action in shared order; selected proof is local/current only."""
+        """One autonomous action in workstream order; selected proof is local/current only."""
 
         def operation(db, scope):
             ws = self._workstream(db, workstream_id)
             scope["project_id"] = ws["project_id"]
-            ids = self._scope_ids(db, workstream_id)
+            ids = self._ordered_scope_ids(db, workstream_id)
             result = {
                 "action": None,
                 "task": None,
                 "attempt": None,
-                "project_order_revision": self._order_revision(db, ws["project_id"]),
+                "workstream_order_revision": ws["order_revision"],
                 "diagnostics": {"scope_empty": not ids, "scoped": len(ids)},
             }
             counts = dict.fromkeys(
@@ -3191,11 +3280,8 @@ class Store:
             )
             if not ids:
                 return result | {"diagnostics": result["diagnostics"] | counts}
-            marks = ",".join("?" for _ in ids)
-            for row in db.execute(
-                f"SELECT id FROM tasks WHERE id IN ({marks}) ORDER BY order_key,id", ids
-            ):
-                task = self._task(db, row["id"], {})
+            for identity in ids:
+                task = self._task(db, identity, {})
                 reasons = self._gate_reasons(db, task, workstream_id)
                 # Review is an action, but never bypasses autonomous authority gates.
                 blockers = [r for r in reasons if r not in {"review", "signoff"}]
@@ -3558,28 +3644,32 @@ class Store:
         def operation(db, scope):
             self._page(limit, offset)
             project_id = self._project(db, project, scope)["id"]
-            ids = None
             if workstream_id is not None:
                 self._workstream(db, workstream_id, project_id)
-                ids = set(self._scope_ids(db, workstream_id))
-            result = []
-            for row in db.execute(
-                "SELECT id FROM tasks WHERE project_id=? AND object_type='task' "
-                "ORDER BY order_key,id",
-                (project_id,),
-            ):
-                if ids is not None and row["id"] not in ids:
-                    continue
-                task = self._task(db, row["id"], {})
-                card = self._card(db, task, workstream_id)
-                if state and state != card.get(
-                    "view", self._status_view(task, card["gate_diagnostics"])
-                ):
-                    continue
-                result.append(card)
+                cards = self._scoped_queue(db, workstream_id)
+                ordering = {
+                    "workstream_id": workstream_id,
+                    "workstream_order_revision": self._order_revision(db, workstream_id),
+                }
+            else:
+                cards = [
+                    self._card(db, self._task(db, row["id"], {}))
+                    for row in db.execute(
+                        "SELECT id FROM tasks WHERE project_id=? AND object_type='task' "
+                        "ORDER BY order_key,id",
+                        (project_id,),
+                    )
+                ]
+                ordering = {"ordering": "project_baseline"}
+            result = [
+                card
+                for card in cards
+                if not state
+                or state == card.get("view", self._status_view(card, card["gate_diagnostics"]))
+            ]
             return {
                 "project_id": project_id,
-                "project_order_revision": self._order_revision(db, project_id),
+                **ordering,
                 "total": len(result),
                 **self._paged(result[offset : offset + limit + 1], limit, offset),
             }
@@ -3591,10 +3681,8 @@ class Store:
         references = {
             identity: {"explicit scope"} for identity in self._scope_group_ids(db, ws["id"])
         }
-        for task in sorted(
-            (self._details(db, self._task(db, identity, {})) for identity in ids),
-            key=lambda task: (task["order_key"], task["id"]),
-        ):
+        for identity in ids:
+            task = self._details(db, self._task(db, identity, {}))
             if not include_closed and task["status"] in {"done", "dropped"}:
                 continue
             task["view"] = self._status_view(task, self._gate_reasons(db, task, ws["id"]))
@@ -3622,6 +3710,7 @@ class Store:
         content = render_markdown(project, ws, tasks, groups, len(ids), include_closed)
         return {
             "format": FORMAT,
+            "workstream_order_revision": ws["order_revision"],
             "sha256": hashlib.sha256(content.encode()).hexdigest(),
             "content": content,
         }
@@ -3635,7 +3724,7 @@ class Store:
             project = db.execute(
                 "SELECT * FROM projects WHERE id=?", (ws["project_id"],)
             ).fetchone()
-            ids = self._scope_ids(db, workstream_id)
+            ids = self._ordered_scope_ids(db, workstream_id)
             if format == "markdown":
                 return self._markdown_export(db, project, ws, ids, include_closed)
             lines = [
@@ -3660,12 +3749,7 @@ class Store:
                         "",
                     ]
                 )
-            for task_id in sorted(
-                ids,
-                key=lambda x: db.execute("SELECT order_key FROM tasks WHERE id=?", (x,)).fetchone()[
-                    0
-                ],
-            ):
+            for task_id in ids:
                 task = self._details(db, self._task(db, task_id, {}))
                 if not include_closed and task["status"] in {"done", "dropped"}:
                     continue
@@ -3707,6 +3791,7 @@ class Store:
             content = "\n".join(lines)
             return {
                 "format": "task-mcp/v1",
+                "workstream_order_revision": ws["order_revision"],
                 "sha256": hashlib.sha256(content.encode()).hexdigest(),
                 "content": content,
             }

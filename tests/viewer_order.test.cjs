@@ -38,49 +38,61 @@ function descendants(node) {return [node, ...(node.children || []).flatMap(desce
 async function test() {
   context.task = {id: "task", title: "Signed off task", project_id: "project", status: "done",
     object_type: "task", revision: 9, body: "Complete scope", acceptance_criteria: "Proof",
-    workstream_ids: ["main"], unresolved_items: [], blocked_by: [], attempts: [], gate_proposals: []};
-  run(`state.project = "project"; state.task = task; state.streams = []; state.projects = [];
-    api = async (action, payload) => { captured = {action, payload};
-      return action === "tasks" ? {project_order_revision: 7, next_offset: null,
-        items: [{id: "task", title: task.title, order_key: 1, view: "done"},
-                {id: "anchor", title: "Open anchor", order_key: 2, view: "ready"}]} :
-        {task_id: "task", anchor_id: "anchor", project_order_revision: 8, changed: true}; };`);
+    workstream_ids: ["a", "b"], unresolved_items: [], blocked_by: [], attempts: [], gate_proposals: []};
+  run(`state.project = "project"; state.task = task; state.stream = "a"; state.streams = []; state.projects = [];
+    pages = async () => [{id: "a", branch: "A"}, {id: "b", branch: "B"}];
+    calls = []; api = async (action, payload) => { captured = {action, payload}; calls.push(captured);
+      return action === "tasks" ? {workstream_order_revision: 7, next_offset: payload.offset === 0 ? 100 : null,
+        items: payload.offset === 0 ? [{id: "task", title: task.title, workstream_order_key: 1, view: "done"},
+          {id: "anchor", title: "Open anchor", workstream_order_key: 2, view: "ready"}] :
+          [{id: "unseen", title: "Task beyond first page", workstream_order_key: 3}]} :
+        {workstream_id: payload.workstream_id, workstream_order_revision: 8, changed: true}; };`);
   run("renderDetail(task)");
   const labels = descendants(get("detail")).map(n => n.textContent);
-  assert.ok(labels.includes("Move in project order"), "Scheduling controls remain available for completed tasks");
+  assert.ok(labels.includes("Reorder tasks"), "Completed tasks may change list position");
   assert.ok(!labels.includes("Edit (e)"));
   await run("moveTask(task)");
   assert.equal(context.captured.action, "tasks");
-  assert.equal("workstream_id" in context.captured.payload, false, "Anchor selection uses shared project order");
+  assert.equal(context.captured.payload.workstream_id, "a");
+  assert.equal(get("field-workstream_id").value, "a");
   assert.equal(get("field-anchor_id").required, true);
-  assert.deepEqual(get("field-anchor_id").children.map(n => n.value), ["anchor"], "Self is excluded");
-  context.values = new Map([["anchor_id", "anchor"], ["position", "after"], ["instruction", "User asked to move it after the anchor"]]);
+  assert.deepEqual(get("field-anchor_id").children.map(n => n.value), ["anchor", "unseen"]);
+  assert.ok(!get("fields").children.some(n => n.name === "instruction"));
+  context.values = new Map([["workstream_id", "a"], ["anchor_id", "anchor"], ["position", "after"]]);
   await run("submitAction(values)");
   assert.equal(context.captured.action, "reorder");
   assert.deepEqual(JSON.parse(JSON.stringify(context.captured.payload)), {
-    project: "project", task_id: "task", anchor_id: "anchor", position: "after",
-    expected_order_revision: 7, instruction: "User asked to move it after the anchor",
+    workstream_id: "a", task_ids: ["anchor", "task", "unseen"], expected_order_revision: 7,
   });
+  assert.equal(context.calls.filter(c => c.action === "reorder").length, 1, "One call retains unseen members");
+  // Conflict reconciliation keeps the named workstream and reloads its complete order.
   run(`api = async (action, payload) => {
     captured = {action, payload};
-    if (action === "tasks") return {project_order_revision: 11, next_offset: null,
-      items: [{id: "task", title: task.title, order_key: 1}, {id: "anchor", title: "Open anchor", order_key: 2}]};
+    if (action === "tasks") return {workstream_order_revision: 11, next_offset: null,
+      items: [{id: "unseen", title: "Earlier now", workstream_order_key: 1}, {id: "task", title: task.title, workstream_order_key: 2}, {id: "anchor", title: "Open anchor", workstream_order_key: 3}]};
     const error = new Error("revision_conflict"); error.conflict = true; throw error;
   };`);
   await assert.rejects(run("submitAction(values)"), /revision_conflict/);
-  assert.equal(get("field-instruction").value, "", "Conflict keeps existing form fields intact");
-  await descendants(get("conflict")).find(n => n.textContent === "Show the current project order").onclick();
-  const checkbox = descendants(get("fields")).find(n => n.type === "checkbox");
-  checkbox.checked = true;
-  descendants(get("conflict")).find(n => n.textContent === "I've reviewed it — use this order").onclick();
-  assert.equal(checkbox.checked, false);
-  run(`api = async (action, payload) => {captured = {action, payload}; return {changed: false, project_order_revision: 11};};`);
-  const noop = await run("submitAction(values)");
-  assert.equal(noop.changed, false);
+  await descendants(get("conflict")).find(n => n.textContent === "Show the current workstream order").onclick();
+  assert.equal(context.captured.payload.workstream_id, "a");
+  descendants(get("conflict")).find(n => n.textContent === "Use this order").onclick();
+  run(`api = async (action, payload) => {captured = {action, payload}; return {changed: false, workstream_order_revision: 11};};`);
+  assert.equal((await run("submitAction(values)")).changed, false);
   assert.equal(context.captured.payload.expected_order_revision, 11);
-  assert.equal(context.captured.payload.instruction, "User asked to move it after the anchor");
+  assert.deepEqual(Array.from(context.captured.payload.task_ids), ["unseen", "anchor", "task"]);
+  // Choosing B refreshes its own anchors/revision, never sends A's stale list to B.
+  run(`api = async (action, payload) => {captured = {action, payload}; return action === "tasks" ? {
+    workstream_order_revision: 20, next_offset: null, items: [{id: "anchor", title: "B first", workstream_order_key: 1}, {id: "task", title: task.title, workstream_order_key: 2}]} : {changed: true};};`);
+  get("field-workstream_id").value = "b";
+  await get("field-workstream_id").onchange();
+  await new Promise(resolve => setImmediate(resolve));
+  context.values.set("workstream_id", "b");
+  await run("submitAction(values)");
+  assert.equal(context.captured.payload.workstream_id, "b");
+  assert.equal(context.captured.payload.expected_order_revision, 20);
+  assert.deepEqual(Array.from(context.captured.payload.task_ids), ["anchor", "task"]);
   run(`api = async (action, payload) => ({items: [], next_offset: payload.offset === 0 ? 100 : null,
-     project_order_revision: payload.offset === 0 ? 11 : 12});`);
-  await assert.rejects(run('taskBoard({project: "project"})'), /order changed while loading/);
+     workstream_order_revision: payload.offset === 0 ? 11 : 12});`);
+  await assert.rejects(run('taskBoard({project: "project", workstream_id: "a"})'), /order changed while loading/);
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});

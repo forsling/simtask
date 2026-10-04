@@ -83,7 +83,7 @@ After restart, `get_next_action(workstream_id)` may return `review` with the ful
 current task and exactly one complete current-spec local attempt. Send it directly
 to a fresh independent reviewer after checking actual artifact applicability.
 `implement` goes to an implementer, including rework findings when applicable.
-Both use shared project order and unchanged autonomous gates. Passed/human_review
+Both use independent workstream order and unchanged autonomous gates. Passed/human_review
 waits for human sign-off; no eligible action returns bounded waiting counts.
 Selection creates no claim, lease, reorder or partial-progress write. Normal Git
 continuation needs no extra scan/checkpoint after every step.

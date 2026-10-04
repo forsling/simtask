@@ -359,15 +359,12 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
         )
         reordered = await call(
             "reorder_tasks",
-            project=project,
-            task_id=proposed["proposal"]["id"],
-            anchor_id=task["id"],
-            position="before",
-            expected_order_revision=proposed["project_order_revision"],
-            instruction="Synthetic request to schedule the prerequisite first",
+            workstream_id=ws,
+            task_ids=[proposed["proposal"]["id"]],
+            expected_order_revision=proposed["workstream_order_revision"],
         )
         assert reordered["changed"]
-        assert reordered["project_order_revision"] == proposed["project_order_revision"] + 1
+        assert reordered["workstream_order_revision"] == proposed["workstream_order_revision"] + 1
         duplicate = await call(
             "add_prerequisite",
             task_id=task["id"],
@@ -472,12 +469,11 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
         assert split["members"][0]["revision"] == 1 and "body" not in split["members"][0]
         moved = await call(
             "reorder_tasks",
-            project=project,
-            task_id=proposed["proposal"]["id"],
-            anchor_id=task["id"],
-            position="after",
-            expected_order_revision=split["project_order_revision"],
-            instruction="Synthetic requested order",
+            workstream_id=ws,
+            task_ids=[split["members"][0]["id"], proposed["proposal"]["id"]],
+            expected_order_revision=next(
+                w["order_revision"] for w in split["workstreams"] if w["id"] == ws
+            ),
         )
         assert moved["changed"]
 

@@ -396,16 +396,13 @@ async def exercise(database):
         )
         moved = await ok(
             "reorder_tasks",
-            project=project,
-            task_id=proposed["proposal"]["id"],
-            anchor_id=member["id"],
-            position="before",
-            expected_order_revision=proposed["project_order_revision"],
-            instruction="Synthetic request to put this prerequisite immediately first",
+            workstream_id=ws,
+            task_ids=[proposed["proposal"]["id"]],
+            expected_order_revision=proposed["workstream_order_revision"],
         )
         assert (
             moved["changed"]
-            and moved["project_order_revision"] == proposed["project_order_revision"] + 1
+            and moved["workstream_order_revision"] == proposed["workstream_order_revision"] + 1
         )
         report["prerequisite_order_continuation"] = {
             "call_count": len(trace) - start,

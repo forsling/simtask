@@ -474,30 +474,43 @@ those rare workflows are deferred.
 | Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
 
 Mutations that change a task or workstream use the last returned entity revision, checked atomically; user pauses do not invalidate it.
-Board/queue responses (`list_tasks`, `workstream_status`, successful `init`,
-`get_next_action`) expose `project_order_revision`. Move one task immediately before
-or after a concrete task in the same project:
+Workstream board/action/init/status responses expose `workstream_order_revision`.
+Reorder one named workstream's list with one call:
 
 ```text
-reorder_tasks(project, task_id, anchor_id, position="before"|"after",
-              expected_order_revision=board.project_order_revision,
-              instruction="actual supporting scheduling instruction/authority")
+reorder_tasks(workstream_id, task_ids=[third_id, first_id],
+              expected_order_revision=board.workstream_order_revision)
 ```
 
-The compact acknowledgement contains project/task/anchor IDs, the order revision
-and `changed`. Stale moves, self-anchors and invalid/cross-project/group anchors
-fail atomically. A move already in place returns `changed:false` and keeps the
-order revision. Successful moves advance it once; new tasks append at the end
-and advance it on insertion. Decomposition also advances it for removal of the
-concrete parent and each new member. Migrated projects begin at order revision 0.
-Ordering changes no task/spec revisions, workstream membership or proof, even when completed
-rows shift position. Every workstream sees the same order through its own scope;
-local attempts and all execution gates remain local. Reads and selection never
-reorder or normalize work. Use moves only for actual scheduling intent, recorded
-alongside the configured audit actor (which is not authenticated). Assess
-excessive use after rollout with existing audit events, without routine reporting
-or automatic reshuffling. The browser's **Move in project order** form uses the
-same anchor contract and preserves the draft on conflict for explicit review.
+The supplied IDs become the exact prefix. Every unlisted effective member follows
+in its previous relative order. This changes no memberships, canonical task/spec
+revisions, selected completion, proof or other workstream lists. Completed tasks
+can be reordered. Duplicate IDs, IDs outside the named workstream (including
+groups), invalid lists and stale revisions fail atomically. An empty list or an
+already-matching prefix is a no-op and preserves the revision and stored keys.
+A changed order advances the target order revision once. The compact ACK returns
+project/workstream identity, `workstream_order_revision`, `changed`,
+`supplied_count` and `total`, without echoing tasks or the list.
+
+Newly included members append in deterministic project baseline order; retained
+members keep their positions. Removal affects only that list; re-adding appends.
+Live group inclusions and exclusions retain their existing scope semantics.
+Initial schema 10 migration preserves each effective list's prior project order
+at revision 0. Scoped boards, next-action selection, status and exports use local
+order; scoped cards include `workstream_order_key`. Project-wide lists report
+`ordering=project_baseline` and remain deterministic without a reorder surface.
+The viewer's **Reorder tasks** form names the affected workstream and translates
+relative placement choices to one complete ordered-ID call using that list's
+revision. It preserves the draft on conflict and needs no typed explanation.
+Reads never reorder. Actual requests and configured audit actors retain existing
+attribution; assess usage from existing events after rollout, without automatic
+reshuffling or routine reporting.
+
+For a synthetic A/B browser preview with four shared tasks and independent
+orders, run `python examples/workstream_order_demo.py`. It creates a fresh
+disposable database and prints its private viewer link and stop command. A opens
+with Gamma selected and **Reorder tasks** visible; B keeps Alpha/Beta/Gamma/Delta.
+Use the sidebar and named membership actions to inspect the resulting behavior.
 
 Concurrent writes to one revision permit one winner and return
 `revision_conflict` to the other. Task creation is not deduplicated: inspect the
@@ -548,8 +561,7 @@ task and named workstream revisions once.
 members. A base copies references/exclusions without removing tasks elsewhere.
 Decomposition includes the parent group in every direct parent scope so all new
 members enter those workstreams. Bulk scope changes advance the named workstream
-revision and leave specifications/proof unchanged. Project order remains shared;
-workstream-local order is separate work.
+revision and leave specifications/proof unchanged. Each workstream now keeps its independent local order (protocol 14/schema 10).
 
 Protocol 13/schema 9 replace exclusive queue tools with `add_to_workstream` and
 `remove_from_workstream` (42 tools total). Separate acceptance operations/notes,
@@ -601,7 +613,7 @@ rejection context and signoff history.
 
 ## Deferred work
 
-V1 does not import TASKS.md, support nested groups, per-workstream ordering,
+V1 does not import TASKS.md, support nested groups,
 persistent dynamic scope filters, mandatory claims or leases, dedicated native
 client packages, automatic client configuration, or editable export
 synchronization. A complete Codex dogfood trial and then Claude Code, OpenCode

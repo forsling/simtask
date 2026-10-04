@@ -38,7 +38,7 @@ def _section(lines, title, text, level=4):
 
 
 def render_markdown(project, workstream, tasks, groups, scoped_count, include_closed):
-    """Render a consistent, already-selected snapshot in project task order."""
+    """Render a consistent, already-selected snapshot in workstream task order."""
     lines = [
         "# Task MCP workstream export",
         "",
@@ -52,12 +52,13 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
         f"- Checkout: {_inline(workstream['checkout_path'] or '(unbound)')}",
         f"- Branch: {_inline(workstream['branch'] or '(named workstream; no branch)')}",
         f"- Scope revision: {workstream['revision']}",
+        f"- Workstream order revision: {workstream['order_revision']}",
         f"- Closed tasks: {'included' if include_closed else 'omitted (done and dropped)'}",
         f"- Exported tasks: {len(tasks)} of {scoped_count} in local scope",
         "",
         "## Overview",
         "",
-        "Workflow views match this workstream's queue. Counts cover exported tasks only.",
+        "Workflow views match this workstream's list. Counts cover exported tasks only.",
         "Deferred tasks remain visible when closed tasks are omitted.",
         "",
     ]
@@ -79,7 +80,7 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                 "## Referenced groups",
                 "",
                 "Progress covers all repositories, including members outside this local scope",
-                "or hidden by the closed-task filter. An empty local queue does not mean the",
+                "or hidden by the closed-task filter. An empty local list does not mean the",
                 "whole group is complete. Only local scoped task details appear below.",
                 "",
             ]

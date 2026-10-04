@@ -621,20 +621,17 @@ def test_atomic_moves_over_real_viewer_transport(viewer):
     store.record_review(attempt["id"], 1, "reviewer", "pass", "Reviewed")
     store.signoff_task(first["id"], 2, "approve", "Synthetic human verdict", attempt["id"], 2)
     done = request(server, "/api/details", {"ids": [first["id"]]})[1]["items"][0]
-    status, board = request(server, "/api/tasks", {"project": project})
+    status, board = request(server, "/api/tasks", {"project": project, "workstream_id": ws})
     assert status == 200
     payload = dict(
-        project=project,
-        task_id=second["id"],
-        anchor_id=first["id"],
-        position="before",
-        expected_order_revision=board["project_order_revision"],
-        instruction="Prioritize this work",
+        workstream_id=ws,
+        task_ids=[second["id"]],
+        expected_order_revision=board["workstream_order_revision"],
     )
     status, ack = request(server, "/api/reorder", payload)
     assert status == 200 and ack["changed"] and "ordered_ids" not in ack
     assert request(server, "/api/reorder", payload)[0] == 409
-    payload["expected_order_revision"] = ack["project_order_revision"]
+    payload["expected_order_revision"] = ack["workstream_order_revision"]
     assert request(server, "/api/reorder", payload)[1]["changed"] is False
     after = request(server, "/api/details", {"ids": [first["id"]]})[1]["items"][0]
     assert {k: v for k, v in after.items() if k != "order_key"} == {

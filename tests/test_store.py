@@ -820,14 +820,10 @@ def test_order_and_deterministic_export(store, tmp_path):
     project, ws, _ = setup(store, tmp_path)
     first = task(store, project, ws, "First")
     second = task(store, project, ws, "Second")
-    revision = store.list_tasks(project)["project_order_revision"]
-    store.reorder_tasks(
-        project, second["id"], first["id"], "before", revision, "Synthetic decision"
-    )
+    revision = store.list_tasks(project, ws)["workstream_order_revision"]
+    store.reorder_tasks(ws, [second["id"]], revision)
     with pytest.raises(TaskError, match="revision_conflict"):
-        store.reorder_tasks(
-            project, first["id"], second["id"], "before", revision, "Synthetic decision"
-        )
+        store.reorder_tasks(ws, [first["id"]], revision)
     assert store.get_next_action(ws)["task"]["id"] == second["id"]
     one = store.export_workstream(ws)
     two = store.export_workstream(ws)

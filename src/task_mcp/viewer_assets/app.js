@@ -310,13 +310,13 @@ async function taskBoard(data) {
   let items = [], offset = 0, revision = null;
   do {
     const page = await api("tasks", { ...data, limit: 100, offset });
-    if (revision !== null && page.project_order_revision !== revision)
-      throw new Error("Project order changed while loading. Refresh to see the current order.");
-    revision = page.project_order_revision;
+    if (revision !== null && page.workstream_order_revision !== revision)
+      throw new Error("Workstream order changed while loading. Refresh to see the current order.");
+    revision = page.workstream_order_revision;
     items.push(...page.items);
     offset = page.next_offset;
   } while (offset !== null);
-  return { items, project_order_revision: revision };
+  return { items, workstream_order_revision: revision };
 }
 function projectName(id) {
   return state.projects.find((p) => p.id === id)?.name || "Other project";
@@ -643,7 +643,8 @@ function renderDetail(t) {
   const view = row?.view || t.status;
   const locked = t.status === "done";
 
-  const actions = [button("Move in project order", () => moveTask(t).catch((e) => toast(e.message, true))), button("Edit summary", () => editSummary(t))];
+  const actions = [button("Edit summary", () => editSummary(t))];
+  if (t.workstream_ids?.length) actions.unshift(button("Reorder tasks", () => moveTask(t).catch((e) => toast(e.message, true))));
   if (!locked) {
     actions.push(iconButton("edit", "Edit (e)", () => editTask(t)));
     actions.push(iconButton("more", "More actions", (e) => moreMenu(e.currentTarget, t)));
@@ -1126,61 +1127,77 @@ function decision({ title, description, action, data, key, label, submit, danger
 }
 async function moveTask(t) {
   if (submissionPending) return;
-  const board = await taskBoard({ project: t.project_id });
-  if (submissionPending) return;
-  let revision = board.project_order_revision;
-  openDialog("Move in project order", `Move “${t.title}”. This shared order applies to every workstream. Each workstream keeps its own scope and eligibility. Completed task positions may shift.`, "Move task");
+  const streams = (await pages("workstreams", { project: t.project_id }))
+    .filter(w => t.workstream_ids?.includes(w.id));
+  if (submissionPending || !streams.length) return;
+  openDialog("Reorder tasks", `Choose the workstream and where to place “${t.title}” in its list.`, "Reorder tasks");
   const wrap = el("div", "field");
-  const label = node("label", "Place this task");
-  label.htmlFor = "field-position";
-  const position = node("select");
-  position.id = "field-position"; position.name = "position";
+  const streamLabel = node("label", "Workstream");
+  streamLabel.htmlFor = "field-workstream_id";
+  const picker = node("select");
+  picker.id = "field-workstream_id"; picker.name = "workstream_id"; picker.required = true;
+  for (const w of streams) {
+    const option = node("option", w.branch || w.name); option.value = w.id; picker.append(option);
+  }
+  picker.value = streams.some(w => w.id === state.stream) ? state.stream : streams[0].id;
+  const label = node("label", "Place this task"); label.htmlFor = "field-position";
+  const position = node("select"); position.id = "field-position"; position.name = "position";
   for (const value of ["before", "after"]) {
     const option = node("option", value === "before" ? "Immediately before" : "Immediately after");
     option.value = value; position.append(option);
   }
   position.value = "before";
-  const anchorLabel = node("label", "Project task");
-  anchorLabel.htmlFor = "field-anchor_id";
-  const anchor = node("select");
-  anchor.id = "field-anchor_id"; anchor.name = "anchor_id"; anchor.required = true;
+  const anchorLabel = node("label", "Task in this workstream"); anchorLabel.htmlFor = "field-anchor_id";
+  const anchor = node("select"); anchor.id = "field-anchor_id"; anchor.name = "anchor_id"; anchor.required = true;
+  let revision = null, loadedStream = null, orderedIds = [], generation = 0;
   const populate = (items) => {
-    const selected = anchor.value;
-    anchor.replaceChildren();
-    for (const row of items.filter((row) => row.id !== t.id)) {
-      const option = node("option", `${row.order_key}. ${row.title}${row.view === "done" ? " (done)" : ""}`);
+    const selected = anchor.value; anchor.replaceChildren();
+    for (const row of items.filter(row => row.id !== t.id)) {
+      const option = node("option", `${row.workstream_order_key}. ${row.title}${row.view === "done" ? " (done)" : ""}`);
       option.value = row.id; anchor.append(option);
     }
-    if (items.some((row) => row.id === selected && row.id !== t.id)) anchor.value = selected;
+    if (items.some(row => row.id === selected && row.id !== t.id)) anchor.value = selected;
   };
-  populate(board.items);
-  wrap.append(label, position, anchorLabel, anchor);
-  $("fields").append(wrap);
-  field("instruction", "Scheduling decision", "", "textarea", true, "Record the actual instruction or authority for this move.");
-  confirmation("Apply this scheduling decision to the shared project order.");
+  const load = async () => {
+    const thisGeneration = ++generation, workstream = picker.value;
+    revision = null; loadedStream = null; anchor.replaceChildren();
+    const board = await taskBoard({ project: t.project_id, workstream_id: workstream });
+    if (thisGeneration !== generation || picker.value !== workstream) return;
+    revision = board.workstream_order_revision; loadedStream = workstream;
+    orderedIds = board.items.map(row => row.id); populate(board.items);
+  };
+  picker.onchange = () => {
+    $("conflict").replaceChildren(); load().catch(error => { $("form-error").textContent = error.message; });
+  };
+  wrap.append(streamLabel, picker, label, position, anchorLabel, anchor); $("fields").append(wrap);
   submitAction = async (values) => {
+    const workstream = values.get("workstream_id");
+    if (loadedStream !== workstream || revision === null) throw new Error("Wait for this workstream's list to load.");
+    const anchorId = values.get("anchor_id"), placement = values.get("position");
+    if (!orderedIds.includes(t.id) || anchorId === t.id || !orderedIds.includes(anchorId) || !["before", "after"].includes(placement))
+      throw new Error("Choose a task in this workstream's current list.");
+    const taskIds = orderedIds.filter(identity => identity !== t.id);
+    taskIds.splice(taskIds.indexOf(anchorId) + (placement === "after" ? 1 : 0), 0, t.id);
     try {
       return await api("reorder", {
-        project: t.project_id, task_id: t.id, anchor_id: values.get("anchor_id"),
-        position: values.get("position"), expected_order_revision: revision,
-        instruction: values.get("instruction"),
+        workstream_id: workstream, task_ids: taskIds, expected_order_revision: revision,
       });
     } catch (error) {
-      if (error.conflict) $("conflict").replaceChildren(button("Show the current project order", async () => {
-        const latest = await taskBoard({ project: t.project_id });
+      if (error.conflict) $("conflict").replaceChildren(button("Show the current workstream order", async () => {
+        const latest = await taskBoard({ project: t.project_id, workstream_id: workstream });
+        if (picker.value !== workstream) return;
         const list = el("ol", "");
         for (const row of latest.items) list.append(node("li", row.title));
-        $("conflict").replaceChildren(el("div", "conflict-box", list, button("I've reviewed it — use this order", () => {
-          revision = latest.project_order_revision;
-          populate(latest.items);
-          $("fields").querySelector("[type=checkbox]").checked = false;
-          $("form-error").textContent = "Check the anchor and scheduling note, confirm again, then submit.";
-          $("conflict").replaceChildren();
+        $("conflict").replaceChildren(el("div", "conflict-box", list, button("Use this order", () => {
+          revision = latest.workstream_order_revision; loadedStream = workstream;
+          orderedIds = latest.items.map(row => row.id); populate(latest.items);
+          $("form-error").textContent = "Check the task positions, then submit."; $("conflict").replaceChildren();
         }, "btn small")));
       }, "btn small"));
       throw error;
     }
   };
+  await load();
 }
 function membershipLabel(t) {
   const target = state.streams.find((w) => w.id === state.stream && w.project_id === t.project_id);

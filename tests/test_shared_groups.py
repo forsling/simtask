@@ -293,7 +293,8 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
     )
     db.execute("INSERT INTO project_paths VALUES (?,?)", ("/legacy", "prj_legacy"))
     db.execute(
-        "INSERT INTO workstreams VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO workstreams (id,project_id,name,branch,checkout_path,revision,created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
         ("wst_legacy", "prj_legacy", "main", "main", "/legacy", 3, now),
     )
     group_id = Store._insert_task(db, "prj_legacy", "Group", "Context", "Criteria")
