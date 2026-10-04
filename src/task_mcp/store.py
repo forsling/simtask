@@ -1087,12 +1087,34 @@ class Store:
             if candidate and candidate["checkout_path"] == canonical and selected:
                 ws = dict(candidate)
                 if workstream_id and workstream_id != ws["id"]:
+                    # Report the requested workstream's real binding, never the local one
+                    # in its place; an unknown ID raises unknown_workstream.
+                    target = self._workstream(db, workstream_id)
+                    here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
+                    local = (
+                        f"this checkout's {here} is bound to workstream {ws['name']!r} "
+                        f"({ws['id']}); init without workstream_id (or with {ws['id']}) to use "
+                        "it, or init the requested workstream at its own checkout and branch"
+                    )
+                    if target["project_id"] != selected["id"]:
+                        message = (
+                            f"Workstream {target['name']!r} belongs to another project "
+                            f"({target['project_id']}); {local}"
+                        )
+                    else:
+                        message = (
+                            f"Workstream {target['name']!r} is bound to branch "
+                            f"{target['branch']!r} at {target['checkout_path']}; {local}"
+                        )
                     return {
                         "state": "mismatch",
-                        "message": "Target has another workstream binding",
+                        "message": message,
                         "path": canonical,
+                        "branch": branch,
                         "project": selected,
-                        "workstream": ws,
+                        "workstream": target,
+                        "bound_workstream": ws,
+                        "choices": ["use_bound_workstream", "init_requested_binding"],
                     }
                 return self._ready_init(db, selected, ws, include_inactive) | {"changed": False}
             if candidate and not (
@@ -1114,10 +1136,19 @@ class Store:
                 if chosen and target["project_id"] != chosen["id"]:
                     return {
                         "state": "mismatch",
-                        "message": "Workstream belongs to another project",
+                        "message": (
+                            f"Workstream {target['name']!r} belongs to another project "
+                            f"({target['project_id']}), not {chosen['name']!r} "
+                            f"({chosen['id']}); choose a workstream of this project"
+                        ),
                         "path": canonical,
+                        "branch": branch,
                         "project": chosen,
                         "workstream": target,
+                        "choices": [
+                            "new_workstream" if selected else "attach_workstream",
+                            "rebind_workstream",
+                        ],
                     }
                 return {
                     "state": "mismatch",
@@ -1551,9 +1582,13 @@ class Store:
         )
 
     def _group_scope_change(self, db, scope, before, workstream_id, adding):
-        """Include or remove a shared group exactly as a +group/-group scope term did."""
+        """Include or remove a shared group exactly as a +group/-group scope term did.
+
+        This is a scope-only change, so it is allowed for completed groups as set_scope
+        was; their row and revision stay untouched, while an open group's revision
+        still advances."""
         group_id = before["id"]
-        self._require_mutable(db, before, concrete=False)
+        completed = before["status"] == "done" or self._group_complete(db, group_id)
         workstream = self._workstream(db, workstream_id)
         scope["project_id"] = workstream["project_id"]
         changed = self._group_included(db, workstream_id, group_id) != adding
@@ -1576,10 +1611,11 @@ class Store:
                     (workstream_id, group_id),
                 )
             self._touch_workstream(db, workstream_id)
-            db.execute(
-                "UPDATE tasks SET revision=revision+1,updated_at=? WHERE id=?",
-                (timestamp(), group_id),
-            )
+            if not completed:
+                db.execute(
+                    "UPDATE tasks SET revision=revision+1,updated_at=? WHERE id=?",
+                    (timestamp(), group_id),
+                )
         return changed
 
     def _membership_change(self, task_id, workstream_id, expected_revision, adding):

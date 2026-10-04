@@ -79,7 +79,7 @@ def test_removed_tools_are_gone_and_replacement_inputs_are_published(mcp):
 
 
 def test_init_actions_and_checkout_branch_match_check(mcp, tmp_path):
-    _, _, call, _ = mcp
+    _, _, call, fail = mcp
     repo, other = str(tmp_path / "repo"), str(tmp_path / "other")
 
     async def exercise():
@@ -104,10 +104,41 @@ def test_init_actions_and_checkout_branch_match_check(mcp, tmp_path):
             "state"
         ] == "ready"
         # A known workstream bound elsewhere is a clear mismatch, never a silent switch.
-        wrong = await call(
-            "init", path=repo, branch="main", workstream_id=feature["workstream"]["id"]
+        # The checkout/branch is already bound here, but another workstream is named: report
+        # the requested workstream's actual binding plus the local one, with choices.
+        feature_id = feature["workstream"]["id"]
+        wrong = await call("init", path=repo, branch="main", workstream_id=feature_id)
+        assert wrong["state"] == "mismatch" and "queue" not in wrong
+        assert wrong["workstream"]["id"] == feature_id
+        assert wrong["workstream"]["branch"] == "feature"
+        assert wrong["bound_workstream"]["id"] == main
+        assert "'feature'" in wrong["message"] and main in wrong["message"]
+        assert wrong["choices"] == ["use_bound_workstream", "init_requested_binding"]
+        # An unknown workstream ID is an unknown-workstream error, not a binding mismatch.
+        assert "unknown_workstream" in await fail(
+            "init", path=repo, branch="main", workstream_id="wst_nope"
         )
-        assert wrong["state"] == "mismatch" and wrong["workstream"]["id"] == main
+        # A workstream of another project is named as such, never swapped for the local one.
+        foreign = await call(
+            "init",
+            path=str(tmp_path / "foreign"),
+            branch="main",
+            action="create_project",
+            confirmed=True,
+        )
+        foreign_id = foreign["workstream"]["id"]
+        cross = await call("init", path=repo, branch="main", workstream_id=foreign_id)
+        assert cross["state"] == "mismatch" and cross["workstream"]["id"] == foreign_id
+        assert "another project" in cross["message"]
+        assert foreign["project"]["id"] in cross["message"]
+        assert cross["bound_workstream"]["id"] == main and cross["choices"]
+        # The same checks hold on an attached checkout whose branch is not yet bound.
+        assert "unknown_workstream" in await fail(
+            "init", path=repo, branch="topic", workstream_id="wst_nope"
+        )
+        cross_new = await call("init", path=repo, branch="topic", workstream_id=foreign_id)
+        assert cross_new["state"] == "mismatch" and cross_new["workstream"]["id"] == foreign_id
+        assert "another project" in cross_new["message"] and cross_new["choices"]
         moved = await call("init", path=other, branch="hotfix", workstream_id=main)
         assert moved["state"] == "mismatch" and moved["workstream"]["id"] == main
         assert "'main'" in moved["message"] and other in moved["message"]
@@ -385,5 +416,113 @@ def test_existing_groups_memberships_exclusions_and_history_survive_unchanged(tm
         assert {"attempt.recorded", "attempt.human_reviewed"} <= {
             event["action"] for event in history["items"]
         }
+
+    run(exercise())
+
+
+def test_completed_group_scope_change_matches_set_scope_and_keeps_group_row(mcp, tmp_path):
+    store, _, call, fail = mcp
+    repo = str(tmp_path / "r")
+    setup = store.init(repo, "main", action="create_project", confirmed=True)
+    project, ws = setup["project"]["id"], setup["workstream"]["id"]
+    via_tools = store.init_workstream(project, repo, "tools", confirmed=True)["workstream"]["id"]
+    via_scope = store.init_workstream(project, repo, "scope", confirmed=True)["workstream"]["id"]
+    group = store.create_task(project, "Finished feature", workstream_id=ws, kind="group")
+    member = store.create_task(
+        project,
+        "Only member",
+        workstream_id=ws,
+        group_id=group["id"],
+        group_expected_revision=group["revision"],
+    )
+    attempt = store.record_result(
+        member["id"],
+        ws,
+        member["revision"],
+        "worker",
+        "Done",
+        "Proof",
+        [{"kind": "artifact", "reference": "proof"}],
+        "Checked",
+        member["specification_etag"],
+    )
+    store.signoff_task(
+        member["id"],
+        store.get_tasks([member["id"]])["items"][0]["revision"],
+        "approve",
+        "User approved",
+        attempt["id"],
+        expected_attempt_revision=attempt["revision"],
+    )
+    detail = store.get_tasks([group["id"]])["items"][0]
+    assert detail["complete"]
+
+    def snapshot(workstream_id):
+        with sqlite3.connect(store.path) as db:
+            group_row = db.execute("SELECT * FROM tasks WHERE id=?", (group["id"],)).fetchone()
+            return group_row, {
+                table: db.execute(
+                    f"SELECT * FROM {table} WHERE workstream_id=? ORDER BY 2", (workstream_id,)
+                ).fetchall()
+                for table in ("scope_members", "scope_groups", "scope_exclusions")
+            }
+
+    group_row, _ = snapshot(via_tools)
+
+    def revision(workstream_id):
+        rows = store.list_workstreams(project)["items"]
+        return next(row["revision"] for row in rows if row["id"] == workstream_id)
+
+    async def exercise():
+        included = await call(
+            "add_to_workstream",
+            task_id=group["id"],
+            workstream_id=via_tools,
+            expected_revision=detail["revision"],
+        )
+        assert included["changed"] and included["included"]
+        assert included["revision"] == detail["revision"]
+        store.set_scope(via_scope, revision(via_scope), f"none +{group['id']}")
+        tools_row, tools_tables = snapshot(via_tools)
+        _, scope_tables = snapshot(via_scope)
+        assert tools_row == group_row and tools_tables["scope_groups"]
+        assert [row[1:] for t in tools_tables.values() for row in t] == [
+            row[1:] for t in scope_tables.values() for row in t
+        ]
+        board = await call("list_tasks", project=project, workstream_id=via_tools, state="done")
+        assert member["id"] in {card["id"] for card in board["items"]}
+
+        removed = await call(
+            "remove_from_workstream",
+            task_id=group["id"],
+            workstream_id=via_tools,
+            expected_revision=detail["revision"],
+        )
+        assert removed["changed"] and not removed["included"]
+        assert removed["revision"] == detail["revision"]
+        store.set_scope(via_scope, revision(via_scope), f"{via_scope} -{group['id']}")
+        tools_row, tools_tables = snapshot(via_tools)
+        _, scope_tables = snapshot(via_scope)
+        assert tools_row == group_row and tools_tables["scope_exclusions"]
+        assert not tools_tables["scope_groups"]
+        assert [row[1:] for t in tools_tables.values() for row in t] == [
+            row[1:] for t in scope_tables.values() for row in t
+        ]
+        # The live workstream that included the group from creation can drop it too.
+        dropped = await call(
+            "remove_from_workstream",
+            task_id=group["id"],
+            workstream_id=ws,
+            expected_revision=detail["revision"],
+        )
+        assert dropped["changed"] and not dropped["included"]
+        assert snapshot(ws)[0] == group_row
+        # Completed groups stay immutable for real changes.
+        assert "completed_task_immutable" in await fail(
+            "update_task",
+            task_id=group["id"],
+            expected_revision=detail["revision"],
+            changes={"body": "Changed"},
+        )
 
     run(exercise())

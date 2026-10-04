@@ -157,8 +157,10 @@ project or persistent session entity. Repeating either call returns its own
 An exact existing path/branch binding returns `ready` with project and
 workstream identities, revision, binding and compact scoped queue. No confirmation
 is needed for ordinary resume. Passing a known `workstream_id` also checks that it
-is bound to this checkout and branch; otherwise `mismatch` reports the binding
-found and the choices to rebind it or use another workstream. A known checkout on an
+is bound to this checkout and branch; otherwise `mismatch` reports the requested
+workstream's own binding (or its other project), any workstream already bound
+here as `bound_workstream`, and the choices; an unknown ID is an
+`unknown_workstream` error. A known checkout on an
 unbound branch returns `new_branch` and that project's registered workstream
 candidates. An unknown checkout returns `unregistered_checkout` with project and
 workstream candidates and the choices `create_project`, `attach_workstream`, and
@@ -228,7 +230,9 @@ Workstreams contain ordered lists of shared tasks. A task can be included in
 several workstreams concurrently. `add_to_workstream` with a group ID includes
 that group, so its present and future local members enter unless excluded;
 `remove_from_workstream` with a group ID removes the inclusion, and with a member
-ID excludes just that member while its group stays included. A new workstream's
+ID excludes just that member while its group stays included. Completed groups can
+still be included or removed; that scope-only change leaves the group's revision
+unchanged. A new workstream's
 scope expression copies another workstream's references and exclusions. No scope change transfers tasks
 from another workstream. Remote members stay outside the local task list.
 
