@@ -190,6 +190,52 @@ def test_membership_keeps_questions_prerequisites_and_local_scope_gate(context):
     assert store.get_next_action(ws)["task"] is None
 
 
+@pytest.mark.parametrize("excluded_kind", ["task", "group"])
+def test_workstream_status_pages_real_task_and_group_exclusions(context, excluded_kind):
+    store, project, ws, other = context
+    excluded_ids = []
+    for index in range(3):
+        group = store.create_group(ws, f"Group {index}")
+        member = store.create_task(
+            project,
+            f"Inherited member {index}",
+            group_id=group["id"],
+            group_expected_revision=group["revision"],
+        )
+        assert member["workstream_ids"] == [ws]
+        if excluded_kind == "task":
+            store.remove_from_workstream(member["id"], ws, member["revision"])
+            excluded_ids.append(member["id"])
+        else:
+            revision = store.workstream_status(ws)["workstream"]["revision"]
+            store.set_scope(ws, revision, f"{ws} -{group['id']}")
+            excluded_ids.append(group["id"])
+        assert full(store, member)["workstream_ids"] == []
+
+    excluded_ids.sort()
+    assert "scope" not in store.workstream_status(ws)
+    first = store.workstream_status(ws, limit=2, include_scope=True)
+    assert first["items"] == [] and first["status"]["scoped_count"] == 0
+    assert first["scope"]["exclusions"] == {
+        "ids": excluded_ids[:2],
+        "total": 3,
+        "next_offset": 2,
+    }
+    last = store.workstream_status(ws, limit=2, offset=2, include_scope=True)
+    assert last["scope"]["exclusions"] == {
+        "ids": excluded_ids[2:],
+        "total": 3,
+        "next_offset": None,
+    }
+    beyond = store.workstream_status(ws, limit=2, offset=3, include_scope=True)
+    assert beyond["scope"]["exclusions"] == {"ids": [], "total": 3, "next_offset": None}
+    assert store.workstream_status(other, include_scope=True)["scope"]["exclusions"] == {
+        "ids": [],
+        "total": 0,
+        "next_offset": None,
+    }
+
+
 def test_concurrent_adds_require_retry_but_can_include_both(context):
     store, project, ws, other = context
     task = store.create_task(project, "Race")

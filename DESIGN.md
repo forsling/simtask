@@ -85,7 +85,7 @@ clears no unresolved/prerequisite gates.
 `update_task` saves title/body/criteria/summary amendments without changing
 membership. Genuine requirement edits advance `spec_revision`; old attempts and
 reviews remain historical on their original revision. Whole-field body/criteria
-remembership requires the full `specification_etag` and expected task revision.
+replacement requires the full `specification_etag` and expected task revision.
 Summary-only corrections preserve spec revision and proof. No-op mutations retain
 revisions. Named membership changes check and advance the task revision once and the
 named workstream revision once. Original bulk scope changes check/advance only
@@ -345,7 +345,7 @@ no task, attempt or event rows are rewritten. The existing verified migration
 backup/rollback mechanism applies. Export v5 includes rejection and signoff history.
 
 Protocol 7 makes ordinary MCP calls compact and complete for their chosen action.
-Cards never expose partial specifications or remembership tokens. Specifications
+Cards never expose partial specifications or replacement tokens. Specifications
 retain all requirements/proposals/parent context and at most three actionable-first
 current-spec attempt summaries; selected delivery ID is independent of that window.
 Paged attempt/member history and exact proof reads preserve provenance. Store/viewer
@@ -353,7 +353,7 @@ full details and complete exports remain available. Every write acknowledgement
 identifies affected entities, their revisions, changed/no-op state and useful gates
 without echoing requirements/evidence/history. Continue from returned revisions;
 full-spec tokens may continue from authored creates and valid token-bearing updates.
-Conflicts reconcile against complete requirements before remembership.
+Conflicts reconcile against complete requirements before replacement.
 
 Schema 4 adds nullable task/group summary and summary_spec_revision, preserving all
 prior columns/rows without backfill. Summaries are optional, non-normative one-line

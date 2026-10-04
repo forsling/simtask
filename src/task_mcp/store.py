@@ -834,18 +834,13 @@ class Store:
                     ("scope_groups", "group_id", "groups"),
                     ("scope_exclusions", "task_id", "exclusions"),
                 ):
-                    rows = (
-                        []
-                        if name == "exclusions"
-                        else [
-                            r[0]
-                            for r in db.execute(
-                                f"SELECT {column} FROM {table} WHERE workstream_id=? "
-                                f"ORDER BY {column}",
-                                (workstream_id,),
-                            )
-                        ]
-                    )
+                    rows = [
+                        r[0]
+                        for r in db.execute(
+                            f"SELECT {column} FROM {table} WHERE workstream_id=? ORDER BY {column}",
+                            (workstream_id,),
+                        )
+                    ]
                     scope_page[name] = {
                         "ids": rows[offset : offset + limit],
                         "total": len(rows),

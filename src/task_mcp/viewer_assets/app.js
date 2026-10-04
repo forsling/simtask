@@ -8,7 +8,7 @@ history.replaceState(null, "", "/");
 
 const VIEWS = {
   signoff: { label: "Ready to sign off", short: "Sign off", tone: "go" },
-  inbox: { label: "Inbox", short: "Queue", tone: "ask" },
+  inbox: { label: "Inbox", short: "Inbox", tone: "ask" },
   unresolved_items: { label: "Open question", short: "Question", tone: "warn" },
   review: { label: "In review", short: "Review", tone: "info" },
   ready: { label: "Ready", short: "Ready", tone: "ready" },
