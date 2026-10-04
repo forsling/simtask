@@ -72,7 +72,8 @@ There is no automatic startup or installed OS service. The current launcher
 uses POSIX file locking (Linux/macOS).
 
 Browse projects and workstreams, search/filter task titles, and read
-specifications, evidence and audit history. Each project's **Task groups** page shows
+specifications, evidence and audit history. The project note and, in a
+workstream, its workstream note appear read-only above the task list. Each project's **Task groups** page shows
 its discoverable groups, including shared groups and empty groups included in
 that project's scope. **Shared task groups** shows only groups with task members in
 more than one project. Both show whole-group progress and project counts;
@@ -253,6 +254,45 @@ still be included or removed; that scope-only change leaves the group's revision
 unchanged. A new workstream's
 scope expression copies another workstream's references and exclusions. No scope change transfers tasks
 from another workstream. Remote members stay outside the local task list.
+
+## Project and workstream notes
+
+Each project and each workstream can hold one personal, uncommitted, plain-text
+note of at most 2,000 characters. Use the project note for your own rules for
+that repository and the workstream note for that branch's current situation and
+rules, such as what is deployed and how to roll it back. Rules about the code
+belong in committed repository files, personal rules for every repository in
+user-level files, and Task MCP workflow rules in the skills.
+
+A ready `init` response includes `notes.project` and `notes.workstream`, each with
+`text`, `revision`, `updated_at` and `updated_by` (the configured actor); empty
+notes are omitted. Read them before working.
+
+```text
+set_note(kind="workstream", target_id=workstream_id,
+         expected_revision=notes.workstream.revision,  # 0 when init shows none
+         text="Staging runs build 41; roll back with deploy.sh 40.")
+```
+
+`kind` is `project` (target a project ID or path) or `workstream` (a workstream
+ID). The text replaces the whole note; empty text clears it. A save over the
+limit fails with `note_too_long`, stating the limit and the submitted length.
+A stale `expected_revision` fails with `revision_conflict`; re-read with `init`
+and reconcile. Identical text is a no-op. Every save, failed or not, is audited
+as `note.set` with the before/after text. Update the workstream note when the
+live state it describes changes (for example on deploy or rollback) and when the
+user asks; keep it within the limit by replacing outdated content, not appending.
+The browser viewer shows both notes above the task list.
+
+Notes live in their own `notes` table, created on startup without a schema
+revision bump (the database stays at schema 10), so a server running the
+previous code keeps working against the upgraded database, including after a
+restart. When an existing database lacks the table, startup first takes and
+verifies a private online backup named `*.pre-notes.*.sqlite3` next to the
+database. For the live rollout, also take a manual backup first, for example
+`sqlite3 ~/.local/share/task-mcp/tasks.sqlite3 ".backup /safe/place/tasks.pre-notes.sqlite3"`,
+then start the new server. Rolling back needs no restore: previous code ignores
+the table.
 
 ## Task lifecycle
 
@@ -538,7 +578,7 @@ those rare workflows are deferred.
 
 | Area | Tools |
 | --- | --- |
-| Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity), `list_projects`, `list_workstreams`, `workstream_status` |
+| Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity; notes), `set_note`, `list_projects`, `list_workstreams`, `workstream_status` |
 | Scope and queue | `add_to_workstream`, `remove_from_workstream` (task or group IDs), `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
 | Groups | `create_task(kind="group")`, `update_task(group_id=...)`, `list_tasks(state="group")`, `list_tasks(group_id=...)`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `decompose_task` |

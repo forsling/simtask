@@ -574,6 +574,8 @@ async function reload({ quiet = false, requested = null } = {}) {
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
   );
   $("new").hidden = state.groups;
+  // Notes are context, not the board: a failed notes read hides them instead of the list.
+  const notesLoad = groups ? Promise.resolve(null) : api("notes", { project, workstream_id: stream }).catch(() => null);
   try {
     const board = groups ? null : await taskBoard({ project, workstream_id: state.stream });
     const loaded = groups
@@ -581,7 +583,9 @@ async function reload({ quiet = false, requested = null } = {}) {
       : board.items;
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
     const streams = state.groups ? state.streams : await pages("workstreams", { project });
+    const notes = (await notesLoad)?.notes || null;
     if (stale()) return;
+    renderNotes(notes);
     state.rows = rows.map(r => ({ ...r, view: r.view || (r.object_type === "group" ? "group" : ["done", "deferred", "dropped"].includes(r.status) ? r.status : r.gate_diagnostics?.[0] || "open") }));
     state.streams = streams;
     state.loadedAt = Date.now();
@@ -623,10 +627,36 @@ async function reload({ quiet = false, requested = null } = {}) {
     }
   } catch (e) {
     if (stale()) return;
+    renderNotes(null);
     if (detailGeneration === state.generation) $("detail").classList.remove("loading");
     toast(e.message, true);
     $("list").replaceChildren(emptyState("Couldn't load tasks", "Refresh to try again."));
   }
+}
+
+/* ---------- notes ---------- */
+
+// Personal project/workstream notes, shown read-only; agents keep them with set_note.
+const NOTE_LABELS = { project: "Project note", workstream: "Workstream note" };
+const closedNotes = new Set();
+function renderNotes(notes) {
+  const box = $("notes");
+  const kinds = ["project", "workstream"].filter((k) => notes?.[k]?.text);
+  box.replaceChildren(
+    ...kinds.map((kind) => {
+      const n = notes[kind];
+      const d = el("details", "note");
+      d.dataset.kind = kind;
+      d.open = !closedNotes.has(kind);
+      d.addEventListener("toggle", () => (d.open ? closedNotes.delete(kind) : closedNotes.add(kind)));
+      const summary = el("summary", "note-head", icon("chevron", 12), node("span", NOTE_LABELS[kind], "note-label"),
+        node("span", `${ago(n.updated_at)} · ${n.updated_by}`, "note-meta"));
+      summary.title = `Updated ${new Date(n.updated_at).toLocaleString()} by ${n.updated_by} · revision ${n.revision}`;
+      d.append(summary, node("div", n.text, "note-text"));
+      return d;
+    }),
+  );
+  box.hidden = !kinds.length;
 }
 
 /* ---------- list ---------- */

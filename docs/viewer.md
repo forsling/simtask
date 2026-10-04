@@ -34,6 +34,10 @@ the first project, or the view's first item) with a short notice.
   **Later** (deferred) and **Closed** (done/dropped, collapsed). Search filters
   titles across every section. Keyboard: `/` search, `j`/`k` move, `n` new
   task, `e` edit, `r` refresh.
+- Above the list, the project's note and, in a named workstream, that
+  workstream's note show as read-only plain text with when and by whom each was
+  last updated; empty notes are not shown. Collapse either one with its header.
+  Agents keep notes with the `set_note` MCP tool.
 - In a named workstream, drag a task onto the upper or lower half of another
   task to place it before or after that task. Rows show their position in that
   workstream; a drop line and hint state the result, including when the task

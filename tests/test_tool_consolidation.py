@@ -55,7 +55,7 @@ def run(coroutine):
 def test_removed_tools_are_gone_and_replacement_inputs_are_published(mcp):
     _, server, _, _ = mcp
     tools = {tool.name: tool for tool in run(server.list_tools())}
-    assert len(tools) == 26 and not REMOVED & tools.keys()
+    assert len(tools) == 27 and not REMOVED & tools.keys()
     init = tools["init"].input_schema["properties"]
     assert set(init["action"]["anyOf"][0]["enum"]) == {
         "create_project",

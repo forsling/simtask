@@ -116,7 +116,25 @@ SCHEMA = (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id), source_schema INTEGER NOT NULL,
         task_json TEXT NOT NULL, scopes_json TEXT NOT NULL,
         unresolved_id TEXT)""",
+    # Personal project/workstream notes. An additive table that schema 10 servers never
+    # read, so it needs no schema revision bump; a cleared note keeps its row (empty text)
+    # so its revision never repeats.
+    """CREATE TABLE IF NOT EXISTS notes (
+        owner_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('project','workstream')),
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        workstream_id TEXT REFERENCES workstreams(id),
+        text TEXT NOT NULL CHECK(length(text) <= 2000),
+        revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
+        CHECK(owner_id = coalesce(workstream_id, project_id)),
+        CHECK((kind = 'workstream') = (workstream_id IS NOT NULL)))""",
 )
+# Tables added after schema 10 without a revision bump, so older servers keep opening
+# the database. An existing database missing one is backed up before it is created.
+ADDITIVE_TABLES = ("notes",)
+# Notes are bounded so they stay a current summary rather than a growing log.
+NOTE_LIMIT = 2000
+NOTE_KINDS = ("project", "workstream")
 
 
 class TaskError(ValueError):
@@ -164,10 +182,21 @@ class Store:
                 existing = db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
                 ).fetchone()
-                if existing and version < DATABASE_SCHEMA_REVISION:
+                missing = [
+                    table
+                    for table in ADDITIVE_TABLES
+                    if not db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                    ).fetchone()
+                ]
+                if existing and (version < DATABASE_SCHEMA_REVISION or missing):
                     # The writer lock prevents a commit between this online snapshot
                     # and the migration. A separate read connection includes WAL data.
-                    self.migration_backup_path = self._backup_for_migration(version)
+                    self.migration_backup_path = (
+                        self._backup_for_migration(version)
+                        if version < DATABASE_SCHEMA_REVISION
+                        else self._backup_for_migration(version, "pre-" + "-".join(missing))
+                    )
                 self._upgrade_schema(db)
                 db.execute(f"PRAGMA user_version={DATABASE_SCHEMA_REVISION}")
                 db.commit()
@@ -360,11 +389,10 @@ class Store:
             db.execute("DROP TRIGGER IF EXISTS queue_member_valid_update")
             db.execute("DROP TABLE queue_members")
 
-    def _backup_for_migration(self, version: int) -> Path:
+    def _backup_for_migration(self, version: int, label: str | None = None) -> Path:
         """Create and verify a fresh SQLite online backup before changing schema."""
-        backup = self.path.with_name(
-            f"{self.path.name}.pre-schema-{DATABASE_SCHEMA_REVISION}.{uuid4().hex}.sqlite3"
-        )
+        label = label or f"pre-schema-{DATABASE_SCHEMA_REVISION}"
+        backup = self.path.with_name(f"{self.path.name}.{label}.{uuid4().hex}.sqlite3")
         # Never replace an earlier backup and keep private task contents private.
         descriptor = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
@@ -1508,7 +1536,120 @@ class Store:
             "groups": self._scope_group_ids(db, ws["id"])[:10],
             "groups_total": len(self._scope_group_ids(db, ws["id"])),
             "status": self._status_summary(db, ws["id"]),
+            **({"notes": notes} if (notes := self._notes(db, project["id"], ws["id"])) else {}),
         }
+
+    @staticmethod
+    def _notes(db, project_id, workstream_id=None):
+        """The nonempty project/workstream notes with their revision, time and author."""
+        notes = {}
+        for kind, owner_id in (("project", project_id), ("workstream", workstream_id)):
+            if owner_id is None:
+                continue
+            row = db.execute(
+                "SELECT * FROM notes WHERE owner_id=? AND kind=?", (owner_id, kind)
+            ).fetchone()
+            if row and row["text"]:
+                notes[kind] = {
+                    "text": row["text"],
+                    "revision": row["revision"],
+                    "updated_at": row["updated_at"],
+                    "updated_by": row["updated_by"],
+                }
+        return notes
+
+    def read_notes(self, project, workstream_id=None):
+        """Read a project's note and optionally one of its workstreams' (viewer display)."""
+
+        def operation(db, scope):
+            selected = self._project(db, project, scope)
+            if workstream_id is not None:
+                self._workstream(db, workstream_id, selected["id"])
+            return {"notes": self._notes(db, selected["id"], workstream_id)}
+
+        return self._run(
+            "notes.read", {"project": project, "workstream_id": workstream_id}, operation
+        )
+
+    def set_note(self, kind, target_id, expected_revision, text):
+        """Replace (or with empty text clear) one project or workstream note."""
+        request = dict(
+            kind=kind, target_id=target_id, expected_revision=expected_revision, text=text
+        )
+
+        def operation(db, scope):
+            if kind not in NOTE_KINDS:
+                raise TaskError("invalid_note_kind: use project or workstream")
+            if kind == "project":
+                project_id = self._project(db, target_id, scope)["id"]
+                workstream_id = None
+            else:
+                if not isinstance(target_id, str) or not target_id.strip():
+                    raise TaskError("workstream_id_required: provide a workstream ID")
+                ws = self._workstream(db, target_id.strip())
+                project_id, workstream_id = ws["project_id"], ws["id"]
+                scope["project_id"] = project_id
+            if not isinstance(text, str):
+                raise TaskError("invalid_note_text: provide plain text, or empty text to clear")
+            if len(text) > NOTE_LIMIT:
+                raise TaskError(
+                    f"note_too_long: a note holds at most {NOTE_LIMIT:,} characters; this "
+                    f"text has {len(text):,}. Replace outdated content instead of appending"
+                )
+            owner_id = workstream_id or project_id
+            row = db.execute("SELECT * FROM notes WHERE owner_id=?", (owner_id,)).fetchone()
+            before = dict(row) if row else None
+            current_text = before["text"] if before else ""
+            current_revision = before["revision"] if before else 0
+            # A note that init omits (empty) is saved with expected_revision 0.
+            if type(expected_revision) is not int or not (
+                expected_revision == current_revision
+                or (not current_text and expected_revision == 0)
+            ):
+                raise TaskError(
+                    f"revision_conflict: expected {expected_revision}, current "
+                    f"{current_revision if current_text else 0}; re-read the note with init "
+                    "and reconcile your text with it before saving"
+                )
+            new_text = text if text.strip() else ""
+            ack = {"kind": kind, "target_id": owner_id, "project_id": project_id}
+            if new_text == current_text:
+                return ack | {
+                    "revision": current_revision,
+                    "length": len(current_text),
+                    "limit": NOTE_LIMIT,
+                    "changed": False,
+                }
+            after = {
+                "owner_id": owner_id,
+                "kind": kind,
+                "project_id": project_id,
+                "workstream_id": workstream_id,
+                "text": new_text,
+                "revision": current_revision + 1,
+                "updated_at": timestamp(),
+                "updated_by": self.actor,
+            }
+            db.execute(
+                "INSERT INTO notes (owner_id,kind,project_id,workstream_id,text,revision,"
+                "updated_at,updated_by) VALUES (:owner_id,:kind,:project_id,:workstream_id,"
+                ":text,:revision,:updated_at,:updated_by) ON CONFLICT(owner_id) DO UPDATE SET "
+                "text=excluded.text,revision=excluded.revision,updated_at=excluded.updated_at,"
+                "updated_by=excluded.updated_by",
+                after,
+            )
+            scope.update(before=before, after=after)
+            return ack | {
+                "revision": after["revision"],
+                "length": len(new_text),
+                "limit": NOTE_LIMIT,
+                "cleared": not new_text,
+                "updated_at": after["updated_at"],
+                "updated_by": after["updated_by"],
+                "changed": True,
+            }
+
+        return self._run("note.set", request, operation)
 
     def init_workstream(
         self, project, path, branch=None, name=None, scope_expression="none", confirmed=False

@@ -23,6 +23,16 @@ return ready. `runtime` reports the server identity. Names/history do not imply 
 Rebind retains scope/history, not files. Check the full current spec, actual
 checkout/diff and relevant commits before relying on proof, especially after rebind.
 
+## Notes
+
+`ready` includes any nonempty project note (personal rules for this repository)
+and workstream note (this branch's live state and rules). Read them before
+working. Update the workstream note with `set_note(kind, target_id,
+expected_revision, text)` when the live state it describes changes (for example
+on deploy or rollback) and when the user directs; use the note's revision, or 0
+when init shows none. Notes hold at most 2,000 characters: replace outdated
+content rather than appending.
+
 ## Membership and order
 
 Workstreams have independent ordered lists of shared tasks. A task can be in

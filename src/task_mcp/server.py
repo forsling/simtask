@@ -76,7 +76,10 @@ def create_server(
             "Fetch get_default_skills(name=...) on demand: init for setup, feature-capture for "
             "'add a design task', feature-design for 'let's design X'/'review design tasks', "
             "proposal-review for ordinary proposals/questions, superdevloop for implementation "
-            "and independent review, signoff for reviewed-result walkthroughs and user verdicts."
+            "and independent review, signoff for reviewed-result walkthroughs and user verdicts. "
+            "Read init's project/workstream notes before working; with set_note, update the "
+            "workstream note when the live state it describes changes (e.g. deploy, rollback) "
+            "or the user directs, replacing rather than appending to stay within the limit."
         ),
         lifespan=lifespan,
     )
@@ -161,6 +164,8 @@ def create_server(
         and create/new/attach actions reject one (workstream_id_not_used). A ready queue shows the
         first ten active slim cards (as list_tasks); queue_hidden counts done/deferred/
         dropped unless include_inactive=true. runtime is the server identity/schema revision.
+        Ready results carry nonempty notes (project/workstream: text, revision, updated_at,
+        updated_by); read them before working.
         """
         result = store.init(
             path,
@@ -175,6 +180,24 @@ def create_server(
             include_inactive,
         )
         return {**result, "runtime": runtime_identity()}
+
+    @server.tool(annotations=editing, structured_output=True)
+    @domain_errors
+    def set_note(
+        kind: Literal["project", "workstream"],
+        target_id: str,
+        expected_revision: int,
+        text: str,
+    ) -> dict[str, Any]:
+        """Replace a project or workstream note; empty text clears it. init shows notes.
+
+        Notes are personal, uncommitted plain text of at most 2,000 characters: the
+        project note holds your rules for the repository, the workstream note the branch's
+        live state and rules. Replace outdated content rather than appending.
+        target_id is the project or workstream ID; expected_revision is the note's
+        revision from init, or 0 when init shows none.
+        """
+        return store.set_note(kind, target_id, expected_revision, text)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors

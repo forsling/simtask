@@ -28,6 +28,7 @@ ADDITIVE = {
 # the most conservative classification among its possible actions.
 DESTRUCTIVE = {
     "init",
+    "set_note",
     "update_task",
     "add_to_workstream",
     "remove_from_workstream",

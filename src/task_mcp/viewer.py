@@ -31,6 +31,7 @@ def dispatch(store, action, data):
         "details": store.get_tasks,
         "next-action": store.get_next_action,
         "events": store.list_events,
+        "notes": store.read_notes,
         "create": store.create_task,
         "edit": store.update_task,
         "reorder": store.reorder_tasks,

@@ -21,7 +21,7 @@ async def exercise(database: Path):
     async with Client(server, read_timeout_seconds=60) as client:
         assert client.instructions
         tools = (await client.list_tools()).tools
-        assert len(tools) == 26
+        assert len(tools) == 27
         assert "open_task_viewer" in {tool.name for tool in tools}
         assert {"init", "workstream_status", "list_tasks", "update_task"} <= {
             tool.name for tool in tools
@@ -530,7 +530,7 @@ async def exercise(database: Path):
         assert "task-mcp/v1" in legacy and "```json" in legacy
         assert export("--export-format", "unsupported").returncode != 0
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.18.0"
+        assert catalog["version"] == "1.19.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",
