@@ -13,10 +13,11 @@ context. `list_projects` does not select a current project.
 An exact binding returns `ready` and a compact task list. Resume without
 confirmation. Passing a known `workstream_id` checks its checkout/branch match.
 `new_branch` lists workstreams; `unregistered_checkout` offers create/attach/
-rebind; `mismatch` identifies the conflicting binding. Choose setup and show
-path, branch/name, project/workstream and scope, then call `init(action=...,
-confirmed=true)`: `create_project`, `new_workstream` (attached checkout),
-`attach_workstream` (another checkout of `project`) or `rebind_workstream`.
+rebind; `mismatch` identifies the conflicting binding and lists `choices` that
+work when followed. Choose setup and show path, branch/name, project/workstream
+and scope, then call `init(action=..., confirmed=true)`: `create_project`,
+`new_workstream` (attached checkout), `attach_workstream` (another checkout of
+`project`) or `rebind_workstream`.
 Rebind needs `workstream_id` and its last `expected_revision`; exact retries
 return ready. `runtime` reports the server identity. Names/history do not imply scope.
 Rebind retains scope/history, not files. Check the full current spec, actual

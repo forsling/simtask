@@ -156,8 +156,9 @@ def create_server(
         rebind_workstream (move workstream_id to this path/branch; expected_revision).
         scope_expression seeds a new workstream: none, or a workstream base, +/-task/group.
         Passing workstream_id checks that it is bound to this checkout/branch; any
-        mismatch returns state=mismatch with the requested binding, bound_workstream and
-        choices; an unknown workstream_id is unknown_workstream. A ready queue shows the
+        mismatch returns state=mismatch with the requested binding, any bound_workstream
+        and choices that work when followed; an unknown workstream_id is unknown_workstream,
+        and create/new/attach actions reject one (workstream_id_not_used). A ready queue shows the
         first ten active slim cards (as list_tasks); queue_hidden counts done/deferred/
         dropped unless include_inactive=true. runtime is the server identity/schema revision.
         """

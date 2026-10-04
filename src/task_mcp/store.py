@@ -1051,24 +1051,55 @@ class Store:
             selected = dict(attached) if attached else None
             if selected:
                 selected.pop("order_revision", None)
+            # An unknown workstream_id is unknown_workstream before any other report.
+            requested = self._workstream(db, workstream_id) if workstream_id else None
+            if requested and action in {"create_project", "new_workstream", "attach_workstream"}:
+                # These actions create a workstream; the ID is accepted only when it already
+                # is exactly this binding (an idempotent retry that resumes it unchanged).
+                if not (
+                    selected
+                    and requested["project_id"] == selected["id"]
+                    and requested["checkout_path"] == canonical
+                    and (
+                        requested["branch"] == branch
+                        if branch
+                        else requested["branch"] is None and requested["name"] == workstream_name
+                    )
+                ):
+                    raise TaskError(
+                        f"workstream_id_not_used: action={action} creates a new workstream and "
+                        "does not use workstream_id; omit it, or confirm "
+                        f"action=rebind_workstream to move workstream {requested['name']!r} here"
+                    )
             if project is not None:
-                chosen = self._project(db, project, scope)
+                chosen = dict(self._project(db, project, scope))
+                chosen.pop("order_revision", None)
                 if selected and selected["id"] != chosen["id"]:
                     return {
                         "state": "mismatch",
-                        "message": "Checkout is attached to another project",
+                        "message": (
+                            f"Checkout is attached to another project ({selected['name']!r}, "
+                            f"{selected['id']}), not {chosen['name']!r} ({chosen['id']}); init "
+                            "without project= to use the attached project, or init the "
+                            "requested project at one of its own checkouts"
+                        ),
                         "path": canonical,
+                        "branch": branch,
                         "project": selected,
+                        "requested_project": chosen,
+                        **({"workstream": requested} if requested else {}),
+                        "choices": ["use_attached_project"],
                     }
-            else:
-                chosen = selected
-            if action == "rebind_workstream" and workstream_id and chosen is None:
-                target = self._workstream(db, workstream_id)
+            elif selected is None and requested:
+                # An unregistered checkout naming a workstream is checked within that
+                # workstream's project, so a branch already bound there is reported.
                 chosen = dict(
                     db.execute(
-                        "SELECT * FROM projects WHERE id=?", (target["project_id"],)
+                        "SELECT * FROM projects WHERE id=?", (requested["project_id"],)
                     ).fetchone()
                 )
+            else:
+                chosen = selected
             if chosen:
                 chosen.pop("order_revision", None)
             candidate = None
@@ -1084,6 +1115,7 @@ class Store:
                         "AND name=?",
                         (chosen["id"], workstream_name),
                     ).fetchone()
+            here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
 
             def binding(ws_branch, ws_name, ws_path):
                 # A name-bound (detached or non-Git) binding has no branch to report.
@@ -1091,36 +1123,55 @@ class Store:
                     return f"branch {ws_branch!r} at {ws_path}"
                 return f"name {ws_name!r} (no branch) at {ws_path}"
 
+            def requested_binding(target):
+                if target["project_id"] != chosen["id"]:
+                    return (
+                        f"Workstream {target['name']!r} belongs to another project "
+                        f"({target['project_id']})"
+                    )
+                return (
+                    f"Workstream {target['name']!r} is bound to "
+                    f"{binding(target['branch'], target['name'], target['checkout_path'])}"
+                )
+
+            # A rebind renames the workstream to workstream_name or branch, and a new one is
+            # inserted under that name stripped; UNIQUE(project_id, name) must still hold, so
+            # a choice that would collide is named in the message instead of being offered.
+            rebind_name = workstream_name or branch
+            insert_name = rebind_name.strip()
+
+            def name_holder(name, exclude=None):
+                row = db.execute(
+                    "SELECT * FROM workstreams WHERE project_id=? AND name=? AND id IS NOT ?",
+                    (chosen["id"], name, exclude),
+                ).fetchone()
+                return dict(row) if row else None
+
+            def name_taken(holder, blocked):
+                return (
+                    f"; the workstream name {holder['name']!r} is already used by workstream "
+                    f"{holder['id']} "
+                    f"({binding(holder['branch'], holder['name'], holder['checkout_path'])}), "
+                    f"so {blocked} would conflict: pass another workstream_name"
+                )
+
             if candidate and candidate["checkout_path"] == canonical and selected:
                 ws = dict(candidate)
-                if workstream_id and workstream_id != ws["id"]:
+                if requested and requested["id"] != ws["id"]:
                     # Report the requested workstream's real binding, never the local one
-                    # in its place; an unknown ID raises unknown_workstream.
-                    target = self._workstream(db, workstream_id)
-                    here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
-                    local = (
-                        f"this checkout's {here} is bound to workstream {ws['name']!r} "
-                        f"({ws['id']}); init without workstream_id (or with {ws['id']}) to use "
-                        "it, or init the requested workstream at its own checkout and branch"
-                    )
-                    if target["project_id"] != selected["id"]:
-                        message = (
-                            f"Workstream {target['name']!r} belongs to another project "
-                            f"({target['project_id']}); {local}"
-                        )
-                    else:
-                        message = (
-                            f"Workstream {target['name']!r} is bound to "
-                            f"{binding(target['branch'], target['name'], target['checkout_path'])}"
-                            f"; {local}"
-                        )
+                    # in its place.
                     return {
                         "state": "mismatch",
-                        "message": message,
+                        "message": (
+                            f"{requested_binding(requested)}; this checkout's {here} is bound "
+                            f"to workstream {ws['name']!r} ({ws['id']}); init without "
+                            f"workstream_id (or with {ws['id']}) to use it, or init the "
+                            "requested workstream at its own checkout and branch"
+                        ),
                         "path": canonical,
                         "branch": branch,
                         "project": selected,
-                        "workstream": target,
+                        "workstream": requested,
                         "bound_workstream": ws,
                         "choices": ["use_bound_workstream", "init_requested_binding"],
                     }
@@ -1128,84 +1179,101 @@ class Store:
             if candidate and not (
                 action == "rebind_workstream" and confirmed and workstream_id == candidate["id"]
             ):
-                if workstream_id and workstream_id != candidate["id"]:
+                bound = dict(candidate)
+                holder = name_holder(rebind_name, bound["id"])
+                located = (
+                    f"{here} of project {chosen['name']!r} is bound to workstream "
+                    f"{bound['name']!r} ({bound['id']}) at another checkout "
+                    f"({bound['checkout_path']})"
+                )
+                rebind = (
+                    name_taken(holder, "rebinding it here")
+                    if holder
+                    else (
+                        ", or confirm init action=rebind_workstream with "
+                        f"workstream_id={bound['id']} to move that workstream here"
+                    )
+                )
+                if requested and requested["id"] != bound["id"]:
                     # Another workstream is named while this branch is bound elsewhere: report
                     # the requested workstream and the branch's actual binding, never one in
-                    # place of the other; an unknown ID raises unknown_workstream.
-                    target = self._workstream(db, workstream_id)
-                    bound = dict(candidate)
-                    here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
-                    if target["project_id"] != chosen["id"]:
-                        requested = (
-                            f"Workstream {target['name']!r} belongs to another project "
-                            f"({target['project_id']})"
-                        )
-                    else:
-                        requested = (
-                            f"Workstream {target['name']!r} is bound to "
-                            f"{binding(target['branch'], target['name'], target['checkout_path'])}"
-                        )
+                    # place of the other.
                     return {
                         "state": "mismatch",
                         "message": (
-                            f"{requested}; {here} of project {chosen['name']!r} is bound to "
-                            f"workstream {bound['name']!r} ({bound['id']}) at another checkout "
-                            f"({bound['checkout_path']}); init the requested workstream at its "
-                            "own binding, or confirm init action=rebind_workstream with "
-                            f"workstream_id={bound['id']} to move that workstream here"
+                            f"{requested_binding(requested)}; {located}; init the requested "
+                            f"workstream at its own binding{rebind}"
                         ),
                         "path": canonical,
                         "branch": branch,
                         "project": chosen,
-                        "workstream": target,
+                        "workstream": requested,
                         "bound_workstream": bound,
-                        "choices": ["rebind_bound_workstream", "init_requested_binding"],
+                        "choices": ([] if holder else ["rebind_bound_workstream"])
+                        + ["init_requested_binding"],
                     }
                 return {
                     "state": "mismatch",
                     "message": (
-                        f"Branch is bound to another checkout ({candidate['checkout_path']}); "
-                        "confirm init action=rebind_workstream to move it here"
-                    ),
-                    "path": canonical,
-                    "project": chosen,
-                    "workstream": dict(candidate),
-                }
-            if workstream_id and not (action and confirmed):
-                # The checkout/branch match check: a named binding must match exactly.
-                target = self._workstream(db, workstream_id)
-                if chosen and target["project_id"] != chosen["id"]:
-                    return {
-                        "state": "mismatch",
-                        "message": (
-                            f"Workstream {target['name']!r} belongs to another project "
-                            f"({target['project_id']}), not {chosen['name']!r} "
-                            f"({chosen['id']}); choose a workstream of this project"
-                        ),
-                        "path": canonical,
-                        "branch": branch,
-                        "project": chosen,
-                        "workstream": target,
-                        # rebind_workstream cannot move a workstream across projects
-                        # (workstream_project_mismatch), so it is not offered here.
-                        "choices": ["new_workstream" if selected else "attach_workstream"],
-                    }
-                return {
-                    "state": "mismatch",
-                    "message": (
-                        f"Workstream {target['name']!r} is bound to "
-                        f"{binding(target['branch'], target['name'], target['checkout_path'])}"
-                        f", not {binding(branch, workstream_name, canonical)}; confirm init "
-                        "action=rebind_workstream to move it, or choose another workstream"
+                        f"{located[0].upper()}{located[1:]}; init it at its own binding{rebind}"
                     ),
                     "path": canonical,
                     "branch": branch,
                     "project": chosen,
-                    "workstream": target,
-                    "choices": [
-                        "rebind_workstream",
-                        "new_workstream" if selected else "attach_workstream",
-                    ],
+                    "workstream": bound,
+                    "choices": ([] if holder else ["rebind_workstream"])
+                    + ["init_requested_binding"],
+                }
+            if requested and not (action and confirmed):
+                # The checkout/branch match check: a named binding must match exactly.
+                new_choice = "new_workstream" if selected else "attach_workstream"
+                new_holder = name_holder(insert_name)
+                if requested["project_id"] != chosen["id"]:
+                    # rebind_workstream cannot move a workstream across projects
+                    # (workstream_project_mismatch), so it is not offered here.
+                    message = (
+                        f"{requested_binding(requested)}, not {chosen['name']!r} "
+                        f"({chosen['id']}); choose a workstream of this project"
+                    )
+                    if new_holder:
+                        message += name_taken(new_holder, f"action={new_choice}")
+                    else:
+                        message += f", or confirm init action={new_choice} to start one here"
+                    choices = [] if new_holder else [new_choice]
+                else:
+                    rebind_holder = name_holder(rebind_name, requested["id"])
+                    choices = ([] if rebind_holder else ["rebind_workstream"]) + (
+                        [] if new_holder else [new_choice]
+                    )
+                    message = (
+                        f"{requested_binding(requested)}, not "
+                        f"{binding(branch, workstream_name, canonical)}"
+                    )
+                    if choices:
+                        effect = {
+                            "rebind_workstream": "to move it here",
+                            new_choice: "for a new workstream here",
+                        }
+                        offered = " or ".join(
+                            f"action={choice} {effect[choice]}" for choice in choices
+                        )
+                        message += f"; confirm init {offered}, or choose another workstream"
+                    holder = rebind_holder or new_holder
+                    if holder:
+                        blocked = [
+                            f"action={choice}"
+                            for choice in ("rebind_workstream", new_choice)
+                            if choice not in choices
+                        ]
+                        message += name_taken(holder, " and ".join(blocked))
+                return {
+                    "state": "mismatch",
+                    "message": message,
+                    "path": canonical,
+                    "branch": branch,
+                    "project": chosen,
+                    "workstream": requested,
+                    "choices": choices,
                 }
             if not action or not confirmed:
                 if selected:
@@ -1214,9 +1282,19 @@ class Store:
                         "ORDER BY created_at,id LIMIT 11",
                         (selected["id"],),
                     ).fetchall()
+                    message = "Choose an initial scope or an explicit workstream rebind"
+                    choices = ["new_workstream", "rebind_workstream"]
+                    holder = name_holder(insert_name)
+                    if holder:
+                        # Only rebinding the workstream that holds this name can succeed.
+                        message += name_taken(holder, "action=new_workstream") + (
+                            ", or confirm init action=rebind_workstream with "
+                            f"workstream_id={holder['id']} to move that workstream here"
+                        )
+                        choices = ["rebind_workstream"]
                     return {
                         "state": "new_branch",
-                        "message": "Choose an initial scope or an explicit workstream rebind",
+                        "message": message,
                         "path": canonical,
                         "project": selected,
                         "candidates": [dict(row) for row in rows[:10]],
@@ -1224,7 +1302,8 @@ class Store:
                         "candidate_total": db.execute(
                             "SELECT count(*) FROM workstreams WHERE project_id=?", (selected["id"],)
                         ).fetchone()[0],
-                        "choices": ["new_workstream", "rebind_workstream"],
+                        **({"name_holder": holder} if holder else {}),
+                        "choices": choices,
                     }
                 projects = [
                     {key: row[key] for key in row.keys() if key != "order_revision"}

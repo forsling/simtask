@@ -411,9 +411,14 @@ def test_explicit_init_and_attachment_do_not_write_checkouts(store, tmp_path):
     assert other_branch["workstream"]["id"] == ws
     assert "'main'" in other_branch["message"] and "'release'" in other_branch["message"]
     assert other_branch["choices"] == ["rebind_workstream", "new_workstream"]
+    # An unregistered checkout is checked within the named workstream's project: 'main' is
+    # bound there already, so attaching a second 'main' (which would fail) is not offered.
     unattached = store.init(str(tmp_path / "elsewhere"), branch="main", workstream_id=ws)
-    assert unattached["state"] == "mismatch"
-    assert unattached["choices"] == ["rebind_workstream", "attach_workstream"]
+    assert unattached["state"] == "mismatch" and "another checkout" in unattached["message"]
+    assert unattached["workstream"]["id"] == ws
+    assert unattached["choices"] == ["rebind_workstream", "init_requested_binding"]
+    loose = store.init(str(tmp_path / "elsewhere"), branch="topic", workstream_id=ws)
+    assert loose["choices"] == ["rebind_workstream", "attach_workstream"]
     assert list(other.iterdir()) == []
 
 

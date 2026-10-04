@@ -8,7 +8,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from task_mcp.server import create_server
-from task_mcp.store import DATABASE_SCHEMA_REVISION, Store
+from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
 
 REMOVED = {
     "init_project",
@@ -204,27 +204,46 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 | {"project": project},
             ),
             ("foreign", {"path": foreign_path, "branch": "main", "action": "create_project"}),
+            # Names that differ from branches, so a rebind or new workstream can collide on
+            # UNIQUE(project_id, name) although the branch itself is free.
+            (
+                "wip",
+                {"path": repo, "branch": "wip-branch", "workstream_name": "wip"}
+                | {"action": "new_workstream"},
+            ),
+            (
+                "rel_two",
+                {"path": other, "branch": "rel2", "workstream_name": "rel-two"}
+                | {"action": "new_workstream"},
+            ),
+            ("rel2_name", {"path": repo, "workstream_name": "rel2", "action": "new_workstream"}),
         ):
-            ids[key] = (await call("init", confirmed=True, **extra))["workstream"]["id"]
+            made = await call("init", confirmed=True, **extra)
+            ids[key], ids[f"{key}_project"] = made["workstream"]["id"], made["project"]["id"]
         return ids
 
-    # (request, exact choices); a request is built from the setup IDs.
+    # label: (request built from the setup IDs, exact choices, choices withheld because they
+    # would fail; each withheld one is attempted and must fail as reported).
     scenarios = {
         "bound_here_same_project": (
             lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["feature"]},
             ["use_bound_workstream", "init_requested_binding"],
+            [],
         ),
         "bound_here_name_bound_target": (
             lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["notes"]},
             ["use_bound_workstream", "init_requested_binding"],
+            [],
         ),
         "bound_here_foreign": (
             lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["foreign"]},
             ["use_bound_workstream", "init_requested_binding"],
+            [],
         ),
         "unbound_branch_foreign": (
             lambda ids: {"path": repo, "branch": "topic", "workstream_id": ids["foreign"]},
             ["new_workstream"],
+            [],
         ),
         "unregistered_with_project_foreign": (
             lambda ids: (
@@ -232,119 +251,213 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 | {"workstream_id": ids["foreign"]}
             ),
             ["attach_workstream"],
+            [],
         ),
         "unbound_branch_same_project": (
             lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["feature"]},
             ["rebind_workstream", "new_workstream"],
+            [],
         ),
         "unbound_branch_name_bound_target": (
             lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["notes"]},
             ["rebind_workstream", "new_workstream"],
+            [],
         ),
         "unbound_name_same_project": (
             lambda ids: (
                 {"path": repo, "workstream_name": "scratch"} | {"workstream_id": ids["feature"]}
             ),
             ["rebind_workstream", "new_workstream"],
+            [],
         ),
         "unregistered_without_project": (
             lambda ids: {"path": loose, "branch": "topic", "workstream_id": ids["feature"]},
             ["rebind_workstream", "attach_workstream"],
+            [],
         ),
         # Another workstream named while this branch is bound at another checkout.
         "branch_bound_elsewhere_same_project": (
             lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["feature"]},
             ["rebind_bound_workstream", "init_requested_binding"],
+            [],
         ),
         "branch_bound_elsewhere_name_bound_target": (
             lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["notes"]},
             ["rebind_bound_workstream", "init_requested_binding"],
+            [],
         ),
         "branch_bound_elsewhere_foreign": (
             lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["foreign"]},
             ["rebind_bound_workstream", "init_requested_binding"],
+            [],
         ),
-        # No choices list: the message offers rebind_workstream of the reported binding.
+        # An unregistered checkout without project= is checked within the requested
+        # workstream's project, so its bound branch is reported rather than offering an
+        # attach or rebind that would collide with it.
+        "unregistered_without_project_branch_bound_elsewhere": (
+            lambda ids: {"path": loose, "branch": "release", "workstream_id": ids["feature"]},
+            ["rebind_bound_workstream", "init_requested_binding"],
+            [],
+        ),
+        "unregistered_without_project_branch_bound_to_requested": (
+            lambda ids: {"path": loose, "branch": "release", "workstream_id": ids["release"]},
+            ["rebind_workstream", "init_requested_binding"],
+            [],
+        ),
+        # The branch is bound at another checkout and no other workstream is named.
         "branch_bound_to_other_checkout": (
             lambda ids: {"path": repo, "branch": "release"},
-            None,
+            ["rebind_workstream", "init_requested_binding"],
+            [],
+        ),
+        "unregistered_with_project_branch_bound_to_other_checkout": (
+            lambda ids: {"path": loose, "branch": "release", "project": ids["project"]},
+            ["rebind_workstream", "init_requested_binding"],
+            [],
+        ),
+        # project= names another project than the one this checkout is attached to.
+        "attached_to_another_project": (
+            lambda ids: {"path": repo, "branch": "main", "project": ids["foreign_project"]},
+            ["use_attached_project"],
+            [],
+        ),
+        "attached_to_another_project_with_workstream": (
+            lambda ids: (
+                {"path": repo, "branch": "main", "project": ids["foreign_project"]}
+                | {"workstream_id": ids["foreign"]}
+            ),
+            ["use_attached_project"],
+            [],
+        ),
+        # Workstream-name collisions: a choice that would violate UNIQUE(project_id, name)
+        # is withheld and explained instead.
+        "unbound_branch_name_taken_by_other": (
+            lambda ids: {"path": other, "branch": "wip", "workstream_id": ids["feature"]},
+            [],
+            ["rebind_workstream", "new_workstream"],
+        ),
+        "unbound_branch_name_taken_by_target": (
+            lambda ids: {"path": other, "branch": "wip", "workstream_id": ids["wip"]},
+            ["rebind_workstream"],
+            ["new_workstream"],
+        ),
+        "unregistered_without_project_name_taken": (
+            lambda ids: {"path": loose, "branch": "wip", "workstream_id": ids["feature"]},
+            [],
+            ["rebind_workstream", "attach_workstream"],
+        ),
+        "unregistered_with_project_foreign_name_taken": (
+            lambda ids: (
+                {"path": loose, "branch": "wip", "project": ids["project"]}
+                | {"workstream_id": ids["foreign"]}
+            ),
+            [],
+            ["attach_workstream"],
+        ),
+        "unbound_branch_foreign_name_taken": (
+            lambda ids: {"path": repo, "branch": "wip", "workstream_id": ids["foreign"]},
+            [],
+            ["new_workstream"],
+        ),
+        "branch_bound_elsewhere_rebind_name_taken": (
+            lambda ids: {"path": repo, "branch": "rel2", "workstream_id": ids["feature"]},
+            ["init_requested_binding"],
+            ["rebind_bound_workstream"],
+        ),
+        "branch_bound_to_other_checkout_rebind_name_taken": (
+            lambda ids: {"path": repo, "branch": "rel2"},
+            ["init_requested_binding"],
+            ["rebind_workstream"],
         ),
     }
 
-    async def follow(call, request, response, choice):
+    def arguments(request, response, choice):
         keys = ("path", "branch", "workstream_name")
         here = {key: request[key] for key in keys if key in request}
-        target = response["workstream"]
-        if choice == "use_bound_workstream":
-            expected = response["bound_workstream"]["id"]
-            followed = await call("init", **here)
-        elif choice == "init_requested_binding":
-            expected = target["id"]
+        target = response.get("workstream")
+        if choice in {"use_bound_workstream", "use_attached_project"}:
+            return here
+        if choice == "init_requested_binding":
             own = {"branch": target["branch"]} if target["branch"] else {}
-            followed = await call(
-                "init",
-                path=target["checkout_path"],
-                **(own or {"workstream_name": target["name"]}),
-            )
-        elif choice in {"rebind_workstream", "rebind_bound_workstream"}:
+            return {"path": target["checkout_path"], **(own or {"workstream_name": target["name"]})}
+        if choice in {"rebind_workstream", "rebind_bound_workstream"}:
             moving = target if choice == "rebind_workstream" else response["bound_workstream"]
-            expected = moving["id"]
-            followed = await call(
-                "init",
-                **here,
-                action="rebind_workstream",
-                workstream_id=moving["id"],
-                expected_revision=moving["revision"],
-                confirmed=True,
-            )
+            return here | {
+                "action": "rebind_workstream",
+                "workstream_id": moving["id"],
+                "expected_revision": moving["revision"],
+                "confirmed": True,
+            }
+        project = response["project"]["id"]
+        return here | {
+            "action": choice,
+            **({"project": project} if choice == "attach_workstream" else {}),
+            "confirmed": True,
+        }
+
+    async def follow(call, request, response, choice):
+        target = response.get("workstream")
+        followed = await call("init", **arguments(request, response, choice))
+        assert followed["state"] == "ready", (choice, followed)
+        expected = {
+            "use_bound_workstream": lambda: response["bound_workstream"]["id"],
+            "init_requested_binding": lambda: target["id"],
+            "rebind_workstream": lambda: target["id"],
+            "rebind_bound_workstream": lambda: response["bound_workstream"]["id"],
+        }.get(choice)
+        if expected:
+            assert followed["workstream"]["id"] == expected(), choice
+        if choice == "use_attached_project":
+            assert followed["project"]["id"] == response["project"]["id"]
+            assert followed["workstream"]["checkout_path"] == response["path"]
+        if choice in {"rebind_workstream", "rebind_bound_workstream"}:
             assert followed["workstream"]["checkout_path"] == response["path"]
             assert followed["workstream"]["branch"] == request.get("branch")
-        else:
-            expected = None
-            project = (response["project"] or {}).get("id", target["project_id"])
-            followed = await call(
-                "init",
-                **here,
-                action=choice,
-                **({"project": project} if choice == "attach_workstream" else {}),
-                confirmed=True,
-            )
-            assert followed["changed"] and followed["project"]["id"] == project
+        if choice in {"new_workstream", "attach_workstream"}:
+            assert followed["changed"]
+            assert followed["project"]["id"] == response["project"]["id"]
             assert followed["workstream"]["id"] != target["id"]
             assert followed["workstream"]["checkout_path"] == response["path"]
             assert followed["workstream"]["branch"] == request.get("branch")
-        assert followed["state"] == "ready", (choice, followed)
-        if expected:
-            assert followed["workstream"]["id"] == expected, choice
-        # The followed choice is now a stable binding: a plain resume returns it unchanged.
-        if choice not in {"use_bound_workstream", "init_requested_binding"}:
+        # A followed setup choice is now a stable binding: a plain resume returns it unchanged.
+        if choice not in {"use_bound_workstream", "init_requested_binding", "use_attached_project"}:
+            here = arguments(request, response, "use_bound_workstream")
             resumed = await call("init", **here)
             assert resumed["state"] == "ready" and not resumed["changed"]
             assert resumed["workstream"]["id"] == followed["workstream"]["id"]
 
-    async def mismatch(label, call, choices):
-        request = scenarios[label][0](await setup(call))
+    async def mismatch(label, call):
+        build, choices, withheld = scenarios[label]
+        ids = await setup(call)
+        request = build(ids)
         response = await call("init", **request)
         assert response["state"] == "mismatch", label
         assert response.get("choices") == choices, label
         assert "None" not in response["message"], label
+        if withheld:
+            assert "pass another workstream_name" in response["message"], label
         return request, response
 
     async def exercise():
-        followed = 0
-        for label, (_, choices) in scenarios.items():
-            offered = choices
-            if choices is None:
-                _, response = await mismatch(label, tools(f"{label}-probe"), None)
-                assert "action=rebind_workstream" in response["message"]
-                offered = ["rebind_workstream"]
-            for choice in offered:
+        followed = withheld_count = 0
+        for label, (_, choices, withheld) in scenarios.items():
+            for choice in choices:
                 # Follow each choice from the same starting state in its own database.
                 call = tools(f"{label}-{choice}")
-                request, response = await mismatch(label, call, choices)
+                request, response = await mismatch(label, call)
                 await follow(call, request, response, choice)
                 followed += 1
-        assert followed == 23
+            for choice in withheld:
+                # A withheld choice really would fail on the name, and changes nothing.
+                call = tools(f"{label}-withheld-{choice}")
+                request, response = await mismatch(label, call)
+                error = await call.fail("init", **arguments(request, response, choice))
+                assert "workstream_exists" in error, (label, choice, error)
+                assert (await call("init", **request)) == response | {
+                    "runtime": response["runtime"]
+                }
+                withheld_count += 1
+        assert (followed, withheld_count) == (35, 9)
 
         # The branch-bound-elsewhere report names both workstreams, not one for the other.
         call = tools("bound-elsewhere-report")
@@ -386,6 +499,187 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         )
 
     run(exercise())
+
+
+def test_creating_init_actions_reject_an_unused_workstream_id(mcp, tmp_path):
+    _, _, call, fail = mcp
+    repo, loose = str(tmp_path / "repo"), str(tmp_path / "loose")
+
+    async def exercise():
+        made = await call("init", path=repo, branch="main", action="create_project", confirmed=True)
+        project, main = made["project"]["id"], made["workstream"]["id"]
+        foreign = await call(
+            "init", path=str(tmp_path / "f"), branch="main", action="create_project", confirmed=True
+        )
+        attempts = (
+            {"path": repo, "branch": "topic", "action": "new_workstream"},
+            {"path": loose, "branch": "topic", "action": "attach_workstream", "project": project},
+            {"path": loose, "branch": "topic", "action": "create_project"},
+        )
+        for attempt in attempts:
+            for confirmed in (True, False):
+                assert "unknown_workstream" in await fail(
+                    "init", **attempt, workstream_id="wst_nope", confirmed=confirmed
+                )
+                for workstream_id in (main, foreign["workstream"]["id"]):
+                    error = await fail(
+                        "init", **attempt, workstream_id=workstream_id, confirmed=confirmed
+                    )
+                    assert "workstream_id_not_used" in error and attempt["action"] in error
+        # Nothing was created or attached by the rejected calls.
+        assert (await call("init", path=repo, branch="topic"))["state"] == "new_branch"
+        assert (await call("init", path=loose, branch="topic"))["state"] == (
+            "unregistered_checkout"
+        )
+        assert len((await call("list_workstreams", project=project))["items"]) == 1
+        # An ID that already is exactly this binding is an idempotent retry, not a rejection.
+        for action in ("new_workstream", "create_project"):
+            again = await call(
+                "init", path=repo, branch="main", action=action, workstream_id=main, confirmed=True
+            )
+            assert again["state"] == "ready" and not again["changed"]
+            assert again["workstream"]["id"] == main
+
+    run(exercise())
+
+
+def test_new_branch_withholds_a_new_workstream_whose_name_is_taken(mcp, tmp_path):
+    _, _, call, fail = mcp
+    repo = str(tmp_path / "repo")
+
+    async def exercise():
+        await call("init", path=repo, branch="main", action="create_project", confirmed=True)
+        wip = await call(
+            "init",
+            path=repo,
+            branch="wip-branch",
+            workstream_name="wip",
+            action="new_workstream",
+            confirmed=True,
+        )
+        fresh = await call("init", path=repo, branch="topic")
+        assert fresh["choices"] == ["new_workstream", "rebind_workstream"]
+        assert "name_holder" not in fresh
+        taken = await call("init", path=repo, branch="wip")
+        assert taken["state"] == "new_branch" and taken["choices"] == ["rebind_workstream"]
+        assert taken["name_holder"]["id"] == wip["workstream"]["id"]
+        assert wip["workstream"]["id"] in taken["message"]
+        assert "workstream_exists" in await fail(
+            "init", path=repo, branch="wip", action="new_workstream", confirmed=True
+        )
+        rebound = await call(
+            "init",
+            path=repo,
+            branch="wip",
+            action="rebind_workstream",
+            workstream_id=wip["workstream"]["id"],
+            expected_revision=wip["workstream"]["revision"],
+            confirmed=True,
+        )
+        assert rebound["state"] == "ready" and rebound["workstream"]["branch"] == "wip"
+        assert rebound["workstream"]["id"] == wip["workstream"]["id"]
+
+    run(exercise())
+
+
+def test_init_error_paths_raise_their_own_codes(tmp_path):
+    store = Store(tmp_path / "tasks.sqlite3")
+    repo, loose = str(tmp_path / "repo"), str(tmp_path / "loose")
+    made = store.init(repo, branch="main", action="create_project", confirmed=True)
+    project, main = made["project"]["id"], made["workstream"]
+    feature = store.init(repo, branch="feature", action="new_workstream", confirmed=True)
+
+    def raises(code, *args, **kwargs):
+        with pytest.raises(TaskError, match=code):
+            store.init(*args, **kwargs)
+
+    raises("absolute_path_required", "relative/repo", branch="main")
+    raises("workstream_name_required", repo)
+    raises("invalid_branch", repo, branch=" ")
+    raises("invalid_workstream_name", repo, workstream_name=" ")
+    raises("invalid_include_inactive", repo, branch="main", include_inactive="yes")
+    raises("project_not_initialized", loose, branch="main", project="nope")
+    raises("unknown_workstream", loose, branch="main", workstream_id="wst_nope")
+    raises("invalid_init_action", repo, branch="topic", action="adopt", confirmed=True)
+    raises(
+        "checkout_already_registered", repo, branch="topic", action="create_project", confirmed=True
+    )
+    raises(
+        "checkout_already_registered",
+        loose,
+        branch="topic",
+        action="create_project",
+        project=project,
+        confirmed=True,
+    )
+    raises("project_required", loose, branch="topic", action="attach_workstream", confirmed=True)
+    raises(
+        "checkout_not_attached",
+        loose,
+        branch="topic",
+        action="new_workstream",
+        project=project,
+        confirmed=True,
+    )
+    raises(
+        "checkout_already_attached",
+        repo,
+        branch="topic",
+        action="attach_workstream",
+        project=project,
+        confirmed=True,
+    )
+    raises(
+        "revision_conflict: re-read the scope",
+        repo,
+        branch="topic",
+        action="new_workstream",
+        scope_expression="main",
+        expected_revision=99,
+        confirmed=True,
+    )
+    raises(
+        "workstream_id_required", repo, branch="topic", action="rebind_workstream", confirmed=True
+    )
+    raises(
+        "revision_conflict: re-read the workstream",
+        repo,
+        branch="topic",
+        action="rebind_workstream",
+        workstream_id=main["id"],
+        expected_revision=99,
+        confirmed=True,
+    )
+    raises(
+        "workstream_exists",
+        repo,
+        branch="topic",
+        workstream_name="feature",
+        action="rebind_workstream",
+        workstream_id=main["id"],
+        expected_revision=main["revision"],
+        confirmed=True,
+    )
+    raises(
+        "workstream_exists",
+        repo,
+        branch="topic",
+        workstream_name="feature",
+        action="new_workstream",
+        confirmed=True,
+    )
+    raises(
+        "workstream_id_not_used",
+        repo,
+        branch="topic",
+        action="new_workstream",
+        workstream_id=feature["workstream"]["id"],
+        confirmed=True,
+    )
+    # None of the rejected calls changed the recorded bindings.
+    assert store.init(repo, branch="topic")["state"] == "new_branch"
+    assert store.init(loose, branch="topic")["state"] == "unregistered_checkout"
+    assert store.init(repo, branch="main")["workstream"] == main
 
 
 def test_group_kind_membership_listing_and_scope_through_everyday_tools(mcp, tmp_path):
