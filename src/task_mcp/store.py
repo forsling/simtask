@@ -1155,6 +1155,25 @@ class Store:
                     f"so {blocked} would conflict: pass another workstream_name"
                 )
 
+            # Each offered choice's message says which init arguments follow it.
+            def rebind_how(target):
+                return (
+                    f"init action=rebind_workstream workstream_id={target['id']} "
+                    f"expected_revision={target['revision']} confirmed=true"
+                )
+
+            def binding_how(target):
+                own = (
+                    f"branch={target['branch']!r}"
+                    if target["branch"]
+                    else f"workstream_name={target['name']!r}"
+                )
+                return f"init path={target['checkout_path']!r} {own}"
+
+            def create_how(choice):
+                into = f" project={chosen['id']}" if choice == "attach_workstream" else ""
+                return f"init action={choice}{into} confirmed=true without workstream_id"
+
             if candidate and candidate["checkout_path"] == canonical and selected:
                 ws = dict(candidate)
                 if requested and requested["id"] != ws["id"]:
@@ -1165,8 +1184,8 @@ class Store:
                         "message": (
                             f"{requested_binding(requested)}; this checkout's {here} is bound "
                             f"to workstream {ws['name']!r} ({ws['id']}); init without "
-                            f"workstream_id (or with {ws['id']}) to use it, or init the "
-                            "requested workstream at its own checkout and branch"
+                            f"workstream_id (or with {ws['id']}) to use it, or "
+                            f"{binding_how(requested)} for the requested workstream"
                         ),
                         "path": canonical,
                         "branch": branch,
@@ -1189,10 +1208,7 @@ class Store:
                 rebind = (
                     name_taken(holder, "rebinding it here")
                     if holder
-                    else (
-                        ", or confirm init action=rebind_workstream with "
-                        f"workstream_id={bound['id']} to move that workstream here"
-                    )
+                    else f", or confirm {rebind_how(bound)} to move that workstream here"
                 )
                 if requested and requested["id"] != bound["id"]:
                     # Another workstream is named while this branch is bound elsewhere: report
@@ -1201,8 +1217,8 @@ class Store:
                     return {
                         "state": "mismatch",
                         "message": (
-                            f"{requested_binding(requested)}; {located}; init the requested "
-                            f"workstream at its own binding{rebind}"
+                            f"{requested_binding(requested)}; {located}; "
+                            f"{binding_how(requested)} for the requested workstream{rebind}"
                         ),
                         "path": canonical,
                         "branch": branch,
@@ -1215,7 +1231,8 @@ class Store:
                 return {
                     "state": "mismatch",
                     "message": (
-                        f"{located[0].upper()}{located[1:]}; init it at its own binding{rebind}"
+                        f"{located[0].upper()}{located[1:]}; {binding_how(bound)} to use it "
+                        f"at its own binding{rebind}"
                     ),
                     "path": canonical,
                     "branch": branch,
@@ -1238,7 +1255,7 @@ class Store:
                     if new_holder:
                         message += name_taken(new_holder, f"action={new_choice}")
                     else:
-                        message += f", or confirm init action={new_choice} to start one here"
+                        message += f", or confirm {create_how(new_choice)} to start one here"
                     choices = [] if new_holder else [new_choice]
                 else:
                     rebind_holder = name_holder(rebind_name, requested["id"])
@@ -1251,13 +1268,11 @@ class Store:
                     )
                     if choices:
                         effect = {
-                            "rebind_workstream": "to move it here",
-                            new_choice: "for a new workstream here",
+                            "rebind_workstream": f"{rebind_how(requested)} to move it here",
+                            new_choice: f"{create_how(new_choice)} for a new workstream here",
                         }
-                        offered = " or ".join(
-                            f"action={choice} {effect[choice]}" for choice in choices
-                        )
-                        message += f"; confirm init {offered}, or choose another workstream"
+                        offered = " or ".join(effect[choice] for choice in choices)
+                        message += f"; confirm {offered}, or choose another workstream"
                     holder = rebind_holder or new_holder
                     if holder:
                         blocked = [
@@ -1282,14 +1297,21 @@ class Store:
                         "ORDER BY created_at,id LIMIT 11",
                         (selected["id"],),
                     ).fetchall()
-                    message = "Choose an initial scope or an explicit workstream rebind"
+                    message = (
+                        "Choose an initial scope or an explicit workstream rebind: confirm "
+                        f"{create_how('new_workstream')} (scope_expression optional, default "
+                        "none) for a new workstream here, or confirm init "
+                        "action=rebind_workstream with a candidate's workstream_id, its "
+                        "revision as expected_revision and confirmed=true to move it here"
+                    )
                     choices = ["new_workstream", "rebind_workstream"]
                     holder = name_holder(insert_name)
                     if holder:
                         # Only rebinding the workstream that holds this name can succeed.
-                        message += name_taken(holder, "action=new_workstream") + (
-                            ", or confirm init action=rebind_workstream with "
-                            f"workstream_id={holder['id']} to move that workstream here"
+                        message = (
+                            "Choose an explicit workstream rebind"
+                            + name_taken(holder, "action=new_workstream")
+                            + f", or confirm {rebind_how(holder)} to move that workstream here"
                         )
                         choices = ["rebind_workstream"]
                     return {
@@ -1311,18 +1333,57 @@ class Store:
                         "SELECT * FROM projects ORDER BY name,id LIMIT 11"
                     ).fetchall()
                 ]
+                # With project=, candidates and choices are checked within that project.
                 workstreams = [
                     dict(row)
                     for row in db.execute(
                         "SELECT id,project_id,name,branch,checkout_path,revision "
-                        "FROM workstreams ORDER BY created_at,id LIMIT 11"
+                        "FROM workstreams WHERE ? IS NULL OR project_id=? "
+                        "ORDER BY created_at,id LIMIT 11",
+                        (chosen and chosen["id"],) * 2,
                     ).fetchall()
                 ]
+                rebind_any = (
+                    "confirm init action=rebind_workstream with a workstream_id, its revision "
+                    "as expected_revision and confirmed=true to move that workstream here"
+                )
+                holder = None
+                if chosen:
+                    choices = ["attach_workstream", "rebind_workstream"]
+                    message = (
+                        f"Checkout is not registered; within project {chosen['name']!r} "
+                        f"({chosen['id']}) confirm {create_how('attach_workstream')} "
+                        "(scope_expression optional, default none) to attach it with a new "
+                        f"workstream, or {rebind_any} (one of this project's)"
+                    )
+                    holder = name_holder(insert_name)
+                    if holder:
+                        # Only rebinding the workstream that holds this name can succeed.
+                        choices = ["rebind_workstream"]
+                        message = (
+                            "Checkout is not registered"
+                            + name_taken(holder, "action=attach_workstream")
+                            + f", or confirm {rebind_how(holder)} to move that workstream here"
+                        )
+                    # create_project ignores project=, so it is offered only without it.
+                    message += "; to create a new project, init without project="
+                else:
+                    choices = ["create_project", "attach_workstream", "rebind_workstream"]
+                    message = (
+                        "Choose how this checkout relates to existing projects: confirm "
+                        f"{create_how('create_project')} for a new project, or init "
+                        "action=attach_workstream project=<project id> confirmed=true "
+                        "(scope_expression optional) to attach it to an existing project "
+                        f"with a new workstream, or {rebind_any}; init with project= and "
+                        "no action first to check names within that project"
+                    )
                 return {
                     "state": "unregistered_checkout",
-                    "message": "Choose how this checkout relates to existing projects",
+                    "message": message,
                     "path": canonical,
-                    "choices": ["create_project", "attach_workstream", "rebind_workstream"],
+                    **({"project": chosen} if chosen else {}),
+                    **({"name_holder": holder} if holder else {}),
+                    "choices": choices,
                     "project_candidates": projects[:10],
                     "more_projects": len(projects) > 10,
                     "workstream_candidates": workstreams[:10],
@@ -1336,8 +1397,13 @@ class Store:
             }:
                 raise TaskError("invalid_init_action")
             if action == "create_project":
-                if selected or project or workstream_id:
+                if selected:
                     raise TaskError("checkout_already_registered: choose its existing project")
+                if project:
+                    raise TaskError(
+                        "project_not_used: action=create_project creates a new project; omit "
+                        "project=, or choose attach_workstream to join that project"
+                    )
                 now = timestamp()
                 selected = dict(
                     id=_id("prj_"),

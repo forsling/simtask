@@ -166,7 +166,9 @@ within that workstream's project. A known checkout on an
 unbound branch returns `new_branch` and that project's registered workstream
 candidates. An unknown checkout returns `unregistered_checkout` with project and
 workstream candidates and the choices `create_project`, `attach_workstream`, and
-`rebind_workstream`. A branch bound to another checkout returns `mismatch`; when
+`rebind_workstream`; with `project`, it is checked within that project (its
+workstream candidates only, no `create_project`, and `attach_workstream` withheld
+when the name is taken). A branch bound to another checkout returns `mismatch`; when
 another `workstream_id` is requested, it reports that workstream and the branch's
 binding as `bound_workstream` separately. A `project` other than the one the
 checkout is attached to is a `mismatch` naming both. Every `mismatch` carries a
@@ -177,7 +179,8 @@ without `project`), `rebind_workstream` / `rebind_bound_workstream` (confirm a r
 of `workstream` / `bound_workstream` here), and `new_workstream` /
 `attach_workstream`. A rebind or new workstream whose name (`workstream_name` or
 the branch) is already used in the project is not offered; the message names the
-workstream holding it.
+workstream holding it. Each message says which `init` arguments follow each offered
+choice.
 Candidates are recorded bindings, not scanned Git refs or running agents. The
 initial call may append an audit event but changes no project, task, scope or
 workstream state.
@@ -187,7 +190,8 @@ After choosing setup, call `init` again with `confirmed=true` and `action`:
 `new_workstream` creates a branch/name in the already attached checkout;
 `attach_workstream` atomically attaches an unknown checkout to the specified
 existing project and creates its workstream (these creating actions reject a
-`workstream_id`, `workstream_id_not_used`, unless it already is this exact binding); `rebind_workstream` moves a selected
+`workstream_id`, `workstream_id_not_used`, unless it already is this exact binding, and
+`create_project` rejects a `project`, `project_not_used`); `rebind_workstream` moves a selected
 durable workstream binding to this path/branch, preserving scope and history.
 Rebind requires `workstream_id` and its last read `expected_revision`. Failed
 setup calls roll back attachment and workstream changes together. An exact

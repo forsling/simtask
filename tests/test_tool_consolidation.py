@@ -369,7 +369,30 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
             ["init_requested_binding"],
             ["rebind_workstream"],
         ),
+        # An unregistered checkout with an explicit project= and no workstream_id is checked
+        # within that project; create_project ignores project=, so it is not offered.
+        "unregistered_checkout_with_project": (
+            lambda ids: {"path": loose, "branch": "topic", "project": ids["project"]},
+            ["attach_workstream", "rebind_workstream"],
+            [],
+        ),
+        "unregistered_checkout_with_project_name_taken": (
+            lambda ids: {"path": loose, "branch": "wip", "project": ids["project"]},
+            ["rebind_workstream"],
+            ["attach_workstream"],
+        ),
     }
+
+    def moving(response, choice):
+        # The workstream a rebind choice moves: the reported one, else the name holder, else
+        # the first workstream candidate (all within the checked project).
+        if choice == "rebind_bound_workstream":
+            return response["bound_workstream"]
+        return (
+            response.get("workstream")
+            or response.get("name_holder")
+            or response["workstream_candidates"][0]
+        )
 
     def arguments(request, response, choice):
         keys = ("path", "branch", "workstream_name")
@@ -381,11 +404,11 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
             own = {"branch": target["branch"]} if target["branch"] else {}
             return {"path": target["checkout_path"], **(own or {"workstream_name": target["name"]})}
         if choice in {"rebind_workstream", "rebind_bound_workstream"}:
-            moving = target if choice == "rebind_workstream" else response["bound_workstream"]
+            moved = moving(response, choice)
             return here | {
                 "action": "rebind_workstream",
-                "workstream_id": moving["id"],
-                "expected_revision": moving["revision"],
+                "workstream_id": moved["id"],
+                "expected_revision": moved["revision"],
                 "confirmed": True,
             }
         project = response["project"]["id"]
@@ -402,7 +425,7 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         expected = {
             "use_bound_workstream": lambda: response["bound_workstream"]["id"],
             "init_requested_binding": lambda: target["id"],
-            "rebind_workstream": lambda: target["id"],
+            "rebind_workstream": lambda: moving(response, choice)["id"],
             "rebind_bound_workstream": lambda: response["bound_workstream"]["id"],
         }.get(choice)
         if expected:
@@ -416,7 +439,7 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         if choice in {"new_workstream", "attach_workstream"}:
             assert followed["changed"]
             assert followed["project"]["id"] == response["project"]["id"]
-            assert followed["workstream"]["id"] != target["id"]
+            assert not target or followed["workstream"]["id"] != target["id"]
             assert followed["workstream"]["checkout_path"] == response["path"]
             assert followed["workstream"]["branch"] == request.get("branch")
         # A followed setup choice is now a stable binding: a plain resume returns it unchanged.
@@ -431,11 +454,27 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         ids = await setup(call)
         request = build(ids)
         response = await call("init", **request)
-        assert response["state"] == "mismatch", label
+        state = "unregistered_checkout" if label.startswith("unregistered_checkout") else "mismatch"
+        assert response["state"] == state, label
         assert response.get("choices") == choices, label
         assert "None" not in response["message"], label
         if withheld:
             assert "pass another workstream_name" in response["message"], label
+        # The message says how to follow each offered choice: its action and the arguments
+        # identifying what it acts on.
+        for choice in choices:
+            given = arguments(request, response, choice)
+            expected = [f"action={given['action']}"] if "action" in given else []
+            if "project" in given:
+                expected.append(f"project={given['project']}")
+            if choice == "init_requested_binding":
+                expected.append(f"path={given['path']!r}")
+            specific = response.get("workstream") or response.get("name_holder")
+            if choice == "rebind_bound_workstream" or (choice == "rebind_workstream" and specific):
+                expected += [f"workstream_id={given['workstream_id']}"]
+                expected += [f"expected_revision={given['expected_revision']}"]
+            for text in expected:
+                assert text in response["message"], (label, choice, text)
         return request, response
 
     async def exercise():
@@ -457,7 +496,7 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                     "runtime": response["runtime"]
                 }
                 withheld_count += 1
-        assert (followed, withheld_count) == (35, 9)
+        assert (followed, withheld_count) == (38, 10)
 
         # The branch-bound-elsewhere report names both workstreams, not one for the other.
         call = tools("bound-elsewhere-report")
@@ -604,8 +643,9 @@ def test_init_error_paths_raise_their_own_codes(tmp_path):
     raises(
         "checkout_already_registered", repo, branch="topic", action="create_project", confirmed=True
     )
+    # The loose checkout is not registered: project= is the unused argument.
     raises(
-        "checkout_already_registered",
+        "project_not_used",
         loose,
         branch="topic",
         action="create_project",
