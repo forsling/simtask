@@ -960,7 +960,7 @@ function activity(t) {
         );
         li.lastChild.lastChild.title = new Date(e.timestamp).toLocaleString();
         if (failed) li.append(node("div", "Failed", "warn-text"));
-        const note = e.request?.user_note || e.request?.note || e.request?.text || e.error;
+        const note = e.request?.reasons || e.request?.user_note || e.request?.note || e.request?.text || e.error;
         if (note) li.append(node("p", note, "event-note"));
         content.append(li);
       });
