@@ -164,8 +164,13 @@ def test_latest_rejection_replaces_previous_without_changing_factual_history(con
         latest["reasons"] == "Reviewer: handle empty input" and latest["attempt_id"] == retry["id"]
     )
     card = store.list_tasks(project, ws)["items"][0]
+    assert card["rejected"] is True and card["state"] == "rework"
+    card = store.list_tasks(project, ws, include=["attempt"])["items"][0]
     assert card["latest_rejection"] == {k: v for k, v in latest.items() if k != "reasons"}
     fixed = result(store, task, ws)
+    # A newer recorded result answers the rejection; its review is now pending.
+    card = store.list_tasks(project, ws)["items"][0]
+    assert "rejected" not in card and card["state"] == "review"
     store.record_review(fixed["id"], 1, "fresh reviewer", "pass", "Checked fresh proof")
     decide(
         store,

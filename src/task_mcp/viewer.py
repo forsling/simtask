@@ -48,6 +48,9 @@ def dispatch(store, action, data):
         data = {**data, "source": "user"}
     if action == "question":
         data = {**data, "handling": "user"}
+    if action == "tasks":
+        # The board shows every section, closed ones included, from unabridged cards.
+        data = {**data, "include_inactive": True, "full_cards": True}
     return operations[action](**data)
 
 

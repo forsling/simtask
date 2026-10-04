@@ -75,7 +75,7 @@ ordering or a membership snapshot. Canonical `tasks.order_key` remains a stable
 project-wide baseline; old project order revisions remain private historical
 storage. There is no project-level reorder surface or shared execution order.
 Boards, action/init/status reads and exports expose `workstream_order_revision`;
-scoped cards also expose `workstream_order_key`. The viewer reorders by drag and
+scoped cards also expose their `position` in that order. The viewer reorders by drag and
 drop within the selected workstream's list, sending the prefix through the moved
 task with the loaded order revision; conflicts reload rather than overwrite.
 No automatic priority rules, normalization or consumer reporting calls exist.
@@ -268,10 +268,24 @@ Cheap research and reversible choices proceed without ceremony.
 
 ## Surface and boundary
 
+Agent boards are for choosing active work. `list_tasks`, `workstream_status` and
+the `init` queue list open and rework tasks (including those awaiting review or
+sign-off) and count done, deferred and dropped tasks per status instead of listing
+them; `include_inactive=true` or an explicit closed `state` filter lists them.
+Cards are slim: identity, title, summary, one state word, revision, workstream
+position, unsatisfied blocker IDs, question and concern counts and a waiting-
+rejection flag, omitting empty defaults. Named include groups (`blockers`,
+`attempt`, `concerns`, `workstreams`, `ids`) on `list_tasks` and `get_tasks`
+restore the remaining card detail without a specification read, so nothing an
+agent could read before costs more than it did. Full specification reads,
+`get_next_action` and write acknowledgements are unchanged. Hiding is a
+projection only: positions, order revisions, gate semantics, status counts and
+exports still cover every member.
+
 The optional local browser companion invokes a narrow allowlist of the same
 Store operations as MCP. It adds no task state model, business transition
-logic, synchronization or agent dependency. Project/workstream queues retain
-their derived views; stored disposition and global group progress are labelled
+logic, synchronization or agent dependency. Its board reads unabridged cards,
+closed tasks included, so project/workstream queues retain their derived views; stored disposition and global group progress are labelled
 separately. Human decision dialogs require explicit confirmation; signoff reasons are required
 for rework/revise and optional for approve/drop;
 attempt review revisions and task sign-off revisions remain distinct. Text is
@@ -350,7 +364,8 @@ Historical signoff records, including old defer and judgment fields, stay intact
 A task's latest rejection is the newest successful reviewer rework or signoff
 rework/revise event, with source, verdict, reasons, originating attempt/workstream/
 specification, timestamp and decision reference. Full reads and get_next_action
-carry this handoff; compact cards carry its provenance without prose. Each new
+carry this handoff; slim cards flag `rejected` until a newer result is recorded,
+and the `attempt` include group carries its provenance without prose. Each new
 rejection replaces the projection while prior rounds remain in immutable history.
 It is canonical task context, never evidence that an originating branch's proof
 is current locally. Schema 7 adds a partial rejection-history index so bounded

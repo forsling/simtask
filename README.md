@@ -181,9 +181,11 @@ expression term, pass that source's last read revision as `expected_revision`.
 
 `list_workstreams(project?, limit?, offset?)` lists registered workstreams
 globally or within one project, with binding, revision and derived scoped task
-counts. `workstream_status(workstream_id, limit?, offset?)` returns that
-workstream's compact scoped queue and count diagnostics without init or rebind.
-Init returns at most ten queue cards with total/next-page information. Task/group
+counts. `workstream_status(workstream_id, limit?, offset?, include_inactive?)` returns that
+workstream's active slim cards (see [Boards and cards](#boards-and-cards)) and count
+diagnostics without init or rebind; its `concern_tasks` page follows the same
+active-only default. Init returns at most ten active queue cards with
+total/next-page information and `queue_hidden` counts. Task/group
 lists and status queues default to twenty; events default to twenty metadata entries.
 Workstream scope/group references are bounded; `workstream_status(include_scope=true)`
 pages explicit members, group references and exclusions using limit/offset.
@@ -194,14 +196,14 @@ sum. `groups` and `referenced_groups` identify explicitly included groups and
 their whole-group progress separately, even when this project has no members.
 The separate
 `overlapping_gate_diagnostics` counts active gates on open/rework tasks and can overlap
-for tasks with several gates. Queue `gate_diagnostics` uses the same active-gate
-meaning: done, dropped and deferred tasks have an empty list. Deferred tasks'
-gates become active again when resumed. Explicit `get_tasks(specification=true)` retains full requirements/gates;
+for tasks with several gates. Card `gate_diagnostics` (include group `blockers`)
+uses the same active-gate meaning: done, dropped and deferred tasks have an empty
+list. Deferred tasks' gates become active again when resumed. Explicit `get_tasks(specification=true)` retains full requirements/gates;
 `get_attempt`, paged `list_task_attempts` and audit events retain proof/history; retained
 history does not create actionable gates on inactive tasks.
-The single `view` shown in `list_tasks` and status drill-down prioritizes
+The single card `state` shown in `list_tasks` and status drill-down prioritizes
 terminal disposition, then inbox, review/sign-off and unresolved/
-prerequisite gates; use diagnostics to see every simultaneous gate.
+prerequisite gates; use `include=["blockers"]` diagnostics to see every simultaneous gate.
 `recorded_state=registered` means only that the binding exists;
 `agent_liveness=not_tracked` means the service intentionally does not observe
 agents, run heartbeats or maintain leases; it is not a failed observation. Recorded
@@ -236,10 +238,11 @@ revision and leave old proof historical; summary corrections/no-op edits retain
 spec revision. Workstream membership, active disposition, clear questions and
 prerequisites and this workstream's current-spec attempts govern readiness.
 
-`get_tasks(ids=[...])` returns bounded cards: title, optional summary, revisions,
-workstream membership/disposition, gate counts and references. Cards contain no body preview,
-acceptance criteria or replacement token. Scoped cards expose a current-spec local
-attempt reference; unscoped cards label aggregate counts and imply no branch readiness.
+`get_tasks(ids=[...], workstream_id?, include?)` returns the same slim cards as
+boards (see [Boards and cards](#boards-and-cards)). Cards contain no body preview,
+acceptance criteria or replacement token. With `workstream_id`, state and the
+`attempt` include group use that workstream's current-spec local attempts; without
+it they reflect current results in any workstream and imply no branch readiness.
 Call `get_tasks(ids=[...], specification=true, workstream_id=..., attempt_ids=[...])`
 when you need complete current requirements and exactly chosen proof together.
 No preliminary card read is needed. Pending proposals and parent context are complete;
@@ -247,6 +250,43 @@ current-spec attempt summaries are limited to three, actionable first, with tota
 and `has_more`. Page additional attempts with `list_task_attempts(states=[...],
 current_spec_only=true)`; `get_attempt(attempt_id)` retrieves one complete proof.
 Explicit proof retains its original task, workstream and specification provenance.
+
+### Boards and cards
+
+`list_tasks`, `workstream_status` and the `init` queue show active work only: open
+and rework tasks, including those awaiting review or sign-off. Done, deferred and
+dropped tasks are omitted and counted per status in `hidden` (`queue_hidden` on
+init), for example `{"done": 217, "deferred": 150}`. Pass `include_inactive=true`
+to list them too (history or backlog); `list_tasks(state="done"|"deferred"|"dropped")`
+lists exactly that status. Positions keep the whole workstream order, so hidden
+tasks leave gaps rather than renumbering the board.
+
+A slim card carries `id`, `title`, `summary`, `state`, `revision`, `position` (in the
+named workstream's order), `blockers` (unsatisfied prerequisite IDs), `question_count`,
+`concern_count` and `rejected` (a review or sign-off rejection awaits a newer
+recorded result). Empty, zero and false fields are omitted, as is `position`
+without a workstream. `state` is one word: `ready`, `rework`, `blocked`,
+`question`, `review`, `signoff`, `inbox`, `out_of_scope`, or the closed status
+`done`/`deferred`/`dropped`. Groups have `state="group"` with `progress`,
+`complete` and `project_count`. The `state` filter accepts these words and the
+older view names `prerequisites` and `unresolved_items`; `ready` also matches
+`rework`.
+
+`list_tasks` and `get_tasks` accept `include=[...]` groups that restore what slim
+cards leave out, without a full specification read:
+
+| Group | Adds |
+| --- | --- |
+| `blockers` | `prerequisites` (every link with title, state, milestone, satisfied/blocking), `gate_diagnostics`, `pending_proposal_count` |
+| `attempt` | `attempt` (current result: state/review status, implementer, summary, revision), `attempt_counts`, `alternative_attempt_count`, `attempt_scope`, `selected_attempt_id`, `latest_rejection` (without reasons) |
+| `concerns` | `concerns` (text, kind, source, author and attempt provenance for up to three concerned attempts), `concern_count`, `concern_attempt_total`, `concern_attempt_references`, `concern_attempts_has_more` |
+| `workstreams` | `workstreams` (every membership with its position), `adopted`, `in_scope` |
+| `ids` | `project_id`, `object_type`, `status`, `spec_revision`, `summary_spec_revision`, `summary_stale`, `order_key`, `parent_group_id`, `specification_complete`, `view`, `workstream_id`, and `origin_project_id` for groups |
+
+Unknown group names are rejected. With `specification=true` the full specification
+is returned as before; include groups only add fields it lacks (for example
+`workstreams` positions). The browser viewer reads unabridged cards, including
+closed tasks, through `Store`.
 
 Body and criteria are whole-field replacements. Use the `specification_etag` from
 that full read or from a create acknowledgement for the complete specification you
@@ -501,7 +541,7 @@ members keep their positions. Removal affects only that list; re-adding appends.
 Live group inclusions and exclusions retain their existing scope semantics.
 Initial schema 10 migration preserves each effective list's prior project order
 at revision 0. Scoped boards, next-action selection, status and exports use local
-order; scoped cards include `workstream_order_key`. Project-wide lists report
+order; scoped cards include `position`. Project-wide lists report
 `ordering=project_baseline` and remain deterministic without a reorder surface.
 In the viewer, drag a task onto the upper or lower half of another task in a
 named workstream's list to place it before or after that task. The drop line and
@@ -612,8 +652,9 @@ Protocol 11/schema 7 simplify that contract and expose `latest_rejection` on ful
 task reads and `get_next_action`: source (`review`/`signoff`), verdict, reasons,
 originating attempt/workstream/specification, timestamp and decision reference.
 Each actual reviewer rework or signoff rework/revise replaces that context; later
-passes and approvals do not fabricate a new rejection. Compact cards omit the
-reasons and retain the provenance flag. Current execution/proof remains local to
+passes and approvals do not fabricate a new rejection. Slim cards show
+`rejected: true` until a newer result is recorded; `include=["attempt"]` adds the
+provenance without the reasons. Current execution/proof remains local to
 its branch. Earlier rejection rounds remain in audit/signoff history, including
 old defer decisions and judgment fields unchanged. Schema 7 adds only an indexed
 projection over factual audit records, with no business-row rewrite. Existing

@@ -119,7 +119,11 @@ async def exercise(database):
         )
         token, revision = changed["specification_etag"], changed["revision"]
         card_before = (await ok("get_tasks", ids=[task["id"]], workstream_id=ws))["items"][0]
-        assert card_before["attempt_reference"] is None and "specification_etag" not in card_before
+        assert "specification_etag" not in card_before
+        attempt_before = (
+            await ok("get_tasks", ids=[task["id"]], workstream_id=ws, include=["attempt"])
+        )["items"][0]
+        assert attempt_before["attempt"] is None
         # Pending proposals remain complete on explicit spec reads and compact on writes.
         proposal = await ok(
             "add_unresolved",
@@ -247,8 +251,10 @@ async def exercise(database):
         assert abs(len(json.dumps(zero_history)) - len(json.dumps(card_before))) < 10
         assert len(json.dumps(card_after)) < 1500 and proof not in json.dumps(card_after)
         start = len(trace)
-        queue = await ok("list_tasks", project=project, workstream_id=ws, state="signoff")
-        ref = queue["items"][0]["attempt_reference"]
+        queue = await ok(
+            "list_tasks", project=project, workstream_id=ws, state="signoff", include=["attempt"]
+        )
+        ref = queue["items"][0]["attempt"]
         informed = (
             await ok(
                 "get_tasks",
@@ -321,7 +327,9 @@ async def exercise(database):
         rest = await ok("list_group_members", group_id=group["id"], cursor=page["next_cursor"])
         assert len(page["items"]) == 20 and len(rest["items"]) == 4
         init = await ok("init", path=str(database.parent / "repo"), branch="main")
-        assert len(init["queue"]) == 10 and init["queue_total"] == 25
+        # The signed-off task is counted, not listed.
+        assert len(init["queue"]) == 10 and init["queue_total"] == 24
+        assert init["queue_hidden"] == {"done": 1}
         history = await ok(
             "list_task_attempts", task_id=task["id"], current_spec_only=False, limit=3
         )

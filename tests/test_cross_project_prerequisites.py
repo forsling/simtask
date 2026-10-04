@@ -93,9 +93,10 @@ def test_link_milestone_clears_blocker_without_moving_proof_or_scope(context, re
     assert linked["attempts"] == [] and linked["blocked_by"] == [blocker["id"]]
     assert detail(store, blocker["id"])["revision"] == 2  # result only; linking did not touch it
     assert store.workstream_status(ws)["workstream"] == before_scope
-    queue = store.list_tasks(a["project"]["id"], ws)["items"]
+    queue = store.list_tasks(a["project"]["id"], ws, include=["blockers"])["items"]
     row = next(row for row in queue if row["id"] == dependent["id"])
-    assert row["prerequisites"] == [ref] and row["view"] == "prerequisites"
+    assert row["prerequisites"] == [ref] and row["state"] == "blocked"
+    assert row["blockers"] == [blocker["id"]]
     selected = store.get_next_action(ws)
     if remote:
         assert selected["action"] is None
@@ -106,8 +107,10 @@ def test_link_milestone_clears_blocker_without_moving_proof_or_scope(context, re
         for row in store.init(str(a["workstream"]["checkout_path"]), branch="main")["queue"]
         if row["id"] == dependent["id"]
     )
-    assert scoped["prerequisites"] == [ref]
-    assert scoped["gate_diagnostics"] == ["prerequisites"]
+    assert scoped["blockers"] == [blocker["id"]] and scoped["state"] == "blocked"
+    scoped = store.read_tasks([dependent["id"]], workstream_id=ws, include=["blockers"])
+    assert scoped["items"][0]["prerequisites"] == [ref]
+    assert scoped["items"][0]["gate_diagnostics"] == ["prerequisites"]
     assert "Remote evidence stays remote" not in str(linked)
     store.record_review(attempt["id"], 1, "fresh reviewer", "pass", "Checked remote artifact")
     reviewed = {**ref, "satisfied": milestone == "review", "blocking": milestone != "review"}
@@ -341,10 +344,9 @@ def test_current_spec_review_is_reversible_and_keeps_dependent_results(context, 
     assert prerequisite(store, dependent["id"])["blocking"]
     assert store.get_next_action(ws)["action"] is None
     assert detail(store, dependent["id"])["attempts"][0]["id"] == saved["id"]
-    assert store.workstream_status(ws)["items"][0]["gate_diagnostics"] == [
-        "prerequisites",
-        "signoff",
-    ]
+    card = store.list_tasks(dependent["project_id"], ws, include=["blockers"])["items"][0]
+    assert card["gate_diagnostics"] == ["prerequisites", "signoff"]
+    assert store.workstream_status(ws)["items"][0]["state"] == "signoff"
     fresh = review_result(store, blocker["id"], b)
     assert prerequisite(store, dependent["id"])["satisfied"]
     changed = store.update_task(

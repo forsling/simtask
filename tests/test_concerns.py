@@ -115,9 +115,9 @@ def test_concerns_persist_and_pass_review_clears_prerequisite(context):
         restarted.get_tasks([task["id"]])["items"][0]["attempts"][0]["concerns"]
         == proof["concerns"]
     )
-    cards = restarted.list_tasks(project, ws)["items"]
-    assert cards[0]["view"] == "signoff" and cards[0]["concern_count"] == 2
-    assert cards[1]["view"] == "ready" and cards[1]["prerequisites"][0]["satisfied"]
+    cards = restarted.list_tasks(project, ws, include=["blockers"])["items"]
+    assert cards[0]["state"] == "signoff" and cards[0]["concern_count"] == 2
+    assert cards[1]["state"] == "ready" and cards[1]["prerequisites"][0]["satisfied"]
     assert restarted.get_next_action(ws)["task"]["id"] == dependent["id"]
     export = restarted.export_workstream(ws)["content"]
     for concern in proof["concerns"]:
@@ -160,8 +160,11 @@ def assert_legacy_concern_projections(store, task, ws, attempt_id, legacy, conce
     assert store.get_tasks([task["id"]])["items"][0]["attempts"][0] == proof
     assert store.list_task_attempts(task["id"])["items"][0]["concern_count"] == len(concerns)
     card = store.list_tasks(task["project_id"], ws)["items"][0]
+    assert card.get("concern_count", 0) == len(concerns)
+    card = store.list_tasks(task["project_id"], ws, include=["concerns"])["items"][0]
     assert card["concern_count"] == len(concerns)
     assert card["concern_attempt_total"] == bool(concerns)
+    assert [c["text"] for c in card["concerns"]] == [c["text"] for c in concerns]
     full = store.read_tasks([task["id"]], True, ws)["items"][0]
     assert full["concern_count"] == len(concerns)
     assert [c["text"] for c in full["concerns"]] == [c["text"] for c in concerns]

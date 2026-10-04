@@ -20,6 +20,12 @@ DATABASE_SCHEMA_REVISION = 10
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
 # Concerns have explicit provenance in their own column, never in arbitrary proof text.
 CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
+# Boards show active work by default; these statuses are counted, not listed.
+INACTIVE_STATUSES = ("done", "deferred", "dropped")
+# Optional board-card detail groups, in documentation order.
+CARD_INCLUDE_GROUPS = ("blockers", "attempt", "concerns", "workstreams", "ids")
+# Slim-card state words for gate views whose internal names are longer.
+STATE_WORDS = {"unresolved_items": "question", "prerequisites": "blocked"}
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
@@ -841,19 +847,30 @@ class Store:
             "workstreams.listed", {"project": project, "limit": limit, "offset": offset}, operation
         )
 
-    def workstream_status(self, workstream_id, limit=20, offset=0, include_scope=False):
+    def workstream_status(
+        self, workstream_id, limit=20, offset=0, include_scope=False, include_inactive=False
+    ):
         request = dict(
-            workstream_id=workstream_id, limit=limit, offset=offset, include_scope=include_scope
+            workstream_id=workstream_id,
+            limit=limit,
+            offset=offset,
+            include_scope=include_scope,
+            include_inactive=include_inactive,
         )
 
         def operation(db, scope):
             self._page(limit, offset)
+            self._validate_include_inactive(include_inactive)
             ws = self._workstream(db, workstream_id)
             project = db.execute(
                 "SELECT * FROM projects WHERE id=?", (ws["project_id"],)
             ).fetchone()
             scope["project_id"] = ws["project_id"]
             queue = self._scoped_queue(db, workstream_id)
+            hidden = (
+                [] if include_inactive else [c for c in queue if c["status"] in INACTIVE_STATUSES]
+            )
+            queue = [c for c in queue if include_inactive or c["status"] not in INACTIVE_STATUSES]
             # A separate page keeps concerns visible even beyond the ordinary queue page.
             concerned = [item for item in queue if item["concern_count"]]
             concerned.sort(
@@ -900,15 +917,24 @@ class Store:
                         "total": len(rows),
                         "next_offset": offset + limit if len(rows) > offset + limit else None,
                     }
+            page = self._paged(queue[offset : offset + limit + 1], limit, offset)
+            cache = {}
+            page["items"] = [
+                self._board_card(
+                    db, self._task(db, card["id"], {}), workstream_id, full=card, cache=cache
+                )
+                for card in page["items"]
+            ]
             return {
                 "project": {key: project[key] for key in project.keys() if key != "order_revision"},
                 "workstream": ws,
                 "status": self._status_summary(db, workstream_id),
                 "workstream_order_revision": ws["order_revision"],
                 "total": len(queue),
+                **({} if include_inactive else {"hidden": self._hidden_counts(hidden)}),
                 "concern_tasks": {"total": len(concerned), **concern_page},
                 **({"scope": scope_page} if include_scope else {}),
-                **self._paged(queue[offset : offset + limit + 1], limit, offset),
+                **page,
             }
 
         return self._run("workstream.status_read", request, operation)
@@ -1020,6 +1046,7 @@ class Store:
         scope_expression="none",
         expected_revision=None,
         confirmed=False,
+        include_inactive=False,
     ):
         request = dict(
             path=path,
@@ -1031,9 +1058,11 @@ class Store:
             scope_expression=scope_expression,
             expected_revision=expected_revision,
             confirmed=confirmed,
+            include_inactive=include_inactive,
         )
 
         def operation(db, scope):
+            self._validate_include_inactive(include_inactive)
             canonical = self._canonical_path(path)
             if not branch and not workstream_name:
                 raise TaskError("workstream_name_required: detached or non-Git use needs a name")
@@ -1094,7 +1123,7 @@ class Store:
                         "project": selected,
                         "workstream": ws,
                     }
-                return self._ready_init(db, selected, ws) | {"changed": False}
+                return self._ready_init(db, selected, ws, include_inactive) | {"changed": False}
             if candidate and not (
                 action == "rebind_workstream" and confirmed and workstream_id == candidate["id"]
             ):
@@ -1234,11 +1263,15 @@ class Store:
                     raise TaskError("workstream_exists: target binding conflicts") from exc
                 ws = self._workstream(db, workstream_id)
             scope.update(project_id=selected["id"], after={"project": selected, "workstream": ws})
-            return self._ready_init(db, selected, ws) | {"changed": True}
+            return self._ready_init(db, selected, ws, include_inactive) | {"changed": True}
 
         return self._run("session.initialized", request, operation)
 
-    def _ready_init(self, db, project, ws):
+    def _ready_init(self, db, project, ws, include_inactive=False):
+        queue = self._scoped_queue(db, ws["id"])
+        hidden = [] if include_inactive else [c for c in queue if c["status"] in INACTIVE_STATUSES]
+        queue = [c for c in queue if include_inactive or c["status"] not in INACTIVE_STATUSES]
+        cache = {}
         return {
             "state": "ready",
             "message": "Workstream ready",
@@ -1246,9 +1279,15 @@ class Store:
             "workstream": ws,
             "scope_revision": ws["revision"],
             "workstream_order_revision": ws["order_revision"],
-            "queue": self._scoped_queue(db, ws["id"])[:10],
-            "queue_total": len(self._scope_ids(db, ws["id"])),
-            "queue_next_offset": 10 if len(self._scope_ids(db, ws["id"])) > 10 else None,
+            "queue": [
+                self._board_card(
+                    db, self._task(db, card["id"], {}), ws["id"], full=card, cache=cache
+                )
+                for card in queue[:10]
+            ],
+            "queue_total": len(queue),
+            "queue_next_offset": 10 if len(queue) > 10 else None,
+            **({} if include_inactive else {"queue_hidden": self._hidden_counts(hidden)}),
             "groups": self._scope_group_ids(db, ws["id"])[:10],
             "groups_total": len(self._scope_group_ids(db, ws["id"])),
             "status": self._status_summary(db, ws["id"]),
@@ -1857,6 +1896,191 @@ class Store:
         return card
 
     @staticmethod
+    def _include_groups(include):
+        """Validate optional card detail groups; order and duplicates are irrelevant."""
+        if include is None:
+            return ()
+        choices = ", ".join(CARD_INCLUDE_GROUPS)
+        if not isinstance(include, list) or any(not isinstance(g, str) for g in include):
+            raise TaskError(f"invalid_include: pass a list of group names from {choices}")
+        unknown = [g for g in include if g not in CARD_INCLUDE_GROUPS]
+        if unknown:
+            raise TaskError(
+                f"invalid_include: unknown group {', '.join(map(repr, unknown))}; "
+                f"choose from {choices}"
+            )
+        return tuple(g for g in CARD_INCLUDE_GROUPS if g in include)
+
+    @staticmethod
+    def _validate_include_inactive(include_inactive):
+        if type(include_inactive) is not bool:
+            raise TaskError("invalid_include_inactive: use true or false")
+
+    @staticmethod
+    def _card_view(db, task, full, workstream_id=None):
+        """Return (internal view, slim state word) for one task or group."""
+        if task["object_type"] == "group":
+            return "group", "group"
+        if workstream_id:
+            view = full["view"]
+        else:
+            # Without a workstream, review/sign-off reflect current results anywhere.
+            view = Store._status_view(task, Store._gate_reasons(db, task))
+        state = STATE_WORDS.get(view, view)
+        counts = full.get("attempt_counts") or full.get("aggregate_attempt_counts") or {}
+        if state == "ready" and (task["status"] == "rework" or counts.get("rework")):
+            state = "rework"
+        return view, state
+
+    @staticmethod
+    def _state_matches(requested, view, state):
+        """Old view names and slim state words both filter; ready includes rework."""
+        return requested in {view, state}
+
+    @staticmethod
+    def _rejection_waiting(db, task):
+        """A review/sign-off rejection with no newer recorded result for this task."""
+        rejection = task["latest_rejection"]
+        if not rejection or task["object_type"] != "task" or task["status"] in INACTIVE_STATUSES:
+            return False
+        return not db.execute(
+            "SELECT 1 FROM events WHERE task_id=? AND action='attempt.recorded' "
+            "AND outcome='ok' AND sequence>? LIMIT 1",
+            (task["id"], rejection["decision_ref"]),
+        ).fetchone()
+
+    @staticmethod
+    def _positions(db, workstream_id, cache):
+        if workstream_id not in cache:
+            cache[workstream_id] = {
+                identity: index
+                for index, identity in enumerate(Store._ordered_scope_ids(db, workstream_id), 1)
+            }
+        return cache[workstream_id]
+
+    @staticmethod
+    def _board_card(db, task, workstream_id=None, include=(), full=None, cache=None):
+        """Slim card: identity, one state word and gate/attention counts.
+
+        Fields at their empty default (no summary, blockers, questions, concerns or
+        waiting rejection) are omitted. Include groups restore the dropped detail.
+        """
+        cache = {} if cache is None else cache
+        full = full if full is not None else Store._card(db, task, workstream_id)
+        view, state = Store._card_view(db, task, full, workstream_id)
+        card = {"id": task["id"], "title": task["title"]}
+        if task["summary"] is not None:
+            card["summary"] = task["summary"]
+        card.update(state=state, revision=task["revision"])
+        if workstream_id and task["object_type"] == "task":
+            position = Store._positions(db, workstream_id, cache).get(task["id"])
+            if position is not None:
+                card["position"] = position
+        if task["object_type"] == "group":
+            card.update(
+                progress=full["progress"],
+                complete=full["complete"],
+                project_count=full["project_count"],
+            )
+        active = task["status"] not in INACTIVE_STATUSES
+        if active:
+            blockers = [
+                p["id"] for p in Store._prerequisite_references(db, task["id"]) if p["blocking"]
+            ]
+            if blockers:
+                card["blockers"] = blockers
+            if task["unresolved_items"]:
+                card["question_count"] = len(task["unresolved_items"])
+        if full.get("concern_count"):
+            card["concern_count"] = full["concern_count"]
+        if Store._rejection_waiting(db, task):
+            card["rejected"] = True
+        for name in include:
+            card.update(Store._card_detail(db, task, full, workstream_id, name, view, cache))
+        return card
+
+    @staticmethod
+    def _card_detail(db, task, full, workstream_id, name, view, cache):
+        """One include group; together with the slim card they cover the old card."""
+        is_task = task["object_type"] == "task"
+        if name == "blockers":
+            return {
+                "prerequisites": Store._prerequisite_references(db, task["id"]),
+                "gate_diagnostics": full["gate_diagnostics"],
+                "pending_proposal_count": full["pending_proposal_count"],
+            }
+        rows = Store._current_attempt_rows(db, task, workstream_id) if is_task else []
+        if name == "attempt":
+            reference = full.get(
+                "attempt_reference", Store._attempt_summary(rows[0]) if rows else None
+            )
+            return {
+                "attempt": reference,
+                "attempt_counts": {
+                    state: sum(r["state"] == state for r in rows)
+                    for state in ("review", "passed", "human_review", "rework")
+                },
+                "alternative_attempt_count": max(0, len(rows) - 1),
+                "attempt_scope": workstream_id or "cross_workstream",
+                "selected_attempt_id": task["selected_attempt_id"],
+                "latest_rejection": full["latest_rejection"],
+            }
+        if name == "concerns":
+            concerned = [row for row in rows if row["concern_count"]]
+            return {
+                "concern_count": sum(row["concern_count"] for row in concerned),
+                "concerns": Store._concern_window(db, concerned[:3]),
+                "concern_attempt_total": len(concerned),
+                "concern_attempt_references": full.get("concern_attempt_references", []),
+                "concern_attempts_has_more": len(concerned) > 3,
+            }
+        if name == "workstreams":
+            if is_task:
+                memberships = [
+                    {
+                        "id": identity,
+                        "position": Store._positions(db, identity, cache).get(task["id"]),
+                    }
+                    for identity in Store._membership_ids(db, task)
+                ]
+            else:
+                # Groups are referenced by scope, not ordered as members.
+                memberships = [
+                    {"id": row["workstream_id"], "position": None}
+                    for row in db.execute(
+                        "SELECT workstream_id FROM scope_groups WHERE group_id=? "
+                        "ORDER BY workstream_id",
+                        (task["id"],),
+                    )
+                ]
+            detail = {"workstreams": memberships, "adopted": bool(is_task and memberships)}
+            if "in_scope" in full:
+                detail["in_scope"] = full["in_scope"]
+            return detail
+        detail = {
+            key: task[key]
+            for key in (
+                "project_id",
+                "object_type",
+                "status",
+                "spec_revision",
+                "summary_spec_revision",
+                "order_key",
+                "parent_group_id",
+            )
+        }
+        detail.update(
+            summary_stale=Store._summary_stale(task),
+            specification_complete=False,
+            view=view,
+        )
+        if workstream_id:
+            detail["workstream_id"] = workstream_id
+        if not is_task:
+            detail.update(project_id=None, origin_project_id=task["project_id"])
+        return detail
+
+    @staticmethod
     def _specification(db, task, workstream_id=None):
         detail = Store._details(db, task, history=False)
         detail.update(specification_complete=True, summary_stale=Store._summary_stale(task))
@@ -1909,18 +2133,22 @@ class Store:
             )
         return concerns
 
-    def read_tasks(self, ids, specification=False, workstream_id=None, attempt_ids=None):
+    def read_tasks(
+        self, ids, specification=False, workstream_id=None, attempt_ids=None, include=None
+    ):
         """Bounded MCP projection; get_tasks retains full internal/viewer detail."""
         request = dict(
             ids=ids,
             specification=specification,
             workstream_id=workstream_id,
             attempt_ids=attempt_ids,
+            include=include,
         )
 
         def operation(db, scope):
             if not isinstance(ids, list) or not 1 <= len(ids) <= 20:
                 raise TaskError("invalid_ids: request 1–20 IDs")
+            groups = self._include_groups(include)
             if workstream_id:
                 self._workstream(db, workstream_id)
             if attempt_ids is not None and (
@@ -1933,8 +2161,26 @@ class Store:
                     "invalid_attempt_ids: specification=true and 1–20 distinct IDs required"
                 )
             tasks = [self._task(db, identity, {}) for identity in ids]
-            projection = self._specification if specification else self._card
-            items = [projection(db, task, workstream_id) for task in tasks]
+            cache = {}
+            if specification:
+                items = []
+                for task in tasks:
+                    item = self._specification(db, task, workstream_id)
+                    if groups:
+                        full = self._card(db, task, workstream_id)
+                        view, _ = self._card_view(db, task, full, workstream_id)
+                        for name in groups:
+                            # The specification already carries most groups; keep its fields.
+                            detail = self._card_detail(
+                                db, task, full, workstream_id, name, view, cache
+                            )
+                            for key, value in detail.items():
+                                item.setdefault(key, value)
+                    items.append(item)
+            else:
+                items = [
+                    self._board_card(db, task, workstream_id, groups, cache=cache) for task in tasks
+                ]
             if len(ids) == 1:
                 scope.update(task_id=ids[0], project_id=tasks[0]["project_id"])
             if attempt_ids:
@@ -3636,24 +3882,52 @@ class Store:
 
         return self._run("task.signoff", request, operation)
 
-    def list_tasks(self, project, workstream_id=None, state=None, limit=20, offset=0):
+    @staticmethod
+    def _hidden_counts(tasks):
+        counts = {status: 0 for status in INACTIVE_STATUSES}
+        for task in tasks:
+            counts[task["status"]] += 1
+        return {status: count for status, count in counts.items() if count}
+
+    def list_tasks(
+        self,
+        project,
+        workstream_id=None,
+        state=None,
+        limit=20,
+        offset=0,
+        include_inactive=False,
+        include=None,
+        full_cards=False,
+    ):
+        """Board of active work; full_cards is the viewer's internal unabridged projection."""
         request = dict(
-            project=project, workstream_id=workstream_id, state=state, limit=limit, offset=offset
+            project=project,
+            workstream_id=workstream_id,
+            state=state,
+            limit=limit,
+            offset=offset,
+            include_inactive=include_inactive,
+            include=include,
         )
+        if full_cards:
+            request["full_cards"] = True
 
         def operation(db, scope):
             self._page(limit, offset)
+            self._validate_include_inactive(include_inactive)
+            groups = self._include_groups(include)
             project_id = self._project(db, project, scope)["id"]
             if workstream_id is not None:
                 self._workstream(db, workstream_id, project_id)
-                cards = self._scoped_queue(db, workstream_id)
+                identities = self._ordered_scope_ids(db, workstream_id)
                 ordering = {
                     "workstream_id": workstream_id,
                     "workstream_order_revision": self._order_revision(db, workstream_id),
                 }
             else:
-                cards = [
-                    self._card(db, self._task(db, row["id"], {}))
+                identities = [
+                    row["id"]
                     for row in db.execute(
                         "SELECT id FROM tasks WHERE project_id=? AND object_type='task' "
                         "ORDER BY order_key,id",
@@ -3661,17 +3935,44 @@ class Store:
                     )
                 ]
                 ordering = {"ordering": "project_baseline"}
-            result = [
-                card
-                for card in cards
-                if not state
-                or state == card.get("view", self._status_view(card, card["gate_diagnostics"]))
-            ]
+            tasks = [self._task(db, identity, {}) for identity in identities]
+            # An explicit closed state filter is itself the request to list closed work.
+            show_inactive = include_inactive or state in INACTIVE_STATUSES
+            hidden = [] if show_inactive else [t for t in tasks if t["status"] in INACTIVE_STATUSES]
+            positions = {task["id"]: index for index, task in enumerate(tasks, 1)}
+            tasks = [t for t in tasks if show_inactive or t["status"] not in INACTIVE_STATUSES]
+            fulls = {}
+            if state:
+                selected = []
+                for task in tasks:
+                    full = fulls[task["id"]] = self._card(db, task, workstream_id)
+                    view, word = self._card_view(db, task, full, workstream_id)
+                    if self._state_matches(state, view, word):
+                        selected.append(task)
+            else:
+                selected = tasks
+            page = self._paged(selected[offset : offset + limit + 1], limit, offset)
+            cache = {workstream_id: positions} if workstream_id else {}
+            items = []
+            for task in page["items"]:
+                full = fulls.get(task["id"]) or self._card(db, task, workstream_id)
+                if full_cards:
+                    items.append(
+                        full | {"workstream_order_key": positions[task["id"]]}
+                        if workstream_id
+                        else full
+                    )
+                else:
+                    items.append(
+                        self._board_card(db, task, workstream_id, groups, full=full, cache=cache)
+                    )
             return {
                 "project_id": project_id,
                 **ordering,
-                "total": len(result),
-                **self._paged(result[offset : offset + limit + 1], limit, offset),
+                "total": len(selected),
+                **({} if show_inactive or state else {"hidden": self._hidden_counts(hidden)}),
+                **page,
+                "items": items,
             }
 
         return self._run("tasks.listed", request, operation)

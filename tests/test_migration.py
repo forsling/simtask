@@ -648,7 +648,7 @@ def test_schema9_order_migration_seeds_effective_lists_and_preserves_history(
         upgraded = Store(database)
         assert snapshot(database, columns)[1] == before
         for ws, expected in ((a, list(reversed(tasks))), (b, [tasks[2], tasks[0]])):
-            board = upgraded.list_tasks(project, ws)
+            board = upgraded.list_tasks(project, ws, include_inactive=True)
             assert board["workstream_order_revision"] == 0
             assert [task["id"] for task in board["items"]] == [task["id"] for task in expected]
         assert (

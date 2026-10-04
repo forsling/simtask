@@ -27,6 +27,9 @@ class TaskPatch(BaseModel):
     summary: str | None = None
 
 
+CardInclude = Literal["blockers", "attempt", "concerns", "workstreams", "ids"]
+
+
 class ConcernInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["value", "design"]
@@ -146,8 +149,13 @@ def create_server(
         scope_expression: str = "none",
         expected_revision: int | None = None,
         confirmed: bool = False,
+        include_inactive: bool = False,
     ) -> dict[str, Any]:
-        """Discover or resume a checkout binding; confirmed actions change setup atomically."""
+        """Discover or resume a checkout binding; confirmed actions change setup atomically.
+
+        A ready queue shows the first ten active slim cards (as list_tasks);
+        queue_hidden counts done/deferred/dropped unless include_inactive=true.
+        """
         result = store.init(
             path,
             branch,
@@ -158,6 +166,7 @@ def create_server(
             scope_expression,
             expected_revision,
             confirmed,
+            include_inactive,
         )
         return {**result, "runtime": runtime_info()}
 
@@ -204,14 +213,21 @@ def create_server(
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
     def workstream_status(
-        workstream_id: str, limit: int = 20, offset: int = 0, include_scope: bool = False
+        workstream_id: str,
+        limit: int = 20,
+        offset: int = 0,
+        include_scope: bool = False,
+        include_inactive: bool = False,
     ) -> dict[str, Any]:
-        """Read a paged local task list and current concern refs, with counts and no prose.
+        """Read a paged list of active slim cards and current concern refs, with counts.
 
-        concern_tasks is separately paged at limit/offset, prioritizing awaiting sign-off.
-        include_scope=true also pages explicit scope.
+        Done/deferred/dropped tasks are counted in hidden (and status.counts) but not listed,
+        here or in concern_tasks, unless include_inactive=true. concern_tasks is paged at
+        limit/offset, prioritizing awaiting sign-off. include_scope=true also pages explicit scope.
         """
-        return store.workstream_status(workstream_id, limit, offset, include_scope)
+        return store.workstream_status(
+            workstream_id, limit, offset, include_scope, include_inactive
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -313,9 +329,26 @@ def create_server(
         state: str | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_inactive: bool = False,
+        include: list[CardInclude] | None = None,
     ) -> dict[str, Any]:
-        """Compact workstream list in its local order, or deterministic project baseline."""
-        return store.list_tasks(project, workstream_id, state, limit, offset)
+        """Active work as slim cards in workstream order, or the project baseline.
+
+        Done/deferred/dropped tasks are omitted and counted in hidden; include_inactive=true
+        (or state=done|deferred|dropped) lists them. Card: id, title, summary, state
+        (ready|rework|blocked|question|review|signoff|inbox, or the closed status),
+        revision, position (workstream order), blockers (unsatisfied prerequisite IDs),
+        question_count, concern_count, rejected (a rejection awaits a new result);
+        empty/zero/false fields are omitted. state filters by these words or the
+        older view names (prerequisites, unresolved_items); ready includes rework.
+        include adds groups: blockers (prerequisite title/state/satisfied, gate
+        diagnostics), attempt (current result, implementer, summary, review state,
+        latest_rejection), concerns (texts, kind, author), workstreams (memberships and
+        positions), ids (project, spec revision, status, group and other bookkeeping).
+        """
+        return store.list_tasks(
+            project, workstream_id, state, limit, offset, include_inactive, include
+        )
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors
@@ -324,8 +357,10 @@ def create_server(
         specification: bool = False,
         workstream_id: str | None = None,
         attempt_ids: list[str] | None = None,
+        include: list[CardInclude] | None = None,
     ) -> dict[str, Any]:
-        """Read 1–20 cards; specification=true gives complete requirements and gates.
+        """Read 1–20 slim cards (as list_tasks, with the same include groups);
+        specification=true gives complete requirements and gates.
 
         Add up to 20 attempt_ids to retrieve exactly those full proofs in this call.
         Current concern prose shares the three-attempt summary window; counts/has_more
@@ -333,7 +368,7 @@ def create_server(
         Workstream scope filters current execution summaries, never proof provenance.
         Cards carry no specification_etag; full specs do. No preliminary card read is needed.
         """
-        return store.read_tasks(ids, specification, workstream_id, attempt_ids)
+        return store.read_tasks(ids, specification, workstream_id, attempt_ids, include)
 
     @server.tool(annotations=additive, structured_output=True)
     @domain_errors

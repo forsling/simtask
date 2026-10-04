@@ -13,7 +13,8 @@ placement. Membership starts no implementation.
 
 ## Ground the brief
 
-Run `init` for the explicit checkout and branch/name. Inspect `list_tasks` and
+Run `init` for the explicit checkout and branch/name. Inspect
+`list_tasks(include_inactive=true)` (boards hide done/deferred/dropped work) and
 related full specs with `get_tasks(specification=true)` to avoid duplicates and
 preserve decisions. Read enough code/documentation to identify current behavior,
 integration points and constraints; research what shapes the brief and state

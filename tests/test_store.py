@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from task_mcp.store import Store, TaskError, default_database
+from task_mcp.store import INACTIVE_STATUSES, STATE_WORDS, Store, TaskError, default_database
 
 
 @pytest.fixture
@@ -242,9 +242,15 @@ def test_status_active_gates_suspend_and_resume(store, tmp_path):
     active = ["unresolved_items", "prerequisites"]
 
     def check_status(view, gates):
-        status = store.workstream_status(ws)
-        assert status["items"][0]["view"] == view
-        assert status["items"][0]["gate_diagnostics"] == gates
+        status = store.workstream_status(ws, include_inactive=True)
+        assert status["items"][0]["state"] == STATE_WORDS.get(view, view)
+        board = store.list_tasks(project, ws, include_inactive=True, include=["blockers"])
+        assert board["items"][0]["gate_diagnostics"] == gates
+        if view in INACTIVE_STATUSES:
+            default = store.workstream_status(ws)
+            assert default["items"] == [] and default["total"] == 0
+            assert default["hidden"] == {view: 1}
+            assert store.init(path, branch="main")["queue_hidden"] == {view: 1}
         summary = status["status"]
         assert summary["recorded_state"] == "registered"
         assert summary["agent_liveness"] == "not_tracked"
@@ -260,7 +266,7 @@ def test_status_active_gates_suspend_and_resume(store, tmp_path):
             )
         }
         assert store.init(path, branch="main")["status"] == summary
-        assert store.init(path, branch="main")["queue"] == status["items"]
+        assert store.init(path, branch="main", include_inactive=True)["queue"] == status["items"]
         assert store.list_workstreams(project)["items"][0]["status"] == summary
         return summary
 
@@ -310,7 +316,9 @@ def test_inactive_attempts_are_history_not_status_gates(store, tmp_path, disposi
         specification_etag=store.get_tasks([work["id"]])["items"][0]["specification_etag"],
     )
     status = store.workstream_status(ws)
-    assert status["items"][0]["gate_diagnostics"] == ["signoff"]
+    assert status["items"][0]["state"] == "signoff"
+    board = store.list_tasks(project, ws, include=["blockers"])
+    assert board["items"][0]["gate_diagnostics"] == ["signoff"]
     assert status["status"]["overlapping_gate_diagnostics"]["signoff"] == 1
     assert store.workstream_status(other)["items"] == []
     if disposition == "done":
@@ -320,8 +328,11 @@ def test_inactive_attempts_are_history_not_status_gates(store, tmp_path, disposi
     else:
         store.set_disposition(work["id"], 3, disposition, "User decision")
     status = store.workstream_status(ws)
-    assert status["items"][0]["view"] == disposition
-    assert status["items"][0]["gate_diagnostics"] == []
+    assert status["items"] == [] and status["hidden"] == {disposition: 1}
+    status = store.workstream_status(ws, include_inactive=True)
+    assert status["items"][0]["state"] == disposition and "hidden" not in status
+    board = store.list_tasks(project, ws, include_inactive=True, include=["blockers"])
+    assert board["items"][0]["gate_diagnostics"] == []
     assert status["status"]["counts"][disposition] == 1
     assert not any(status["status"]["overlapping_gate_diagnostics"].values())
     assert store.workstream_status(other)["items"] == []
@@ -359,7 +370,10 @@ def test_inactive_status_does_not_hide_prerequisite_from_signoff(store, tmp_path
     blocker = task(store, project, ws, "Still needed")
     gated = store.add_prerequisite(work["id"], 2, blocker["id"])
     inactive = store.set_disposition(work["id"], gated["revision"], disposition, "Later")
-    assert store.workstream_status(ws)["items"][0]["gate_diagnostics"] == []
+    board = store.list_tasks(project, ws, include_inactive=True, include=["blockers"])
+    card = next(item for item in board["items"] if item["id"] == work["id"])
+    assert card["gate_diagnostics"] == [] and "blockers" not in card
+    assert card["prerequisites"][0]["blocking"]
     with pytest.raises(TaskError, match="invalid_signoff_target"):
         store.signoff_task(
             work["id"],

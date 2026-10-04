@@ -94,7 +94,7 @@ def test_export_workflow_views_match_scoped_queue(context):
         task = create(context, disposition.title())
         store.set_disposition(task["id"], 1, disposition, "Test disposition")
     text = store.export_workstream(ws)["content"]
-    queue = store.list_tasks(project, ws)["items"]
+    queue = store.list_tasks(project, ws, include_inactive=True, include=["ids"])["items"]
     assert {item["view"] for item in queue} == {
         "ready",
         "unresolved_items",

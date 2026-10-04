@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from task_mcp.store import Store, TaskError
+from task_mcp.store import STATE_WORDS, Store, TaskError
 
 
 def detail(store, task_id):
@@ -62,18 +62,23 @@ def repository(path):
 def assert_view(store, context, task_id, view):
     ws = context["workstream"]["id"]
     project = context["project"]["id"]
+    states = {"ready", "rework"} if view == "ready" else {STATE_WORDS.get(view, view)}
     if view == "out_of_scope":
         assert all(r["id"] != task_id for r in store.list_tasks(project, ws)["items"])
-        assert store.read_tasks([task_id], workstream_id=ws)["items"][0]["view"] == view
+        card = store.read_tasks([task_id], workstream_id=ws, include=["ids"])["items"][0]
+        assert card["view"] == view and card["state"] in states
         return
-    row = next(r for r in store.list_tasks(project, ws)["items"] if r["id"] == task_id)
-    assert row["view"] == view
-    status = store.workstream_status(ws)
-    assert next(r for r in status["items"] if r["id"] == task_id)["view"] == view
+    board = store.list_tasks(project, ws, include=["ids"], include_inactive=True)["items"]
+    row = next(r for r in board if r["id"] == task_id)
+    assert row["view"] == view and row["state"] in states
+    status = store.workstream_status(ws, include_inactive=True)
+    assert next(r for r in status["items"] if r["id"] == task_id)["state"] in states
     resumed = store.init(
-        context["workstream"]["checkout_path"], branch=context["workstream"]["branch"]
+        context["workstream"]["checkout_path"],
+        branch=context["workstream"]["branch"],
+        include_inactive=True,
     )
-    assert next(r for r in resumed["queue"] if r["id"] == task_id)["view"] == view
+    assert next(r for r in resumed["queue"] if r["id"] == task_id)["state"] in states
 
 
 def record(store, work, context, implementer, evidence, artifacts=None, verification=None):

@@ -493,7 +493,15 @@ async def exercise(database: Path):
             attempt_id=remote_attempt["id"],
             expected_attempt_revision=2,
         )
-        queue = await call("list_tasks", project=project_id, workstream_id=workstream_id)
+        queue = await call(
+            "list_tasks", project=project_id, workstream_id=workstream_id, include=["blockers"]
+        )
+        assert task_id not in {row["id"] for row in queue["items"]}
+        assert queue["hidden"]["done"] >= 1
+        closed = await call(
+            "list_tasks", project=project_id, workstream_id=workstream_id, state="done"
+        )
+        assert task_id in {row["id"] for row in closed["items"]}
         dependent_row = next(row for row in queue["items"] if row["id"] == dependent["id"])
         completed_ref = next(
             p for p in dependent_row["prerequisites"] if p["id"] == remote_blocker["id"]
@@ -515,7 +523,7 @@ async def exercise(database: Path):
         )
         assert invalid.is_error
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.16.0"
+        assert catalog["version"] == "1.17.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
             "feature-capture",
@@ -534,7 +542,7 @@ async def exercise(database: Path):
     async with Client(server, read_timeout_seconds=60) as restarted:
         result = await restarted.call_tool("get_tasks", {"ids": [task_id]})
         assert not result.is_error
-        assert result.structured_content["items"][0]["status"] == "done"
+        assert result.structured_content["items"][0]["state"] == "done"
     print("Restarted the server and verified persistence. Demo passed.")
 
 

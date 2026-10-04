@@ -35,15 +35,22 @@ def test_summary_freshness_completion_and_token_continuation(context):
     assert renamed["spec_revision"] == 2 and renamed["specification_etag"] != token
     card = store.read_tasks([task["id"]])["items"][0]
     assert (
-        card["summary_stale"]
-        and not {"body", "acceptance_criteria", "specification_etag", "view"} & card.keys()
+        not {
+            "body",
+            "acceptance_criteria",
+            "specification_etag",
+            "view",
+            "summary_stale",
+        }
+        & card.keys()
     )
+    assert store.read_tasks([task["id"]], include=["ids"])["items"][0]["summary_stale"]
     refreshed = store.update_task(task["id"], renamed["revision"], {"summary": card["summary"]})
     assert refreshed["changed"] and not refreshed["spec_changed"] and refreshed["workstream_ids"]
     assert "specification_etag" not in refreshed
     same = store.update_task(task["id"], refreshed["revision"], {"summary": card["summary"]})
     assert not same["changed"] and same["revision"] == refreshed["revision"]
-    assert store.read_tasks([task["id"]])["items"][0]["summary_stale"] is False
+    assert store.read_tasks([task["id"]], include=["ids"])["items"][0]["summary_stale"] is False
     with pytest.raises(TaskError, match="specification_read_required"):
         store.update_task(task["id"], same["revision"], {"body": card["summary"]})
     result = store.record_result(
@@ -89,7 +96,8 @@ def test_summary_freshness_completion_and_token_continuation(context):
         store.update_task(task["id"], corrected["revision"], {"title": "New requirement"})
     cleared = store.update_task(task["id"], corrected["revision"], {"summary": None})
     assert (
-        cleared["changed"] and store.read_tasks([task["id"]])["items"][0]["summary_stale"] is None
+        cleared["changed"]
+        and store.read_tasks([task["id"]], include=["ids"])["items"][0]["summary_stale"] is None
     )
 
 
@@ -134,13 +142,16 @@ def test_bounded_projections_exact_proof_and_local_gates(context, tmp_path):
         )
         revision = attempt["task_revision"]
         attempts.append(attempt)
-    scoped = store.read_tasks([task["id"]], workstream_id=ws)["items"][0]
-    assert scoped["view"] == "review" and scoped["attempt_counts"]["review"] == 4
-    assert scoped["attempt_reference"]["attempt_id"] == attempts[-1]["id"]
+    scoped = store.read_tasks([task["id"]], workstream_id=ws, include=["attempt"])["items"][0]
+    assert scoped["state"] == "review" and scoped["attempt_counts"]["review"] == 4
+    assert scoped["attempt"]["attempt_id"] == attempts[-1]["id"]
     assert scoped["alternative_attempt_count"] == 3
-    unscoped = store.read_tasks([task["id"]])["items"][0]
-    assert "view" not in unscoped and unscoped["aggregate_attempt_counts"]["review"] == 5
-    assert "review" not in unscoped["gate_diagnostics"]
+    assert len(scoped["attempt"]["summary"]) <= 240
+    unscoped = store.read_tasks([task["id"]], include=["attempt", "blockers"])["items"][0]
+    assert unscoped["attempt_counts"]["review"] == 5
+    assert unscoped["attempt_scope"] == "cross_workstream"
+    # Without a workstream the state word reflects current results in any workstream.
+    assert unscoped["state"] == "review" and "review" not in unscoped["gate_diagnostics"]
     spec = store.read_tasks([task["id"]], True, ws, [attempts[0]["id"]])["items"][0]
     assert len(spec["body"]) == 68000 and len(spec["attempt_summaries"]) == 3
     assert spec["attempt_total"] == spec["actionable_total"] == 4 and spec["has_more"]
@@ -163,7 +174,7 @@ def test_bounded_projections_exact_proof_and_local_gates(context, tmp_path):
     updated = store.update_task(
         task["id"], revision, {"body": "New complete scope"}, task["specification_etag"]
     )
-    assert store.read_tasks([task["id"]], workstream_id=ws)["items"][0]["view"] == "ready"
+    assert store.read_tasks([task["id"]], workstream_id=ws)["items"][0]["state"] == "ready"
     assert store.list_task_attempts(task["id"])["items"] == []
     assert store.list_task_attempts(task["id"], current_spec_only=False)["total"] == 5
     explicit = store.read_tasks([task["id"]], True, ws, [attempts[0]["id"]])["items"][0]
@@ -206,7 +217,7 @@ def test_groups_init_events_and_scope_pages_stay_bounded(context):
     explicit = store.workstream_status(ws, include_scope=True)["scope"]["groups"]
     assert explicit["ids"] == [group["id"]] and explicit["total"] == 1
     store.update_task(group["id"], spec["revision"], {"summary": "A descriptive correction."})
-    assert store.read_tasks([group["id"]])["items"][0]["spec_revision"] == 1
+    assert store.read_tasks([group["id"]], include=["ids"])["items"][0]["spec_revision"] == 1
 
 
 def test_every_mcp_write_ack_is_compact_and_can_continue(context):
