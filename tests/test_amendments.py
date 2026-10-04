@@ -33,7 +33,7 @@ def test_replacement_requires_complete_current_etag_and_atomic_rollback(context,
         assert full(store, task) == before
     changed = store.update_task(task["id"], 1, {field: "Replace"}, before["specification_etag"])
     assert changed["revision"] == changed["spec_revision"] == 2
-    assert changed["queue_workstream_id"] == ws
+    assert changed["workstream_ids"] == [ws]
     assert changed["specification_etag"] != before["specification_etag"]
     with pytest.raises(TaskError, match="revision_conflict"):
         store.update_task(task["id"], 1, {field: "Stale"}, before["specification_etag"])
@@ -60,7 +60,7 @@ def test_noop_token_and_summary_completed_correction(context):
     done = store.signoff_task(task["id"], 2, "approve", "User verdict", proof["id"], 2)
     summary = store.update_task(task["id"], done["revision"], {"summary": "Corrected intent"})
     assert summary["spec_revision"] == 1 and summary["summary_changed"]
-    assert not summary["spec_changed"] and summary["queue_workstream_id"] == ws
+    assert not summary["spec_changed"] and summary["workstream_ids"] == [ws]
     with pytest.raises(TaskError, match="completed_task_immutable"):
         store.update_task(task["id"], summary["revision"], {"title": "New requirement"})
 
@@ -85,7 +85,7 @@ def test_real_spec_edit_keeps_queue_and_supersedes_review(context):
         task["id"], 2, {"body": "Changed requirements"}, before["specification_etag"]
     )
     after = full(store, task)
-    assert after["attempts"] == before["attempts"] and changed["queue_workstream_id"] == ws
+    assert after["attempts"] == before["attempts"] and changed["workstream_ids"] == [ws]
     assert store.get_next_action(ws)["action"] == "implement"
     with pytest.raises(TaskError, match="review_required"):
         store.signoff_task(
@@ -95,4 +95,4 @@ def test_real_spec_edit_keeps_queue_and_supersedes_review(context):
         event = db.execute(
             "SELECT before_json,after_json FROM events WHERE action='task.updated'"
         ).fetchone()
-    assert '"queue_workstream_id":' in event[0] and '"queue_workstream_id":' in event[1]
+    assert '"workstream_ids":' in event[0] and '"workstream_ids":' in event[1]

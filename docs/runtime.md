@@ -1,7 +1,7 @@
 # Runtime identity and stale capabilities
 
 This document describes the isolated candidate's protocol
-revision `12` and database schema revision `7`. The protected live service retains
+revision `13` and database schema revision `9`. The protected live service retains
 its installed revision until coordinated rollout; inspect its own connection's
 runtime identity. During that protected period, use candidate code only with explicit disposable databases and
 prepare companion skills without installing or reloading them. Keep the live
@@ -18,11 +18,11 @@ client's catalog. `init` retains its usual setup and audit behavior;
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`12` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Candidate 10/schema 6 add single-owner queues. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Candidate 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`13` in the candidate), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Candidate 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Candidate 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`7` after candidate startup). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`9` after candidate startup). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is
@@ -33,26 +33,32 @@ version throughout development. The identifier detects changed resources but
 does not promise hot reload of resources or Python code.
 
 Existing unnumbered databases have revision `0`. Candidate Store startup creates
-fresh databases at revision `7`
-directly. Before upgrading an existing revision `0`, `1`, `2`, `3`, `4`, `5` or `6` database, it creates
+fresh databases at revision `9`
+directly. Before upgrading an existing revision `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7` or `8` database, it creates
 and verifies a fresh SQLite online backup under the writer lock, including
 committed WAL data. It then transactionally upgrades the schema, checks integrity
-and foreign keys, and sets revision `7` only after those checks pass. Existing
+and foreign keys, and sets revision `9` only after those checks pass. Existing
 task IDs, content and audit history survive; the backup remains available after
 success or rollback. A database with a higher revision is rejected rather than
 downgraded. Future storage migrations must advance the revision after their
 checks pass.
 
 Schema `2` historically introduced persisted origin and purpose-decision storage.
-Schema `6` retains those legacy columns and scope tables privately, archives their
-original values and migrates current placement into one owning queue per task.
-Current tools and task payloads omit the retired purpose-decision fields.
+Schema `9` restores original live nonexclusive scopes and removes the rejected
+exclusive queue table. It recovers original references from retained tables and
+schema 6–8 archives, retaining candidate additions without selecting an owner.
+Mutable scoped legacy pending intent becomes a normal unresolved question;
+membership and all specification/proof/history bytes survive. A private migration
+archive preserves original task/scope facts and a verified online
+`*.pre-schema-9.*.sqlite3` backup supports rollback. Current tools expose
+`add_to_workstream`/`remove_from_workstream`, membership IDs and derived adoption;
+separate purpose-decision fields remain retired. Live rollout is held.
 Protocol `3` introduced the `signoff_task` decision/attempt-revision contract and
 explicit dropped-task revival authorization. Historical purpose/result judgments,
 exact revisions and original decision references remain immutable audit facts;
 new signoff records use the actual user verdict. `Store.get_tasks` and viewer full details expose structured
 `signoff_decisions` and historical decision facts. MCP
-`get_tasks(specification=true)` exposes owning queue and current gates without
+`get_tasks(specification=true)` exposes memberships and current gates without
 signoff history. Retrieve historical decisions through paged
 `list_events(task_id=..., include_details=true)`; detailed audit reads retain older
 records.
@@ -108,3 +114,11 @@ step. Client-specific UI controls vary; the verification above defines success.
 The disposable stdio demo (`.venv/bin/python examples/demo.py`) checks a fresh
 subprocess and persisted task behavior. It is useful to verify the installation,
 but it does not prove the affected client's cached catalog has changed.
+
+Schema 6–8 pending-intent classification uses the archived migration reason,
+so frozen acceptance columns cannot withdraw adoption after candidate spec edits.
+A candidate queue membership that contradicts a retained task exclusion aborts
+with `membership_migration_conflict`, leaving the database unchanged and its
+verified backup available. Resolve the intended scope on a disposable copy and
+rerun; the migration never guesses or erases an original exclusion. Archives
+recover recorded references, not candidate-only intent that was never persisted.

@@ -134,8 +134,8 @@ function branchLabel(name) {
 const EVENTS = {
   "task.created": "Created",
   "task.updated": "Edited",
-  "task.queued": "Queued",
-  "task.unqueued": "Moved to inbox",
+  "task.workstream_added": "Added to workstream",
+  "task.workstream_removed": "Removed from workstream",
   "task.disposition_changed": "Status changed",
   "task.signoff": "Sign-off decision",
   "task.decomposed": "Split into a group",
@@ -659,8 +659,8 @@ function renderDetail(t) {
       "div",
       "meta",
       pill(view),
-      t.queue_workstream_id
-        ? el("span", "meta-item", icon("branch", 13), "Queued for " + streamName(t.queue_workstream_id))
+      t.workstream_ids?.length
+        ? el("span", "meta-item", icon("branch", 13), "In " + t.workstream_ids.map(streamName).join(", "))
         : node("span", "Inbox", "meta-item warn"),
       node("span", "Updated " + ago(t.updated_at), "meta-item"),
       t.parent_group
@@ -691,12 +691,12 @@ function nextStep(t, view) {
     text = "This task is complete. A new requirement becomes a new task.";
   } else if (view === "deferred" || view === "dropped") {
     title = view === "deferred" ? "Deferred" : "Dropped";
-    text = t.status === "dropped" ? "History, queue placement and proof are kept. Revival needs actual authorization." : "Queue placement, context and proof are kept for resumption.";
+    text = t.status === "dropped" ? "History, workstream memberships and proof are kept. Revival needs actual authorization." : "Workstream memberships, context and proof are kept for resumption.";
     buttons.push(button("Resume task", () => disposition(t, "open", "Resume"), "btn primary"));
-  } else if (view === "inbox" || !t.queue_workstream_id) {
-    title = "Queue this task on a branch";
+  } else if (view === "inbox" || !t.workstream_ids?.length || (state.stream && !t.workstream_ids?.includes(state.stream))) {
+    title = "Add this task to a workstream";
     text = "Choose the branch where this task should be built. Open questions and prerequisites still apply.";
-    buttons.push(button(queueLabel(t), () => queueTask(t).catch((e) => toast(e.message, true)), "btn primary"));
+    buttons.push(button(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true)), "btn primary"));
     buttons.push(button("Edit first", () => editTask(t)));
   } else if (t.unresolved_items.length) {
     const n = t.unresolved_items.length;
@@ -723,11 +723,11 @@ function nextStep(t, view) {
     text = "It becomes ready once the required prerequisite milestones below are satisfied.";
   } else if (view === "ready") {
     title = "Next agent action: implement";
-    text = "Queued and unblocked. An implementer can use the current checkout and relevant existing work.";
+    text = "Included and unblocked. An implementer can use the current checkout and relevant existing work.";
   } else return null;
-  const blocked = !t.queue_workstream_id || t.unresolved_items.length || t.prerequisites?.some((p) => p.blocking) || ["deferred", "dropped"].includes(t.status);
+  const blocked = !t.workstream_ids?.length || (state.stream && !t.workstream_ids?.includes(state.stream)) || t.unresolved_items.length || t.prerequisites?.some((p) => p.blocking) || ["deferred", "dropped"].includes(t.status);
   if (blocked && t.attempts.some((a) => a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))) {
-    text += " A factual result is saved below; it changes no queue placement, gates or completion.";
+    text += " A factual result is saved below; it changes no workstream memberships, gates or completion.";
     const pending = currentAttempt(t, ["review"]);
     if (pending) buttons.push(button("Record my review", () => humanReview(pending)));
   }
@@ -1008,8 +1008,8 @@ function moreMenu(anchor, t) {
       fn();
     }, "menu-item " + cls);
   const items = [item("Ask a question", () => askQuestion(t))];
-  items.push(item(queueLabel(t), () => queueTask(t).catch((e) => toast(e.message, true))));
-  if (t.queue_workstream_id) items.push(item("Move to inbox", () => moveToInbox(t)));
+  items.push(item(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true))));
+  if (t.workstream_ids?.length) items.push(item("Remove from workstream", () => removeFromWorkstreamTask(t).catch(e => toast(e.message, true))));
   if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => disposition(t, "open", "Resume")));
   else items.push(item("Defer", () => disposition(t, "deferred", "Defer")), item("Drop", () => disposition(t, "dropped", "Drop"), "danger"));
   items.forEach((b) => b.setAttribute("role", "menuitem"));
@@ -1182,33 +1182,33 @@ async function moveTask(t) {
     }
   };
 }
-function queueLabel(t) {
+function membershipLabel(t) {
   const target = state.streams.find((w) => w.id === state.stream && w.project_id === t.project_id);
-  return target ? `Queue for ${target.branch || target.name}` : "Queue for branch";
+  return target ? `Add to ${target.branch || target.name}` : "Add to workstream";
 }
-async function queueTask(t) {
+async function membershipDialog(t, adding) {
   if (submissionPending) return;
-  const preferred = state.stream;
-  const streams = await pages("workstreams", { project: t.project_id });
+  const streams = (await pages("workstreams", { project: t.project_id }))
+    .filter(w => adding || t.workstream_ids?.includes(w.id));
   if (submissionPending) return;
-  openDialog("Queue for branch", `Choose where “${t.title}” should be built. Queueing moves it from its previous branch.`, "Queue task");
+  const title = adding ? "Add to workstream" : "Remove from workstream";
+  openDialog(title, adding
+    ? `Add “${t.title}” to the chosen workstream. Existing memberships, results and reviews are kept.`
+    : `Remove “${t.title}” only from the chosen workstream. Other memberships, results and reviews are kept. The inbox contains tasks with no memberships.`, title);
   const picker = node("select"); picker.id = "field-workstream_id"; picker.name = "workstream_id"; picker.required = true;
   for (const w of streams) {
-    const option = node("option", w.branch || w.name); option.value = w.id; picker.append(option);
+    const option = node("option", (w.branch || w.name) + (adding && t.workstream_ids?.includes(w.id) ? " (already included)" : ""));
+    option.value = w.id; picker.append(option);
   }
-  picker.value = streams.some(w => w.id === preferred) ? preferred :
-    (streams.some(w => w.id === t.queue_workstream_id) ? t.queue_workstream_id : streams[0]?.id || "");
-  const label = node("label", "Branch"); label.htmlFor = picker.id;
+  picker.value = streams.some(w => w.id === state.stream) ? state.stream : streams[0]?.id || "";
+  const label = node("label", "Workstream"); label.htmlFor = picker.id;
   $("fields").append(el("div", "field", label, picker));
   $("submit").disabled = !streams.length;
-  if (!streams.length) $("fields").append(node("p", "Initialize a branch workstream before queueing this task.", "warn-text"));
-  placementAction(t, "queue", values => ({ workstream_id: values.get("workstream_id") }));
+  if (!streams.length) $("fields").append(node("p", adding ? "Initialize a branch workstream before adding this task." : "This task has no workstream memberships.", "warn-text"));
+  placementAction(t, adding ? "add-to-workstream" : "remove-from-workstream", values => ({ workstream_id: values.get("workstream_id") }));
 }
-function moveToInbox(t) {
-  if (submissionPending) return;
-  openDialog("Move to inbox", `Remove “${t.title}” from its branch queue. Requirements and all results and reviews are kept.`, "Move to inbox");
-  placementAction(t, "unqueue", () => ({}));
-}
+async function addToWorkstreamTask(t) { return membershipDialog(t, true); }
+async function removeFromWorkstreamTask(t) { return membershipDialog(t, false); }
 function placementAction(t, action, extra) {
   let revision = t.revision;
   submitAction = async values => {
@@ -1219,10 +1219,10 @@ function placementAction(t, action, extra) {
         const latest = (await api("details", { ids: [t.id] })).items[0];
         $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
           markdown(latest.body), markdown(latest.acceptance_criteria),
-          node("p", latest.queue_workstream_id ? "Currently queued for " + streamName(latest.queue_workstream_id) : "Currently in the inbox"),
+          node("p", latest.workstream_ids?.length ? "Currently in " + latest.workstream_ids.map(streamName).join(", ") : "Currently in the inbox"),
           button("I've reviewed it — use this version", () => {
             revision = latest.revision;
-            $("form-error").textContent = "Check the chosen placement, then submit again.";
+            $("form-error").textContent = "Check the chosen membership, then submit again.";
             $("conflict").replaceChildren();
           }, "btn small")));
       }, "btn small"));
@@ -1255,7 +1255,7 @@ function resolve(t, q) {
 function disposition(t, value, label) {
   decision({
     title: `${label} this task?`,
-    description: value === "dropped" ? "Dropping preserves queue placement, history and proof. Revival will need actual authorization." : "Queue placement, context and proof are kept.",
+    description: value === "dropped" ? "Dropping preserves workstream memberships, history and proof. Revival will need actual authorization." : "Workstream memberships, context and proof are kept.",
     action: "disposition",
     data: { task_id: t.id, expected_revision: t.revision, disposition: value },
     key: "note",
@@ -1321,7 +1321,7 @@ function editTask(t) {
   if (!t || t.object_type !== "task" || t.status === "done") return;
   let revision = t.revision;
   let etag = t.specification_etag;
-  openDialog("Edit task", "Save the specification. Queue placement stays unchanged; other gates still apply.", "Save task");
+  openDialog("Edit task", "Save the specification. Workstream memberships stay unchanged; other gates still apply.", "Save task");
   $("dialog").classList.add("wide");
   field("title", "Title", t.title, "input");
   const summary = field("summary", "Summary (optional descriptive intent)", t.summary || "", "input", false);
@@ -1368,7 +1368,7 @@ function createTask() {
   openDialog(
     "New task",
     state.stream
-      ? `Adds a task to ${streamName(state.stream)}. It will be queued on this branch.`
+      ? `Adds a task to ${streamName(state.stream)}. It will be included in this workstream.`
       : `Adds a task to the ${projectName(state.project)} inbox.`,
     "Create task",
   );

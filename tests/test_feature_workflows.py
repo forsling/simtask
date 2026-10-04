@@ -25,7 +25,7 @@ def test_capture_inbox_gate_then_queue_and_decide_without_delivery(context):
         brief["revision"],
         "Feature design required (feature-design): choose persistence",
     )
-    brief = store.queue_task(brief["id"], ws, brief["revision"])
+    brief = store.add_to_workstream(brief["id"], ws, brief["revision"])
     assert store.get_next_action(ws)["task"] is None
     full = store.get_tasks([brief["id"]])["items"][0]
     agreed = store.update_task(
@@ -34,7 +34,7 @@ def test_capture_inbox_gate_then_queue_and_decide_without_delivery(context):
         {"body": "Persist per project", "acceptance_criteria": "Restore on restart"},
         full["specification_etag"],
     )
-    assert agreed["queue_workstream_id"] == ws
+    assert agreed["workstream_ids"] == [ws]
     assert store.get_next_action(ws)["task"] is None
     resolved = store.resolve_unresolved(
         brief["id"],
@@ -61,7 +61,7 @@ def test_design_decomposition_gates_children_before_queue(context):
         parent["id"], 1, [{"title": "Persist filters"}, {"title": "Reset filters"}]
     )
     persistence, reset = store.get_tasks(group["members"])["items"]
-    assert persistence["queue_workstream_id"] is reset["queue_workstream_id"] is None
+    assert persistence["workstream_ids"] == reset["workstream_ids"] == []
     reset = store.add_prerequisite(reset["id"], reset["revision"], persistence["id"])
     store.set_scope(
         ws, store.workstream_status(ws)["workstream"]["revision"], f"{ws} +{group['id']}"

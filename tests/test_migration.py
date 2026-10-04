@@ -1,5 +1,6 @@
 """Existing data is never rewritten to invent provenance or approval authority."""
 
+import json
 import sqlite3
 import stat
 from contextlib import closing
@@ -72,9 +73,7 @@ def legacy_database(database, version):
     db.execute("PRAGMA foreign_keys=OFF")
     db.execute("ALTER TABLE attempts DROP COLUMN concerns_json")
     # Reconstruct the actual pre-queue authority and live scope tables.
-    db.execute("INSERT INTO scope_members SELECT workstream_id,task_id FROM queue_members")
-    db.execute("DROP TABLE queue_members")
-    db.execute("DROP TABLE legacy_queue_migration")
+    db.execute("DROP TABLE legacy_membership_migration")
     db.execute(
         "UPDATE tasks SET accepted_spec_revision=spec_revision,acceptance_note='Legacy "
         "accepted',acceptance_basis='specific' WHERE id=?",
@@ -138,8 +137,8 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
             assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         details = store.get_tasks(list(identities))["items"]
         assert all("accepted" not in item and "approval_decision" not in item for item in details)
-        assert details[0]["queue_workstream_id"] is None
-        assert details[1]["queue_workstream_id"] == details[2]["queue_workstream_id"]
+        assert details[0]["workstream_ids"] == []
+        assert details[1]["workstream_ids"] == details[2]["workstream_ids"]
         assert details[2]["status"] == "done" and details[2]["selected_attempt_id"]
         assert details[2]["attempts"][0]["evidence"] == "Exact proof"
         if version < 2:
@@ -153,7 +152,7 @@ def test_migration_fresh_backup_preserves_all_rows_and_old_classification(tmp_pa
         assert all(item["summary"] is None and item["summary_stale"] is None for item in details)
         with closing(sqlite3.connect(database)) as db:
             archive = db.execute(
-                "SELECT authority_json FROM legacy_queue_migration WHERE task_id=?",
+                "SELECT task_json FROM legacy_membership_migration WHERE task_id=?",
                 (identities[1],),
             ).fetchone()[0]
             assert '"acceptance_note": "Legacy accepted"' in archive
@@ -199,7 +198,7 @@ def test_legacy_disposition_restore_preserves_authority_archive_and_proof(
         "Resume",
         authorization="Actual revival instruction" if legacy_disposition == "dropped" else None,
     )
-    assert restored["queue_workstream_id"] == migrated["queue_workstream_id"]
+    assert restored["workstream_ids"] == migrated["workstream_ids"]
     with closing(sqlite3.connect(database)) as db:
         assert db.execute(
             "SELECT accepted_spec_revision,acceptance_note FROM tasks WHERE id=?", (migrated["id"],)
@@ -306,6 +305,7 @@ def test_schema7_concern_metadata_preserves_proof_without_inventing_provenance(
     )
     with closing(sqlite3.connect(database)) as writer:
         writer.execute("ALTER TABLE attempts DROP COLUMN concerns_json")
+        writer.execute("DROP TABLE legacy_membership_migration")
         writer.execute("PRAGMA user_version=7")
         writer.execute("UPDATE attempts SET evidence=? WHERE id=?", (raw, legacy_attempt["id"]))
         writer.commit()
@@ -333,7 +333,7 @@ def test_schema7_concern_metadata_preserves_proof_without_inventing_provenance(
             assert proof["verification"] == "Original verification"
             assert migrated.workstream_status(ws)["concern_tasks"]["total"] == 0
             assert Store(database).migration_backup_path is None
-        backups = list(tmp_path.glob("*.pre-schema-8.*.sqlite3"))
+        backups = list(tmp_path.glob("*.pre-schema-9.*.sqlite3"))
         assert len(backups) == 1 and snapshot(backups[0]) == before
         assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
         restored = tmp_path / "restored-schema7.sqlite3"
@@ -344,49 +344,55 @@ def test_schema7_concern_metadata_preserves_proof_without_inventing_provenance(
             source.backup(dest)
         assert snapshot(restored) == before
         with closing(sqlite3.connect(database)) as db:
-            assert db.execute("PRAGMA user_version").fetchone()[0] == (7 if fail else 8)
+            assert db.execute("PRAGMA user_version").fetchone()[0] == (
+                7 if fail else DATABASE_SCHEMA_REVISION
+            )
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
-def test_migration_reports_unapproved_and_multiscope_deterministic_owner(tmp_path):
-    database = tmp_path / "ownership.sqlite3"
-    writer, identities = legacy_database(database, 5)
+def test_legacy_pending_keeps_membership_and_uses_normal_resolution(tmp_path):
+    database = tmp_path / "pending.sqlite3"
+    writer, identities = legacy_database(database, 4)
     pending, accepted, done = identities
-    writer.row_factory = sqlite3.Row
-    ws = writer.execute("SELECT * FROM workstreams").fetchone()
-    values = dict(ws)
-    values.update(id="wst_secondary", name="secondary", branch="secondary", created_at="9999")
-    writer.execute(
-        "INSERT INTO workstreams VALUES "
-        "(:id,:project_id,:name,:branch,:checkout_path,:revision,:created_at)",
-        values,
-    )
-    writer.execute("INSERT INTO scope_members VALUES (?,?)", (ws["id"], pending))
-    writer.execute("INSERT INTO scope_members VALUES (?,?)", ("wst_secondary", accepted))
-    writer.execute("INSERT INTO scope_members VALUES (?,?)", ("wst_secondary", done))
-    writer.execute(
-        "INSERT INTO attempts SELECT "
-        "'att_latest',task_id,'wst_secondary',implementer,summary,evidence,"
-        "spec_revision,state,reviewer,review_note,human_review_note,revision,'9999','9999' "
-        "FROM attempts WHERE task_id=?",
-        (done,),
-    )
+    ws = writer.execute("SELECT id FROM workstreams").fetchone()[0]
+    writer.execute("INSERT INTO scope_members VALUES (?,?)", (ws, pending))
     writer.commit()
     before = snapshot(database)
     store = Store(database)
     assert snapshot(store.migration_backup_path) == before
-    assert snapshot(database, before[0])[1] == before[1]
     details = {t["id"]: t for t in store.get_tasks(list(identities))["items"]}
-    assert details[pending]["queue_workstream_id"] is None
-    assert details[accepted]["queue_workstream_id"] == ws["id"]
-    assert details[done]["queue_workstream_id"] == "wst_secondary"
+    assert details[pending]["workstream_ids"] == [ws]
+    assert details[pending]["adopted"]
+    questions = details[pending]["unresolved_items"]
+    assert len(questions) == 1 and "legacy pending intent" in questions[0]["text"]
+    assert (
+        "unresolved_items"
+        in store.read_tasks([pending], specification=True, workstream_id=ws)["items"][0][
+            "gate_diagnostics"
+        ]
+    )
+    assert not details[done]["unresolved_items"] and details[done]["selected_attempt_id"]
     with closing(sqlite3.connect(database)) as db:
-        report = dict(db.execute("SELECT task_id,reason FROM legacy_queue_migration"))
-        assert report[pending] == "legacy_unapproved_to_inbox"
-        assert report[accepted] == report[done] == "most_recent_attempt_then_oldest_workstream"
-        assert db.execute("SELECT count(*) FROM queue_members").fetchone()[0] == 2
-        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert (
+            json.loads(
+                db.execute(
+                    "SELECT task_json FROM legacy_membership_migration WHERE task_id=?", (pending,)
+                ).fetchone()[0]
+            )["unresolved_json"]
+            == "[]"
+        )
+    resolved = store.resolve_unresolved(
+        pending, details[pending]["revision"], questions[0]["id"], "Actual decision to proceed"
+    )
+    assert resolved["workstream_ids"] == [ws] and not resolved["unresolved_items"]
+    assert store.get_next_action(ws)["task"]["id"] == pending
+    # All old audit and proof bytes survive, including when the question is resolved.
+    with closing(sqlite3.connect(database)) as db:
+        for table in ("attempts", "events"):
+            names = before[0][table]
+            current = db.execute(f"SELECT {','.join(names)} FROM {table} ORDER BY rowid").fetchall()
+            assert current[: len(before[1][table])] == before[1][table]
     writer.close()
 
 
@@ -399,6 +405,7 @@ def test_schema6_rejection_index_upgrade_preserves_rows_and_rolls_back(tmp_path,
         setup["project"]["id"], "Existing queue", workstream_id=setup["workstream"]["id"]
     )
     with closing(sqlite3.connect(database)) as db:
+        db.execute("DROP TABLE legacy_membership_migration")
         db.execute("DROP INDEX rejection_history")
         db.execute("PRAGMA user_version=6")
         db.commit()
@@ -419,7 +426,7 @@ def test_schema6_rejection_index_upgrade_preserves_rows_and_rolls_back(tmp_path,
     else:
         upgraded = Store(database)
         assert upgraded.database_schema_revision() == DATABASE_SCHEMA_REVISION
-    assert snapshot(database) == before
+    assert snapshot(database, before[0])[1] == before[1]
     backups = list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3"))
     assert len(backups) == 1 and snapshot(backups[0]) == before
     with closing(sqlite3.connect(database)) as db:
@@ -432,3 +439,151 @@ def test_schema6_rejection_index_upgrade_preserves_rows_and_rolls_back(tmp_path,
             )
             != fail
         )
+
+
+@pytest.mark.parametrize("version", [6, 8])
+def test_rejected_candidate_restores_all_archive_scopes_and_candidate_additions(tmp_path, version):
+    database = tmp_path / f"rejected-schema{version}.sqlite3"
+    writer, identities = legacy_database(database, 4)
+    pending, accepted, done = identities
+    writer.row_factory = sqlite3.Row
+    ws = dict(writer.execute("SELECT * FROM workstreams").fetchone())
+    other = {**ws, "id": "wst_parallel", "name": "parallel", "branch": "parallel"}
+    writer.execute(
+        "INSERT INTO workstreams VALUES "
+        "(:id,:project_id,:name,:branch,:checkout_path,:revision,:created_at)",
+        other,
+    )
+    group = writer.execute("SELECT parent_group_id FROM tasks WHERE id=?", (accepted,)).fetchone()[
+        0
+    ]
+    writer.execute("INSERT INTO scope_groups VALUES (?,?)", (other["id"], group))
+    writer.execute("INSERT INTO scope_members VALUES (?,?)", (ws["id"], pending))
+    writer.execute("INSERT INTO scope_members VALUES (?,?)", (other["id"], pending))
+    writer.execute("INSERT INTO scope_members VALUES (?,?)", (other["id"], done))
+    writer.execute("INSERT INTO scope_exclusions VALUES (?,?)", (ws["id"], accepted))
+    original = {
+        table: writer.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+        for table in ("scope_members", "scope_groups", "scope_exclusions")
+    }
+    writer.execute(
+        "CREATE TABLE queue_members (task_id TEXT PRIMARY KEY REFERENCES tasks(id),"
+        "workstream_id TEXT NOT NULL REFERENCES workstreams(id))"
+    )
+    writer.execute(
+        "CREATE TABLE legacy_queue_migration (task_id TEXT PRIMARY KEY REFERENCES tasks(id),"
+        "source_schema INTEGER NOT NULL,authority_json TEXT NOT NULL,scopes_json TEXT NOT NULL,"
+        "owning_workstream_id TEXT,reason TEXT NOT NULL)"
+    )
+    tasks = [dict(row) for row in writer.execute("SELECT * FROM tasks")]
+    for task in tasks:
+        facts = {
+            "members": [dict(r) for r in original["scope_members"] if r["task_id"] == task["id"]],
+            "groups": [
+                dict(r)
+                for r in original["scope_groups"]
+                if r["group_id"] in (task["id"], task["parent_group_id"])
+            ],
+            "exclusions": [
+                dict(r)
+                for r in original["scope_exclusions"]
+                if r["task_id"] in (task["id"], task["parent_group_id"])
+            ],
+            "eligible_workstream_ids": Store._membership_ids(writer, task),
+        }
+        authority = {
+            key: task[key]
+            for key in ("accepted_spec_revision", "acceptance_note", "acceptance_basis")
+        }
+        writer.execute(
+            "INSERT INTO legacy_queue_migration VALUES (?,?,?,?,?,?)",
+            (
+                task["id"],
+                4,
+                json.dumps(authority),
+                json.dumps(facts),
+                other["id"] if task["id"] == done else None,
+                "legacy_unapproved_to_inbox" if task["id"] == pending else "single_scope",
+            ),
+        )
+    writer.execute("INSERT INTO queue_members VALUES (?,?)", (done, other["id"]))
+    # Former adoption survives candidate specification edits; frozen legacy
+    # acceptance columns no longer govern the current edited spec.
+    writer.execute("UPDATE tasks SET spec_revision=2,revision=revision+1 WHERE id=?", (accepted,))
+    # Exercise recovery from archives as well as retained tables.
+    writer.execute("DELETE FROM scope_groups WHERE workstream_id=?", (other["id"],))
+    writer.execute("DELETE FROM scope_members WHERE workstream_id=?", (other["id"],))
+    writer.execute("DELETE FROM scope_exclusions")
+    added = Store._insert_task(writer, ws["project_id"], "Candidate addition", "Scope", "Checks")
+    writer.execute("INSERT INTO queue_members VALUES (?,?)", (added, ws["id"]))
+    if version == 8:
+        writer.execute("ALTER TABLE attempts ADD COLUMN concerns_json TEXT NOT NULL DEFAULT '[]'")
+        writer.execute(
+            "UPDATE attempts SET concerns_json=?",
+            (
+                '[{"kind":"design","text":"Exact concern",'
+                '"source":"implementer","author":"worker"}]',
+            ),
+        )
+    writer.execute(f"PRAGMA user_version={version}")
+    writer.commit()
+    before = snapshot(database)
+    migrated = Store(database)
+    assert snapshot(migrated.migration_backup_path) == before
+    details = {t["id"]: t for t in migrated.get_tasks([*identities, added])["items"]}
+    assert set(details[pending]["workstream_ids"]) == {ws["id"], other["id"]}
+    assert details[accepted]["workstream_ids"] == [other["id"]]
+    assert set(details[done]["workstream_ids"]) == {ws["id"], other["id"]}
+    assert details[added]["workstream_ids"] == [ws["id"]] and not details[added]["unresolved_items"]
+    assert details[pending]["unresolved_items"] and not details[done]["unresolved_items"]
+    assert len(details[accepted]["unresolved_items"]) == 1
+    assert not details[accepted]["unresolved_items"][0]["id"].startswith(
+        "unr_membership_migration_"
+    )
+    with closing(sqlite3.connect(database)) as db:
+        for table, rows in original.items():
+            assert {tuple(row) for row in rows} <= set(
+                db.execute(f"SELECT * FROM {table}").fetchall()
+            )
+        for table in ("attempts", "events", "legacy_queue_migration"):
+            current = db.execute(
+                f"SELECT {','.join(before[0][table])} FROM {table} ORDER BY rowid"
+            ).fetchall()
+            assert current[: len(before[1][table])] == before[1][table]
+            if table != "events":
+                assert len(current) == len(before[1][table])
+        names = before[0]["tasks"]
+        completed = db.execute(
+            f"SELECT {','.join(names)} FROM tasks WHERE id=?", (done,)
+        ).fetchone()
+        assert completed == next(row for row in before[1]["tasks"] if row[0] == done)
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='queue_members'").fetchone()
+        assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    restored = tmp_path / "rollback.sqlite3"
+    with (
+        closing(sqlite3.connect(migrated.migration_backup_path)) as source,
+        closing(sqlite3.connect(restored)) as target,
+    ):
+        source.backup(target)
+    assert snapshot(restored) == before
+    writer.close()
+
+
+def test_candidate_exclusion_conflict_aborts_with_backup_and_no_scope_guess(tmp_path):
+    database = tmp_path / "conflict.sqlite3"
+    writer, identities = legacy_database(database, 4)
+    task = identities[1]
+    ws = writer.execute("SELECT id FROM workstreams").fetchone()[0]
+    writer.execute("INSERT INTO scope_exclusions VALUES (?,?)", (ws, task))
+    writer.execute("CREATE TABLE queue_members (task_id TEXT PRIMARY KEY,workstream_id TEXT)")
+    writer.execute("INSERT INTO queue_members VALUES (?,?)", (task, ws))
+    writer.execute("PRAGMA user_version=6")
+    writer.commit()
+    before = snapshot(database)
+    with pytest.raises(RuntimeError, match="membership_migration_conflict"):
+        Store(database)
+    assert snapshot(database) == before
+    backups = list(tmp_path.glob("*.pre-schema-9.*.sqlite3"))
+    assert len(backups) == 1 and snapshot(backups[0]) == before
+    writer.close()

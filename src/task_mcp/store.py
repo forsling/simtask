@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 8
+DATABASE_SCHEMA_REVISION = 9
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
 # Concerns have explicit provenance in their own column, never in arbitrary proof text.
 CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
@@ -87,22 +87,10 @@ SCHEMA = (
         WHERE outcome='ok' AND ((action='attempt.reviewed'
         AND json_extract(request_json,'$.verdict')='rework') OR (action='task.signoff'
         AND json_extract(request_json,'$.decision') IN ('rework','revise')))""",
-    """CREATE TABLE IF NOT EXISTS queue_members (
-        task_id TEXT PRIMARY KEY REFERENCES tasks(id),
-        workstream_id TEXT NOT NULL REFERENCES workstreams(id))""",
-    "CREATE INDEX IF NOT EXISTS queue_workstream ON queue_members(workstream_id, task_id)",
-    """CREATE TABLE IF NOT EXISTS legacy_queue_migration (
+    """CREATE TABLE IF NOT EXISTS legacy_membership_migration (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id), source_schema INTEGER NOT NULL,
-        authority_json TEXT NOT NULL, scopes_json TEXT NOT NULL,
-        owning_workstream_id TEXT, reason TEXT NOT NULL)""",
-    """CREATE TRIGGER IF NOT EXISTS queue_member_valid_insert BEFORE INSERT ON queue_members
-        WHEN NOT EXISTS (SELECT 1 FROM tasks t JOIN workstreams w ON w.project_id=t.project_id
-            WHERE t.id=NEW.task_id AND w.id=NEW.workstream_id AND t.object_type='task')
-        BEGIN SELECT RAISE(ABORT, 'invalid_queue_member'); END""",
-    """CREATE TRIGGER IF NOT EXISTS queue_member_valid_update BEFORE UPDATE ON queue_members
-        WHEN NOT EXISTS (SELECT 1 FROM tasks t JOIN workstreams w ON w.project_id=t.project_id
-            WHERE t.id=NEW.task_id AND w.id=NEW.workstream_id AND t.object_type='task')
-        BEGIN SELECT RAISE(ABORT, 'invalid_queue_member'); END""",
+        task_json TEXT NOT NULL, scopes_json TEXT NOT NULL,
+        unresolved_id TEXT)""",
 )
 
 
@@ -130,7 +118,7 @@ def _json(value):
 
 
 class Store:
-    """Explicit projects, workstream scopes, single-owner queues and attempts."""
+    """Explicit projects, workstream scopes, nonexclusive memberships and attempts."""
 
     def __init__(self, path: Path, actor: str = "local-agent"):
         self.path = path.expanduser().absolute()
@@ -209,8 +197,8 @@ class Store:
             db.execute("DROP TABLE tasks")
             db.execute("ALTER TABLE tasks_new RENAME TO tasks")
             db.execute(SCHEMA[3])
-        if source_version < 6:
-            Store._migrate_queue(db, source_version)
+        if source_version < 9:
+            Store._migrate_membership(db, source_version)
         for statement in SCHEMA:
             if statement.startswith("CREATE TRIGGER"):
                 db.execute(statement)
@@ -220,100 +208,125 @@ class Store:
             raise RuntimeError("task database failed integrity check")
 
     @staticmethod
-    def _migrate_queue(db, source_version):
-        """Retain legacy authority/scope facts; do not rewrite task or audit history."""
-        for row in db.execute("SELECT * FROM tasks ORDER BY id").fetchall():
-            task = dict(row)
-            memberships = [
-                dict(r)
-                for r in db.execute(
-                    "SELECT workstream_id FROM scope_members WHERE task_id=? "
-                    "ORDER BY workstream_id",
-                    (task["id"],),
-                )
-            ]
-            groups = [
-                dict(r)
-                for r in db.execute(
-                    "SELECT workstream_id,group_id FROM scope_groups WHERE group_id IN (?,?) "
-                    "ORDER BY workstream_id,group_id",
-                    (task["id"], task["parent_group_id"]),
-                )
-            ]
-            exclusions = [
-                dict(r)
-                for r in db.execute(
-                    "SELECT workstream_id,task_id FROM scope_exclusions WHERE task_id IN (?,?) "
-                    "ORDER BY workstream_id,task_id",
-                    (task["id"], task["parent_group_id"]),
-                )
-            ]
-            candidates = []
-            if task["object_type"] == "task":
-                for ws in db.execute(
-                    "SELECT * FROM workstreams WHERE project_id=? ORDER BY id",
-                    (task["project_id"],),
-                ):
-                    excluded = {r["task_id"] for r in exclusions if r["workstream_id"] == ws["id"]}
-                    direct = any(r["workstream_id"] == ws["id"] for r in memberships)
-                    grouped = any(r["workstream_id"] == ws["id"] for r in groups)
-                    if task["id"] not in excluded and (
-                        direct or (grouped and task["parent_group_id"] not in excluded)
-                    ):
-                        candidates.append(ws["id"])
-            owner = None
-            reason = "inbox"
-            if task["object_type"] == "group":
-                reason = "group_context_only"
-            elif candidates and (
-                task["status"] == "done" or task["accepted_spec_revision"] == task["spec_revision"]
-            ):
-                # Latest attempt among eligible owners wins; oldest workstream then ID
-                # breaks ties (and is the fallback when no owner has an attempt).
-                ranked = db.execute(
-                    "SELECT w.id FROM workstreams w WHERE w.id IN ("
-                    + ",".join("?" for _ in candidates)
-                    + ") ORDER BY "
-                    "(SELECT max(a.created_at) FROM attempts a WHERE a.task_id=? "
-                    "AND a.workstream_id=w.id) DESC,w.created_at,w.id",
-                    (*candidates, task["id"]),
-                ).fetchall()
-                owner = ranked[0]["id"]
-                reason = (
-                    "single_scope"
-                    if len(candidates) == 1
-                    else "most_recent_attempt_then_oldest_workstream"
-                )
-                db.execute("INSERT INTO queue_members VALUES (?,?)", (task["id"], owner))
-            elif candidates:
-                reason = "legacy_unapproved_to_inbox"
+    def _migrate_membership(db, source_version):
+        """Restore original scopes; keep pending intent as an ordinary open question."""
+        has_queue = bool(
             db.execute(
-                "INSERT INTO legacy_queue_migration VALUES (?,?,?,?,?,?)",
-                (
-                    task["id"],
-                    source_version,
-                    _json(
-                        {
-                            k: task[k]
-                            for k in (
-                                "accepted_spec_revision",
-                                "acceptance_note",
-                                "acceptance_basis",
-                            )
-                        }
-                    ),
-                    _json(
-                        {
-                            "members": memberships,
-                            "groups": groups,
-                            "exclusions": exclusions,
-                            "eligible_workstream_ids": candidates,
-                        }
-                    ),
-                    owner,
-                    reason,
-                ),
+                "SELECT 1 FROM sqlite_master WHERE name='queue_members' AND type='table'"
+            ).fetchone()
+        )
+        has_archive = bool(
+            db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='legacy_queue_migration' AND type='table'"
+            ).fetchone()
+        )
+        rows = db.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+        for row in rows:
+            task = dict(row)
+            archive = (
+                db.execute(
+                    "SELECT * FROM legacy_queue_migration WHERE task_id=?", (task["id"],)
+                ).fetchone()
+                if has_archive
+                else None
             )
+            archived = json.loads(archive["scopes_json"]) if archive else {}
+            # Retained scope rows are authoritative. The rejected migration archive
+            # repairs any missing rows without selecting or transferring ownership.
+            for entry in archived.get("members", []):
+                db.execute(
+                    "INSERT OR IGNORE INTO scope_members VALUES (?,?)",
+                    (entry["workstream_id"], task["id"]),
+                )
+            for entry in archived.get("groups", []):
+                db.execute(
+                    "INSERT OR IGNORE INTO scope_groups VALUES (?,?)",
+                    (entry["workstream_id"], entry["group_id"]),
+                )
+            for entry in archived.get("exclusions", []):
+                db.execute(
+                    "INSERT OR IGNORE INTO scope_exclusions VALUES (?,?)",
+                    (entry["workstream_id"], entry["task_id"]),
+                )
+        # Preserve explicit additions made in the isolated rejected candidate too.
+        if has_queue:
+            conflict = db.execute(
+                "SELECT q.task_id,q.workstream_id FROM queue_members q "
+                "JOIN scope_exclusions e ON e.task_id=q.task_id "
+                "AND e.workstream_id=q.workstream_id LIMIT 1"
+            ).fetchone()
+            if conflict:
+                raise RuntimeError(
+                    "membership_migration_conflict: candidate membership contradicts a "
+                    f"retained exclusion for {conflict['task_id']} in "
+                    f"{conflict['workstream_id']}; resolve the intended scope on a copy"
+                )
+            db.execute(
+                "INSERT OR IGNORE INTO scope_members "
+                "SELECT workstream_id,task_id FROM queue_members"
+            )
+        for row in rows:
+            task = dict(row)
+            memberships = Store._membership_ids(db, task)
+            facts = {
+                name: [
+                    dict(r)
+                    for r in db.execute(
+                        f"SELECT * FROM {table} WHERE {column}=? ORDER BY workstream_id",
+                        (task["id"],),
+                    )
+                ]
+                for name, table, column in (
+                    ("members", "scope_members", "task_id"),
+                    ("groups", "scope_groups", "group_id"),
+                    ("exclusions", "scope_exclusions", "task_id"),
+                )
+            }
+            facts["effective_workstream_ids"] = memberships
+            unresolved_id = None
+            # Legacy pending scope was context, not permission to execute. Keep
+            # every membership and require an explicit normal gate resolution.
+            archive = (
+                db.execute(
+                    "SELECT reason FROM legacy_queue_migration WHERE task_id=?", (task["id"],)
+                ).fetchone()
+                if has_archive
+                else None
+            )
+            pending_intent = (
+                task["accepted_spec_revision"] != task["spec_revision"]
+                if source_version < 6
+                else bool(archive and archive["reason"] == "legacy_unapproved_to_inbox")
+            )
+            if (
+                pending_intent
+                and memberships
+                and task["object_type"] == "task"
+                and task["status"] not in {"done", "dropped"}
+            ):
+                unresolved_id = "unr_membership_migration_" + task["id"]
+                questions = json.loads(task["unresolved_json"])
+                questions.append(
+                    {
+                        "id": unresolved_id,
+                        "text": "Confirm legacy pending intent before implementation. Memberships "
+                        "are preserved; resolve this question after the user decides whether "
+                        "to proceed, defer or remove the task from a named workstream.",
+                    }
+                )
+                db.execute(
+                    "UPDATE tasks SET unresolved_json=?,revision=revision+1,"
+                    "updated_at=? WHERE id=?",
+                    (_json(questions), timestamp(), task["id"]),
+                )
+            db.execute(
+                "INSERT INTO legacy_membership_migration VALUES (?,?,?,?,?)",
+                (task["id"], source_version, _json(task), _json(facts), unresolved_id),
+            )
+        if has_queue:
+            db.execute("DROP TRIGGER IF EXISTS queue_member_valid_insert")
+            db.execute("DROP TRIGGER IF EXISTS queue_member_valid_update")
+            db.execute("DROP TABLE queue_members")
 
     def _backup_for_migration(self, version: int) -> Path:
         """Create and verify a fresh SQLite online backup before changing schema."""
@@ -447,7 +460,8 @@ class Store:
                 "task_revision": task["revision"],
                 "task_spec_revision": task["spec_revision"],
                 "changed": True,
-                "queue_workstream_id": task["queue_workstream_id"],
+                "workstream_ids": Store._membership_ids(db, task),
+                "adopted": bool(Store._membership_ids(db, task)),
                 "status": task["status"],
                 "concern_count": len(result.get("concerns", [])),
                 "gate_diagnostics": [
@@ -522,8 +536,8 @@ class Store:
         if action.startswith("task.") and action in {
             "task.created",
             "task.updated",
-            "task.queued",
-            "task.unqueued",
+            "task.workstream_added",
+            "task.workstream_removed",
             "task.disposition_changed",
             "task.signoff",
             "task.reordered",
@@ -816,7 +830,7 @@ class Store:
             scope_page = {}
             if include_scope:
                 for table, column, name in (
-                    ("queue_members", "task_id", "members"),
+                    ("scope_members", "task_id", "members"),
                     ("scope_groups", "group_id", "groups"),
                     ("scope_exclusions", "task_id", "exclusions"),
                 ):
@@ -1140,7 +1154,13 @@ class Store:
                 ws = self._insert_workstream(
                     db, selected["id"], workstream_name or branch, branch, canonical
                 )
-                self._set_scope(db, ws["id"], members, groups, exclusions, new_workstream=True)
+                self._set_scope(
+                    db,
+                    ws["id"],
+                    members,
+                    groups,
+                    exclusions,
+                )
                 ws = self._workstream(db, ws["id"])
             else:
                 if not workstream_id:
@@ -1216,7 +1236,13 @@ class Store:
                 db, selected["id"], scope_expression
             )
             ws = self._insert_workstream(db, selected["id"], name or branch, branch, canonical)
-            self._set_scope(db, ws["id"], members, groups, exclusions, new_workstream=True)
+            self._set_scope(
+                db,
+                ws["id"],
+                members,
+                groups,
+                exclusions,
+            )
             ws = self._workstream(db, ws["id"])
             scope["after"] = {
                 "workstream": ws,
@@ -1319,13 +1345,25 @@ class Store:
 
     @staticmethod
     def _scope_ids(db, workstream_id):
-        return [
-            r["task_id"]
-            for r in db.execute(
-                "SELECT task_id FROM queue_members WHERE workstream_id=? ORDER BY task_id",
-                (workstream_id,),
+        rows = db.execute(
+            """SELECT t.id FROM tasks t JOIN scope_members m ON m.task_id=t.id
+            JOIN workstreams w ON w.id=m.workstream_id
+            WHERE m.workstream_id=? AND t.project_id=w.project_id AND t.object_type='task'
+            UNION SELECT t.id FROM tasks t JOIN scope_groups s ON s.group_id=t.parent_group_id
+            JOIN workstreams w ON w.id=s.workstream_id
+            WHERE s.workstream_id=? AND t.project_id=w.project_id AND t.object_type='task'
+            AND NOT EXISTS (
+                SELECT 1 FROM scope_exclusions e WHERE e.workstream_id=s.workstream_id
+                AND e.task_id=s.group_id)""",
+            (workstream_id, workstream_id),
+        ).fetchall()
+        exclusions = {
+            row["task_id"]
+            for row in db.execute(
+                "SELECT task_id FROM scope_exclusions WHERE workstream_id=?", (workstream_id,)
             )
-        ]
+        }
+        return sorted(row["id"] for row in rows if row["id"] not in exclusions)
 
     @staticmethod
     def _scope_group_ids(db, workstream_id):
@@ -1338,52 +1376,22 @@ class Store:
         ]
 
     @staticmethod
-    def _set_scope(db, workstream_id, members, groups, exclusions, new_workstream=False):
-        """Bulk queue a snapshot of local group members; never live-expand groups."""
-        desired = set(members)
-        desired -= exclusions
-        previous = set(Store._scope_ids(db, workstream_id))
-        placements = []
-        for identity in sorted(previous | desired):
-            task = Store._task(db, identity, {})
-            owner = workstream_id if identity in desired else None
-            if task["queue_workstream_id"] != owner:
-                Store._require_mutable(db, task)
-                placements.append((task, owner))
-        touched = set() if new_workstream else {workstream_id}
-        for task, owner in placements:
-            touched.update(
-                {task["queue_workstream_id"], owner} - {None, workstream_id}
-                if new_workstream
-                else {task["queue_workstream_id"], owner} - {None}
-            )
-            Store._place_task(db, task, owner, touch_workstreams=False)
-        for ws in sorted(touched):
-            Store._touch_workstream(db, ws)
+    def _set_scope(db, workstream_id, members, groups, exclusions):
+        db.execute("DELETE FROM scope_members WHERE workstream_id=?", (workstream_id,))
         db.execute("DELETE FROM scope_groups WHERE workstream_id=?", (workstream_id,))
+        db.execute("DELETE FROM scope_exclusions WHERE workstream_id=?", (workstream_id,))
         db.executemany(
-            "INSERT INTO scope_groups VALUES (?,?)",
-            [(workstream_id, group) for group in sorted(groups - exclusions)],
+            "INSERT INTO scope_members VALUES (?, ?)",
+            [(workstream_id, member) for member in sorted(members)],
         )
-        return {"members": sorted(desired), "groups": sorted(groups - exclusions), "exclusions": []}
-
-    @staticmethod
-    def _place_task(db, task, workstream_id, bump_task=True, touch_workstreams=True):
-        previous = task["queue_workstream_id"]
-        if previous == workstream_id:
-            return task, False
-        db.execute("DELETE FROM queue_members WHERE task_id=?", (task["id"],))
-        if workstream_id:
-            Store._workstream(db, workstream_id, task["project_id"])
-            db.execute("INSERT INTO queue_members VALUES (?,?)", (task["id"], workstream_id))
-        if touch_workstreams:
-            for ws in sorted({previous, workstream_id} - {None}):
-                Store._touch_workstream(db, ws)
-        after = {**task, "queue_workstream_id": workstream_id}
-        if bump_task:
-            after.update(revision=task["revision"] + 1, updated_at=timestamp())
-            Store._save_task(db, after)
-        return after, True
+        db.executemany(
+            "INSERT INTO scope_groups VALUES (?, ?)",
+            [(workstream_id, group) for group in sorted(groups)],
+        )
+        db.executemany(
+            "INSERT INTO scope_exclusions VALUES (?, ?)",
+            [(workstream_id, item) for item in sorted(exclusions)],
+        )
 
     @staticmethod
     def _touch_workstream(db, workstream_id):
@@ -1436,7 +1444,7 @@ class Store:
             members = {
                 row["task_id"]
                 for row in db.execute(
-                    "SELECT task_id FROM queue_members WHERE workstream_id=?", (ws_id,)
+                    "SELECT task_id FROM scope_members WHERE workstream_id=?", (ws_id,)
                 )
             }
             groups = {
@@ -1445,7 +1453,12 @@ class Store:
                     "SELECT group_id FROM scope_groups WHERE workstream_id=?", (ws_id,)
                 )
             }
-            exclusions = set()
+            exclusions = {
+                r["task_id"]
+                for r in db.execute(
+                    "SELECT task_id FROM scope_exclusions WHERE workstream_id=?", (ws_id,)
+                )
+            }
             tokens = tokens[1:]
         for token in tokens:
             if len(token) < 2 or token[0] not in "+-":
@@ -1455,25 +1468,9 @@ class Store:
             if token[0] == "+":
                 target.add(identity)
                 exclusions.discard(identity)
-                if kind == "group":
-                    members.update(
-                        r["id"]
-                        for r in db.execute(
-                            "SELECT id FROM tasks WHERE parent_group_id=? AND project_id=?",
-                            (identity, project_id),
-                        )
-                    )
             else:
                 target.discard(identity)
                 exclusions.add(identity)
-                if kind == "group":
-                    members.difference_update(
-                        r["id"]
-                        for r in db.execute(
-                            "SELECT id FROM tasks WHERE parent_group_id=? AND project_id=?",
-                            (identity, project_id),
-                        )
-                    )
         return members, groups, exclusions
 
     def set_scope(self, workstream_id, expected_revision, expression):
@@ -1483,69 +1480,133 @@ class Store:
 
         def operation(db, scope):
             before = self._workstream(db, workstream_id)
-            self._revision(before, expected_revision)
+            if before["revision"] != expected_revision:
+                raise TaskError("revision_conflict: re-read the workstream")
             previous = {
-                "members": self._scope_ids(db, workstream_id),
-                "groups": self._scope_group_ids(db, workstream_id),
-                "exclusions": [],
+                "members": [
+                    row["task_id"]
+                    for row in db.execute(
+                        "SELECT task_id FROM scope_members WHERE workstream_id=? ORDER BY task_id",
+                        (workstream_id,),
+                    )
+                ],
+                "groups": [
+                    row["group_id"]
+                    for row in db.execute(
+                        "SELECT group_id FROM scope_groups WHERE workstream_id=? ORDER BY group_id",
+                        (workstream_id,),
+                    )
+                ],
+                "exclusions": [
+                    row["task_id"]
+                    for row in db.execute(
+                        "SELECT task_id FROM scope_exclusions WHERE workstream_id=? "
+                        "ORDER BY task_id",
+                        (workstream_id,),
+                    )
+                ],
             }
             members, groups, exclusions = self._scope_expression(
                 db, before["project_id"], expression
             )
-            desired = {
-                "members": sorted(members - exclusions),
-                "groups": sorted(groups - exclusions),
-                "exclusions": [],
+            changed = previous != {
+                "members": sorted(members),
+                "groups": sorted(groups),
+                "exclusions": sorted(exclusions),
             }
-            changed = previous != desired
             if changed:
-                after = self._set_scope(db, workstream_id, members, groups, exclusions)
-                if self._workstream(db, workstream_id)["revision"] == before["revision"]:
-                    self._touch_workstream(db, workstream_id)
-            else:
-                after = previous
+                self._set_scope(db, workstream_id, members, groups, exclusions)
+                self._touch_workstream(db, workstream_id)
             scope.update(
                 project_id=before["project_id"],
                 before={"workstream": before, **previous},
-                after=after,
+                after={
+                    "members": sorted(members),
+                    "groups": sorted(groups),
+                    "exclusions": sorted(exclusions),
+                },
             )
-            return {**self._workstream(db, workstream_id), **after, "changed": changed}
+            return {**self._workstream(db, workstream_id), **scope["after"], "changed": changed}
 
         return self._run("scope.changed", request, operation)
 
-    def queue_task(self, task_id, workstream_id, expected_revision):
-        """Queue the task on exactly one branch, moving it from its previous owner."""
-        return self._queue_change(task_id, expected_revision, workstream_id)
+    def add_to_workstream(self, task_id, workstream_id, expected_revision):
+        """Add effective membership here while preserving all other workstreams."""
+        return self._membership_change(task_id, workstream_id, expected_revision, True)
 
-    def unqueue_task(self, task_id, expected_revision):
-        """Move a task to the inbox without changing requirements or proof."""
-        return self._queue_change(task_id, expected_revision, None)
+    def remove_from_workstream(self, task_id, workstream_id, expected_revision):
+        """Remove only the named workstream, including inherited group membership."""
+        return self._membership_change(task_id, workstream_id, expected_revision, False)
 
-    def _queue_change(self, task_id, expected_revision, workstream_id):
-        request = dict(task_id=task_id, expected_revision=expected_revision)
-        if workstream_id is not None:
-            request["workstream_id"] = workstream_id
+    def _membership_change(self, task_id, workstream_id, expected_revision, adding):
+        request = dict(
+            task_id=task_id, workstream_id=workstream_id, expected_revision=expected_revision
+        )
 
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
             self._require_mutable(db, before)
-            if workstream_id is not None:
-                self._workstream(db, workstream_id, before["project_id"])
-            after, changed = self._place_task(db, before, workstream_id)
+            self._workstream(db, workstream_id, before["project_id"])
+            present = task_id in self._scope_ids(db, workstream_id)
+            changed = present != adding
+            if changed:
+                if adding:
+                    db.execute(
+                        "INSERT OR IGNORE INTO scope_members VALUES (?,?)", (workstream_id, task_id)
+                    )
+                    db.execute(
+                        "DELETE FROM scope_exclusions WHERE workstream_id=? AND task_id=?",
+                        (workstream_id, task_id),
+                    )
+                else:
+                    db.execute(
+                        "DELETE FROM scope_members WHERE workstream_id=? AND task_id=?",
+                        (workstream_id, task_id),
+                    )
+                    db.execute(
+                        "INSERT OR IGNORE INTO scope_exclusions VALUES (?,?)",
+                        (workstream_id, task_id),
+                    )
+                self._touch_workstream(db, workstream_id)
+                db.execute(
+                    "UPDATE tasks SET revision=revision+1,updated_at=? WHERE id=?",
+                    (timestamp(), task_id),
+                )
+            after = self._task(db, task_id, {})
             scope.update(before=before, after=after)
-            revisions = {
-                ws: self._workstream(db, ws)["revision"]
-                for ws in {before["queue_workstream_id"], workstream_id} - {None}
-            }
             return self._task_ack(db, after) | {
                 "changed": changed,
-                "workstream_revisions": revisions,
+                "workstream_id": workstream_id,
+                "workstream_revision": self._workstream(db, workstream_id)["revision"],
+                "workstream_revisions": {
+                    workstream_id: self._workstream(db, workstream_id)["revision"]
+                },
             }
 
         return self._run(
-            "task.queued" if workstream_id is not None else "task.unqueued", request, operation
+            "task.workstream_added" if adding else "task.workstream_removed", request, operation
         )
+
+    @staticmethod
+    def _membership_ids(db, task):
+        if task["object_type"] != "task":
+            return []
+        return [
+            row["id"]
+            for row in db.execute(
+                "SELECT w.id FROM workstreams w WHERE w.project_id=? "
+                "AND NOT EXISTS (SELECT 1 FROM scope_exclusions e "
+                "WHERE e.workstream_id=w.id AND e.task_id=?) "
+                "AND (EXISTS (SELECT 1 FROM scope_members m "
+                "WHERE m.workstream_id=w.id AND m.task_id=?) "
+                "OR EXISTS (SELECT 1 FROM scope_groups g "
+                "WHERE g.workstream_id=w.id AND g.group_id=? AND NOT EXISTS "
+                "(SELECT 1 FROM scope_exclusions e WHERE e.workstream_id=w.id "
+                "AND e.task_id=g.group_id))) ORDER BY w.id",
+                (task["project_id"], task["id"], task["id"], task["parent_group_id"]),
+            )
+        ]
 
     @staticmethod
     def _task(db, task_id, scope):
@@ -1558,10 +1619,8 @@ class Store:
         # Legacy authority columns are frozen private historical storage.
         for key in ("accepted_spec_revision", "acceptance_note", "acceptance_basis"):
             task.pop(key, None)
-        owner = db.execute(
-            "SELECT workstream_id FROM queue_members WHERE task_id=?", (task_id,)
-        ).fetchone()
-        task["queue_workstream_id"] = owner[0] if owner else None
+        task["workstream_ids"] = Store._membership_ids(db, task)
+        task["adopted"] = bool(task["workstream_ids"])
         task["latest_rejection"] = Store._latest_rejection(db, task_id)
         task["summary_stale"] = Store._summary_stale(task)
         scope["project_id"] = task["project_id"]
@@ -1665,7 +1724,8 @@ class Store:
         card.update(
             summary_stale=Store._summary_stale(task),
             specification_complete=False,
-            queue_workstream_id=task["queue_workstream_id"],
+            workstream_ids=Store._membership_ids(db, task),
+            adopted=bool(Store._membership_ids(db, task)),
             unresolved_count=len(task["unresolved_items"]),
             latest_rejection=(
                 {key: value for key, value in task["latest_rejection"].items() if key != "reasons"}
@@ -2022,6 +2082,8 @@ class Store:
     @staticmethod
     def _details(db, task, history=True):
         task = dict(task)
+        task["workstream_ids"] = Store._membership_ids(db, task)
+        task["adopted"] = bool(task["workstream_ids"])
         task["summary_stale"] = Store._summary_stale(task)
         if task["parent_group_id"]:
             group = db.execute(
@@ -2326,7 +2388,8 @@ class Store:
         ack.update(
             task_id=task["id"],
             task_revision=task["revision"],
-            queue_workstream_id=task["queue_workstream_id"],
+            workstream_ids=Store._membership_ids(db, task),
+            adopted=bool(Store._membership_ids(db, task)),
             summary_spec_revision=task["summary_spec_revision"],
             summary_stale=Store._summary_stale(task),
         )
@@ -2408,7 +2471,8 @@ class Store:
                 }
                 self._save_task(db, updated_group)
             if workstream_id:
-                self._place_task(db, self._task(db, task_id, {}), workstream_id, bump_task=False)
+                db.execute("INSERT INTO scope_members VALUES (?,?)", (workstream_id, task_id))
+                self._touch_workstream(db, workstream_id)
             task = self._details(db, self._task(db, task_id, event))
             if group_id:
                 event["before"] = {"group": group}
@@ -2575,7 +2639,7 @@ class Store:
             )
             self._insert_prerequisite(db, task_id, proposed_id, milestone)
             if workstream_id:
-                db.execute("INSERT INTO queue_members VALUES (?, ?)", (proposed_id, workstream_id))
+                db.execute("INSERT INTO scope_members VALUES (?, ?)", (workstream_id, proposed_id))
                 self._touch_workstream(db, workstream_id)
             after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
             self._save_task(db, after)
@@ -2908,12 +2972,15 @@ class Store:
                 "UPDATE projects SET order_revision=order_revision+1 WHERE id=?",
                 (before["project_id"],),
             )
-            owner = before["queue_workstream_id"]
-            db.execute("DELETE FROM queue_members WHERE task_id=?", (task_id,))
-            after["queue_workstream_id"] = None
-            if owner:
-                db.execute("INSERT OR IGNORE INTO scope_groups VALUES (?,?)", (owner, task_id))
-                self._touch_workstream(db, owner)
+            db.execute(
+                "INSERT OR IGNORE INTO scope_groups "
+                "SELECT workstream_id,? FROM scope_members WHERE task_id=?",
+                (task_id, task_id),
+            )
+            for row in db.execute(
+                "SELECT workstream_id FROM scope_members WHERE task_id=?", (task_id,)
+            ).fetchall():
+                self._touch_workstream(db, row["workstream_id"])
             children = []
             for member in members:
                 child_id = self._insert_task(
@@ -2925,8 +2992,6 @@ class Store:
                     task_id,
                 )
                 self._copy_prerequisites(db, child_id, task_id)
-                if owner:
-                    db.execute("INSERT INTO queue_members VALUES (?,?)", (child_id, owner))
                 children.append(child_id)
             db.execute("DELETE FROM prerequisites WHERE task_id=?", (task_id,))
             scope.update(before=before, after={"group": after, "members": children})
@@ -3085,7 +3150,7 @@ class Store:
         if task["object_type"] == "group" or task["status"] in {"done", "dropped", "deferred"}:
             return ["closed_or_group"]
         reasons = []
-        if not task["queue_workstream_id"]:
+        if not Store._membership_ids(db, task):
             reasons.append("inbox")
         if task["unresolved_items"]:
             reasons.append("unresolved_items")
@@ -3269,7 +3334,8 @@ class Store:
                 "spec_revision": after["spec_revision"],
                 "state": attempt["state"],
                 "concern_count": len(recorded_concerns),
-                "queue_workstream_id": after["queue_workstream_id"],
+                "workstream_ids": Store._membership_ids(db, after),
+                "adopted": bool(Store._membership_ids(db, after)),
                 "status": after["status"],
                 "gate_diagnostics": [
                     r
@@ -3614,7 +3680,7 @@ class Store:
                         "",
                         f"ID: {task_id}",
                         f"Revision: {task['revision']}",
-                        f"Queue: {task['queue_workstream_id'] or 'inbox'}",
+                        f"Workstreams: {', '.join(task['workstream_ids']) or 'inbox'}",
                         f"State: {task['status']}",
                         "",
                         task["body"],

@@ -344,7 +344,7 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
     detail = store.get_tasks([group_id, child_id])["items"]
     assert detail[0]["members"] == [child_id]
     assert detail[1]["attempts"][0]["id"] == "att_legacy"
-    assert detail[1]["queue_workstream_id"] is None
+    assert detail[1]["workstream_ids"] == []
     assert child_id not in store.preflight("prj_legacy", "/legacy", branch="main")["scope"]
     assert store.get_tasks([blocker_id])["items"][0]["blocked_by"] == [group_id]
     assert store.list_events("prj_legacy", child_id)["items"][0]["action"] == "test"

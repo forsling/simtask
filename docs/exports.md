@@ -40,7 +40,7 @@ MCP connections need to discover the updated tool schema before using the new
   queue is empty. Local-project, local-scope and exported-member counts are
   separate. Explicit group references, groups of exported tasks and group
   prerequisites receive summaries; remote task bodies are never pulled in.
-- Task entries contain the specification, criteria, owning queue,
+- Task entries contain the specification, criteria, workstream memberships,
   unresolved questions and prerequisite completion. Prerequisites outside the
   exported scope may appear by title/ID, but do not gain full task entries.
   Proposed gates are explicitly nonblocking until accepted.

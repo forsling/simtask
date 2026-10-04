@@ -65,7 +65,7 @@ async def exercise(call, samples, project, workstream):
         )
         token = task["specification_etag"]
         task = await timed(
-            "queue_task",
+            "add_to_workstream",
             task_id=task["id"],
             workstream_id=workstream,
             expected_revision=task["revision"],

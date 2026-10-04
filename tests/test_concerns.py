@@ -434,8 +434,8 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
 
             runtime = await call("runtime_info")
             assert runtime["package_path"] == str(root / "src/task_mcp")
-            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 12
-            assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 8
+            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 13
+            assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 9
             ctx = await call(
                 "init",
                 path=str(tmp_path / "repo"),

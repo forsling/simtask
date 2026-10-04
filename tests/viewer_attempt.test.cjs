@@ -18,7 +18,7 @@ vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const attempt = (id, workstream_id, state, spec_revision = 2) => ({
   id, workstream_id, state, spec_revision, revision: 7, implementer: id,
 });
-context.task = {id: "task", spec_revision: 2, revision: 12, status: "open", queue_workstream_id: "main", prerequisites: [], attempts: [
+context.task = {id: "task", spec_revision: 2, revision: 12, status: "open", workstream_ids: ["main", "alt"], prerequisites: [], attempts: [
   attempt("main-passed", "main", "passed"),
   attempt("alt-review", "alt", "review"),
   attempt("alt-rework", "alt", "rework"),
@@ -46,6 +46,10 @@ for (const stream of ["main", ""]) {
 run('state.stream = "alt";');
 click("review", "Record my review", "alt-review");
 assert.equal(run('nextStep(task, "signoff")'), null, "No eligible scoped sign-off candidate");
+run('state.stream = "outside";');
+let outsidePanel = descendants(run('nextStep(task, "signoff")'));
+assert.ok(outsidePanel.some(n => n.textContent === "Add this task to a workstream"));
+assert.ok(!outsidePanel.some(n => n.textContent === "Approve & sign off"));
 run('state.stream = "";');
 click("review", "Record my review", "alt-review");
 // A human-reviewed result also qualifies, even when followed by a rework result.

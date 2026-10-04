@@ -75,11 +75,11 @@ def test_removal_immediately_recalculates_gate_and_audits_actor_note(context, mi
     )
     assert ack["changed"] and ack["revision"] == ack["task_revision"] == 3
     assert ack["blocked_by_id"] == blocker["id"]
-    assert ack["gate_diagnostics"] == [] and ack["queue_workstream_id"]
+    assert ack["gate_diagnostics"] == [] and ack["workstream_ids"]
     assert not {"body", "attempts", "prerequisites"} & ack.keys()
     after = detail(store, dependent["id"])
     assert after["blocked_by"] == after["prerequisites"] == []
-    assert after["spec_revision"] == 1 and after["queue_workstream_id"] == ws
+    assert after["spec_revision"] == 1 and after["workstream_ids"] == [ws]
     row = store.list_tasks(project, ws)["items"][0]
     assert row["id"] == dependent["id"] and row["view"] == "ready"
     selected = store.get_next_action(ws)
@@ -214,8 +214,8 @@ def test_removal_preserves_inbox_and_disposition(context, disposition):
             task["id"], task["revision"], disposition, "Synthetic decision"
         )
     result = store.remove_prerequisite(task["id"], task["revision"], blocker["id"], "Wrong link")
-    assert result["queue_workstream_id"] is None and result["status"] == disposition
-    assert result["spec_revision"] == 1 and result["queue_workstream_id"] is None
+    assert result["workstream_ids"] == [] and result["status"] == disposition
+    assert result["spec_revision"] == 1 and result["workstream_ids"] == []
 
 
 def test_failed_audit_rolls_back_link_deletion_and_task_revision(context):

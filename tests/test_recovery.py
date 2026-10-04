@@ -74,9 +74,7 @@ def test_factual_result_preserves_approval_disposition_and_every_gate(
     after = full(store, work)
     assert ack["id"] == after["attempts"][0]["id"] and ack["revision"] == 1
     assert ack["task_revision"] == before["revision"] + 1
-    assert (
-        ack["queue_workstream_id"] == before["queue_workstream_id"] and ack["status"] == disposition
-    )
+    assert ack["workstream_ids"] == before["workstream_ids"] and ack["status"] == disposition
     assert not {"summary", "evidence", "artifacts", "verification", "attempts"} & ack.keys()
     retained = set(before) - {"attempts", "revision", "updated_at"}
     assert {k: before[k] for k in retained} == {k: after[k] for k in retained}
@@ -86,8 +84,8 @@ def test_factual_result_preserves_approval_disposition_and_every_gate(
     assert attempt["specification_etag"] == before["specification_etag"]
     assert attempt["spec_revision"] == before["spec_revision"]
     # Keep the prerequisite in the inbox without changing the recovered task's placement.
-    store.unqueue_task(blocker["id"], full(store, blocker)["revision"])
-    assert full(store, work)["queue_workstream_id"] == before["queue_workstream_id"]
+    store.remove_from_workstream(blocker["id"], ws, full(store, blocker)["revision"])
+    assert full(store, work)["workstream_ids"] == before["workstream_ids"]
     assert store.get_next_action(ws)["action"] is None
     # Explicit manual evidence review remains usable and grants no acceptance/completion.
     store.record_review(
@@ -129,7 +127,7 @@ def test_result_contract_requires_current_full_spec_and_concrete_proof_atomicall
     gated = store.add_unresolved(work["id"], current["revision"], "Question")
     ack = proof(store, current, ws, expected_revision=gated["revision"])
     assert (
-        ack["queue_workstream_id"] == current["queue_workstream_id"]
+        ack["workstream_ids"] == current["workstream_ids"]
         and "unresolved_items" in ack["gate_diagnostics"]
     )
 
@@ -139,7 +137,7 @@ def test_mutability_project_and_scope_remain_result_gates(tmp_path):
     work = task(store, project, ws)
     empty = store.init_workstream(project, str(tmp_path / "checkout"), "empty", confirmed=True)
     recovered = proof(store, work, empty["workstream"]["id"])
-    assert recovered["queue_workstream_id"] == ws
+    assert recovered["workstream_ids"] == [ws]
     work = full(store, work)
     remote = store.init(str(tmp_path / "remote"), "main", action="create_project", confirmed=True)
     with pytest.raises(TaskError, match="unknown_workstream"):

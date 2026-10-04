@@ -91,7 +91,7 @@ def test_verdict_records_only_actual_decision_and_reasons_with_compact_ack(
     saved = full(store, task)
     recorded = saved["signoff_decisions"][-1]
     assert saved["status"] == ack["status"] == status
-    assert saved["queue_workstream_id"] == ws and saved["spec_revision"] == 1
+    assert saved["workstream_ids"] == [ws] and saved["spec_revision"] == 1
     assert recorded["decision"] == decision and recorded["reasons"] == reasons
     assert recorded["decision_ref"] == ack["decision_ref"]
     assert (
@@ -187,7 +187,7 @@ def test_latest_rejection_replaces_previous_without_changing_factual_history(con
         task["id"], saved["revision"], saved["unresolved_items"][-1]["id"], "Settled"
     )
     current = full(store, task)
-    store.queue_task(task["id"], other_ws, current["revision"])
+    store.add_to_workstream(task["id"], other_ws, current["revision"])
     action = store.get_next_action(other_ws)
     assert action["action"] == "implement" and action["attempt"] is None
     assert action["task"]["latest_rejection"]["workstream_id"] == ws
@@ -307,7 +307,7 @@ def test_ordinary_deferral_and_authorized_revival_are_status_changes(context):
     store, project, ws = context
     task = store.create_task(project, "Unbuilt", body="Scope", workstream_id=ws)
     deferred = store.set_disposition(task["id"], 1, "deferred", "Later")
-    assert deferred["queue_workstream_id"] == ws
+    assert deferred["workstream_ids"] == [ws]
     dropped = store.set_disposition(task["id"], 2, "dropped", "No longer wanted")
     with pytest.raises(TaskError, match="revival_authorization_required"):
         store.set_disposition(task["id"], 3, "open", "Restore")
@@ -318,7 +318,7 @@ def test_ordinary_deferral_and_authorized_revival_are_status_changes(context):
         "Restore",
         authorization="Actual user requested revival",
     )
-    assert revived["queue_workstream_id"] == ws
+    assert revived["workstream_ids"] == [ws]
     assert full(store, task)["signoff_decisions"] == []
 
 

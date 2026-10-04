@@ -69,8 +69,8 @@ def create_server(
         instructions=(
             "Follow explicit user instructions over this workflow guidance. Init an explicit "
             "checkout/branch and retain its IDs and returned revisions; reconcile conflicts. "
-            "Queue user-requested work on the current branch, including gated design briefs; "
-            "confirmed agent ideas go to the inbox. Queueing starts no implementation. "
+            "Add user-requested work on the current branch, including gated design briefs; "
+            "confirmed agent ideas go to the inbox. Membership starts no implementation. "
             "Fetch get_default_skills(name=...) for feature-capture ('add a design task'), "
             "feature-design ('let's design X'/'review design tasks'), proposal-review, "
             "superdevloop or signoff. Decide worth-doing before feature design. Implement "
@@ -282,7 +282,7 @@ def create_server(
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
     def set_scope(workstream_id: str, expected_revision: int, expression: str) -> dict[str, Any]:
-        """Replace a queue using none, a workstream base, +/-task/group snapshots."""
+        """Replace local scope using none, a workstream base, +/-task/group and exclusions."""
         return store.compact_call("set_scope", workstream_id, expected_revision, expression)
 
     @server.tool(annotations=additive, structured_output=True)
@@ -299,10 +299,10 @@ def create_server(
         group_expected_revision: int | None = None,
         summary: str | None = None,
     ) -> dict[str, Any]:
-        """Create in the inbox, or queued when workstream_id is supplied.
+        """Create with direct membership when workstream_id is supplied.
 
         Queue only concrete agreed work. Open design questions remain blocking gates.
-        Group membership preserves placement; it does not inherit a group's queue.
+        Group membership follows existing dynamic inclusion and exclusions.
         """
         return store.compact_call(
             "create_task",
@@ -385,7 +385,7 @@ def create_server(
         changes: TaskPatch,
         specification_etag: str | None = None,
     ) -> dict[str, Any]:
-        """Save edits while retaining queue placement and all historical proof.
+        """Save edits while retaining memberships and all historical proof.
 
         Whole body/criteria replacements require the current full specification_etag.
         Actual requirement changes advance spec_revision; older proof stays historical.
@@ -401,18 +401,21 @@ def create_server(
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def queue_task(task_id: str, workstream_id: str, expected_revision: int) -> dict[str, Any]:
-        """Queue on one same-project branch; atomically move from any previous queue.
-
-        Use the last task revision. Completed tasks are immutable; a no-op retains revisions.
-        """
-        return store.compact_call("queue_task", task_id, workstream_id, expected_revision)
+    def add_to_workstream(
+        task_id: str, workstream_id: str, expected_revision: int
+    ) -> dict[str, Any]:
+        """Add to this workstream, retaining all others; starts no implementation."""
+        return store.compact_call("add_to_workstream", task_id, workstream_id, expected_revision)
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
-    def unqueue_task(task_id: str, expected_revision: int) -> dict[str, Any]:
-        """Move to the inbox with revision checks; preserve requirements and all proof."""
-        return store.compact_call("unqueue_task", task_id, expected_revision)
+    def remove_from_workstream(
+        task_id: str, workstream_id: str, expected_revision: int
+    ) -> dict[str, Any]:
+        """Remove only this named workstream, retaining other memberships and all proof."""
+        return store.compact_call(
+            "remove_from_workstream", task_id, workstream_id, expected_revision
+        )
 
     @server.tool(annotations=editing, structured_output=True)
     @domain_errors
@@ -423,7 +426,7 @@ def create_server(
         note: str,
         authorization: str | None = None,
     ) -> dict[str, Any]:
-        """Pause/drop preserving queue and proof. Revival needs actual authorization."""
+        """Pause/drop preserving memberships and proof. Revival needs actual authorization."""
         return store.compact_call(
             "set_disposition", task_id, expected_revision, disposition, note, authorization
         )
@@ -444,7 +447,7 @@ def create_server(
     def resolve_unresolved(
         task_id: str, expected_revision: int, item_id: str, user_note: str
     ) -> dict[str, Any]:
-        """Remove a resolved item after a user decision; queue placement stays unchanged."""
+        """Remove a resolved item after a user decision; workstream membership stays unchanged."""
         return store.compact_call(
             "resolve_unresolved", task_id, expected_revision, item_id, user_note
         )
@@ -478,7 +481,7 @@ def create_server(
         """Remove a prerequisite link with an actual decision note; recalculate the gate.
 
         Use the dependent task's last revision. A removed link advances it once;
-        an absent link returns changed=false with the same revision. Queue placement,
+        an absent link returns changed=false with the same revision. Workstream membership,
         specifications and proof survive. Completed tasks remain immutable.
         The configured actor and note are audited, including no-ops.
         """
@@ -497,7 +500,7 @@ def create_server(
         workstream_id: str | None = None,
         milestone: Literal["review", "signoff"] = "review",
     ) -> dict[str, Any]:
-        """Create and link a prerequisite queued here, or in the inbox.
+        """Create and link a prerequisite included here, or in the inbox.
 
         Default review clears on done or current-spec passed/human_review. Use signoff only
         exceptionally when work would very likely be wasted without the user's verdict.
@@ -533,7 +536,7 @@ def create_server(
     def decompose_task(
         task_id: str, expected_revision: int, members: list[dict[str, str]]
     ) -> dict[str, Any]:
-        """Convert to a group and create required members in the parent queue atomically."""
+        """Convert to a group and create required members in the parent scopes atomically."""
         return store.compact_call("decompose_task", task_id, expected_revision, members)
 
     @server.tool(annotations=editing, structured_output=True)
@@ -567,7 +570,7 @@ def create_server(
         """Read one implement/review action in shared order, without claiming or reordering.
 
         Full current spec/token and exactly one applicable local proof for review
-        (or rework) are included. Autonomous actions require queue placement and clear
+        (or rework) are included. Autonomous actions require workstream membership and clear
         gates; passed/human_review waits for the user. Null gives bounded counts.
         Verify the actual checkout/artifacts before trusting recorded proof.
         """
@@ -591,7 +594,7 @@ def create_server(
 
         First check the actual checkout/artifacts and current full specification.
         Supply its etag, concrete artifacts ({kind: artifact|commit, reference: ...}),
-        actual verification and context evidence. Queue placement, disposition and blockers
+        actual verification and context evidence. Workstream membership, disposition and blockers
         stay unchanged. Optional concerns ({kind: value|design, text: ...}) are doubts
         that cannot be fixed without changing what the task says; they never affect gates.
         The ACK omits proof/concern prose; retrieve it deliberately with get_tasks.

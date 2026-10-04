@@ -39,9 +39,7 @@ def test_summary_freshness_completion_and_token_continuation(context):
         and not {"body", "acceptance_criteria", "specification_etag", "view"} & card.keys()
     )
     refreshed = store.update_task(task["id"], renamed["revision"], {"summary": card["summary"]})
-    assert (
-        refreshed["changed"] and not refreshed["spec_changed"] and refreshed["queue_workstream_id"]
-    )
+    assert refreshed["changed"] and not refreshed["spec_changed"] and refreshed["workstream_ids"]
     assert "specification_etag" not in refreshed
     same = store.update_task(task["id"], refreshed["revision"], {"summary": card["summary"]})
     assert not same["changed"] and same["revision"] == refreshed["revision"]
@@ -75,7 +73,7 @@ def test_summary_freshness_completion_and_token_continuation(context):
         task["id"], done["revision"], {"summary": "Corrected descriptive intent."}
     )
     after = store.get_tasks([task["id"]])["items"][0]
-    assert corrected["changed"] and after["status"] == "done" and after["queue_workstream_id"]
+    assert corrected["changed"] and after["status"] == "done" and after["workstream_ids"]
     assert (
         after["body"],
         after["spec_revision"],
@@ -403,20 +401,21 @@ def test_other_public_mutations_return_only_continuation_state(context, tmp_path
             changes={"summary": "Retain approved delivery constraints."},
         )
         accepted = await call(
-            "queue_task",
+            "add_to_workstream",
             task_id=task["id"],
             workstream_id=ws,
             expected_revision=summary["revision"],
         )
         same = await call(
-            "queue_task",
+            "add_to_workstream",
             task_id=task["id"],
             workstream_id=ws,
             expected_revision=accepted["revision"],
         )
         assert not same["changed"]
         withdrawn = await call(
-            "unqueue_task",
+            "remove_from_workstream",
+            workstream_id=ws,
             task_id=task["id"],
             expected_revision=same["revision"],
         )

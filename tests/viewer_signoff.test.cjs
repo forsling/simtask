@@ -96,7 +96,7 @@ async function testActivity() {
 }
 async function test() {
   context.task = {id: "task", title: "Purpose", revision: 8, spec_revision: 4,
-    queue_workstream_id: "main", status: "open", attempts: []};
+    workstream_ids: ["main"], status: "open", attempts: []};
   context.attempt = {id: "attempt", revision: 2, spec_revision: 4, state: "passed",
     summary: "Actual result", reviewer: "Independent reviewer", review_note: "Actual review proof", workstream_id: "main",
     concerns: [{kind: "value", text: "A priority change needs a scope change.", source: "implementer", author: "Builder"},

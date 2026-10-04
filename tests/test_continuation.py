@@ -112,11 +112,11 @@ def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selecti
         "origin builder",
         "Origin artifact and verification",
     )
-    assert_view(store, origin, work["id"], "out_of_scope")
+    assert_view(store, origin, work["id"], "review")
     assert_view(store, target, work["id"], "ready")
     assert store.get_next_action(target["workstream"]["id"])["task"]["id"] == work["id"]
     store.record_review(source["id"], 1, "origin reviewer", "pass", "Synthetic source check")
-    assert_view(store, origin, work["id"], "out_of_scope")
+    assert_view(store, origin, work["id"], "signoff")
     alternative = record(
         store, detail(store, work["id"]), target, "alternative builder", "Independent alternative"
     )
@@ -135,8 +135,8 @@ def test_competing_workstreams_and_superseded_attempts_do_not_gate_local_selecti
         current["revision"],
         {"title": "Reject blank names and retain spelling"},
     )
-    assert_view(store, origin, work["id"], "out_of_scope")
-    assert store.get_next_action(origin["workstream"]["id"])["task"] is None
+    assert_view(store, origin, work["id"], "ready")
+    assert store.get_next_action(origin["workstream"]["id"])["task"]["id"] == work["id"]
     assert_view(store, target, work["id"], "ready")
     selected = store.get_next_action(target["workstream"]["id"])["task"]
     assert selected["spec_revision"] == 2 and "attempts" not in selected

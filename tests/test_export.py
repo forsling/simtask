@@ -374,7 +374,7 @@ def test_legacy_export_preserves_v1_layout(context):
             "",
             f"ID: {task['id']}",
             "Revision: 1",
-            f"Queue: {ws}",
+            f"Workstreams: {ws}",
             "State: open",
             "",
             "Body",

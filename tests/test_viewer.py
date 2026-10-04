@@ -76,7 +76,7 @@ def create(server, context, **overrides):
 def test_browse_edit_conflicts_and_decisions(viewer):
     server, store, context = viewer
     task = create(server, context)
-    assert task["queue_workstream_id"]
+    assert task["workstream_ids"]
     assert request(server, "/api/projects")[1]["items"][0]["id"] == context["project"]["id"]
     assert request(server, "/api/workstreams")[1]["items"][0]["id"] == context["workstream"]["id"]
     status, edited = request(
@@ -84,7 +84,7 @@ def test_browse_edit_conflicts_and_decisions(viewer):
         "/api/edit",
         {"task_id": task["id"], "expected_revision": 1, "changes": {"title": "Updated"}},
     )
-    assert status == 200 and edited["queue_workstream_id"] == context["workstream"]["id"]
+    assert status == 200 and edited["workstream_ids"] == [context["workstream"]["id"]]
     status, conflict = request(
         server,
         "/api/edit",
@@ -94,10 +94,14 @@ def test_browse_edit_conflicts_and_decisions(viewer):
     assert store.get_tasks([task["id"]])["items"][0]["title"] == "Updated"
     status, task = request(
         server,
-        "/api/unqueue",
-        {"task_id": task["id"], "expected_revision": 2},
+        "/api/remove-from-workstream",
+        {
+            "task_id": task["id"],
+            "workstream_id": context["workstream"]["id"],
+            "expected_revision": 2,
+        },
     )
-    assert status == 200 and task["queue_workstream_id"] is None
+    assert status == 200 and task["workstream_ids"] == []
     status, task = request(
         server,
         "/api/question",
@@ -441,19 +445,21 @@ def test_queue_inbox_moves_return_compact_continuation_without_notes(viewer):
     server, store, context = viewer
     ws = context["workstream"]["id"]
     draft = create(server, context, workstream_id=None, user_request="Save user-origin idea")
-    assert draft["queue_workstream_id"] is None and draft["source"] == "user"
+    assert draft["workstream_ids"] == [] and draft["source"] == "user"
     status, queued = request(
         server,
-        "/api/queue",
+        "/api/add-to-workstream",
         {"task_id": draft["id"], "workstream_id": ws, "expected_revision": draft["revision"]},
     )
-    assert status == 200 and queued["queue_workstream_id"] == ws
+    assert status == 200 and queued["workstream_ids"] == [ws]
     assert queued["revision"] == draft["revision"] + 1
     assert not {"title", "body", "attempts", "approval_decision"} & queued.keys()
     status, inbox = request(
-        server, "/api/unqueue", {"task_id": draft["id"], "expected_revision": queued["revision"]}
+        server,
+        "/api/remove-from-workstream",
+        {"task_id": draft["id"], "workstream_id": ws, "expected_revision": queued["revision"]},
     )
-    assert status == 200 and inbox["queue_workstream_id"] is None
+    assert status == 200 and inbox["workstream_ids"] == []
     assert inbox["spec_revision"] == queued["spec_revision"] and inbox["gate_diagnostics"] == [
         "inbox"
     ]
@@ -461,8 +467,8 @@ def test_queue_inbox_moves_return_compact_continuation_without_notes(viewer):
     assert (
         request(
             server,
-            "/api/unqueue",
-            {"task_id": draft["id"], "expected_revision": queued["revision"]},
+            "/api/remove-from-workstream",
+            {"task_id": draft["id"], "workstream_id": ws, "expected_revision": queued["revision"]},
         )[0]
         == 409
     )
@@ -490,7 +496,7 @@ def test_queue_inbox_moves_return_compact_continuation_without_notes(viewer):
             "user_request": "Actual request",
         },
     )
-    assert status == 200 and created["queue_workstream_id"] == ws
+    assert status == 200 and created["workstream_ids"] == [ws]
     assert not {"title", "body", "attempts", "user_request"} & created.keys()
 
 
@@ -509,7 +515,7 @@ def test_approved_and_draft_amendment_http_flow(viewer):
     status, saved = request(server, "/api/edit", payload)
     assert (
         status == 200
-        and saved["queue_workstream_id"] == context["workstream"]["id"]
+        and saved["workstream_ids"] == [context["workstream"]["id"]]
         and saved["spec_changed"]
     )
     assert saved["spec_revision"] == 2
@@ -530,7 +536,7 @@ def test_approved_and_draft_amendment_http_flow(viewer):
     )
     assert (
         status == 200
-        and draft["queue_workstream_id"] == context["workstream"]["id"]
+        and draft["workstream_ids"] == [context["workstream"]["id"]]
         and draft["spec_revision"] == 3
     )
 
@@ -767,3 +773,39 @@ def test_legacy_json_never_becomes_concern_metadata_in_real_viewer(viewer):
             db.execute("SELECT evidence FROM attempts WHERE id=?", (attempt["id"],)).fetchone()[0]
             == original
         )
+
+
+def test_browser_add_b_retains_a_remove_a_retains_b_and_local_proof(viewer):
+    server, store, ctx = viewer
+    project, a = ctx["project"]["id"], ctx["workstream"]["id"]
+    b = store.init_workstream(
+        project, ctx["workstream"]["checkout_path"], branch="b", confirmed=True
+    )["workstream"]["id"]
+    task = store.create_task(project, "Shared browser task", workstream_id=a)
+    status, added = request(
+        server,
+        "/api/add-to-workstream",
+        {"task_id": task["id"], "workstream_id": b, "expected_revision": 1},
+    )
+    assert status == 200 and set(added["workstream_ids"]) == {a, b}
+    proof = store.record_result(
+        task["id"],
+        a,
+        added["revision"],
+        "builder",
+        "Built A",
+        "Proof A",
+        [{"kind": "artifact", "reference": str(__file__)}],
+        "Synthetic browser verification",
+        task["specification_etag"],
+    )
+    status, detail = request(server, "/api/details", {"ids": [task["id"]]})
+    assert status == 200 and set(detail["items"][0]["workstream_ids"]) == {a, b}
+    status, removed = request(
+        server,
+        "/api/remove-from-workstream",
+        {"task_id": task["id"], "workstream_id": a, "expected_revision": proof["task_revision"]},
+    )
+    assert status == 200 and removed["workstream_ids"] == [b] and removed["adopted"]
+    assert store.get_attempt(proof["id"])["workstream_id"] == a
+    assert store.get_next_action(b)["action"] == "implement"

@@ -135,7 +135,7 @@ def test_session_init_new_branch_attach_rebind_and_rollback(store, tmp_path):
     )
     assert attached["project"]["id"] == project
     assert attached["queue"][0]["id"] == work["id"]
-    assert store.list_tasks(project, main)["items"] == []
+    assert store.list_tasks(project, main)["items"][0]["id"] == work["id"]
     assert (
         store.init(
             checkout, branch="release", action="attach_workstream", project=project, confirmed=True
@@ -188,7 +188,7 @@ def test_session_init_new_branch_attach_rebind_and_rollback(store, tmp_path):
         == "ready"
     )
     assert store.init(str(tmp_path / "repo"), branch="main")["state"] == "mismatch"
-    assert store.init(move_path, branch="main")["queue"] == []
+    assert store.init(move_path, branch="main")["queue"][0]["id"] == work["id"]
 
 
 def test_session_init_named_and_status_pagination(store, tmp_path):
@@ -492,14 +492,14 @@ def test_pending_prerequisite_proposal_is_atomic_and_disposition_preserves_accep
         parent["id"], 1, "Research dependency", "Scope stays pending", workstream_id=ws
     )
     proposal = added["proposal"]
-    assert proposal["queue_workstream_id"] == ws
+    assert proposal["workstream_ids"] == [ws]
     assert proposal["id"] in added["task"]["blocked_by"]
     assert proposal["id"] in store.list_workstreams(project)["items"][0]["scope"]
     deferred = store.set_disposition(parent["id"], 2, "deferred", "Wait for research")
-    assert deferred["queue_workstream_id"] == ws and deferred["status"] == "deferred"
+    assert deferred["workstream_ids"] == [ws] and deferred["status"] == "deferred"
     resumed = store.set_disposition(parent["id"], 3, "open", "Research resumed")
     assert (
-        resumed["queue_workstream_id"] == ws
+        resumed["workstream_ids"] == [ws]
         and store.get_tasks([parent["id"]])["items"][0]["body"] == parent["body"]
     )
 
@@ -537,7 +537,7 @@ def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
         )
     assert store.get_tasks([parent["id"]])["items"][0]["complete"]
     completed_group = store.get_tasks([parent["id"]])["items"][0]
-    assert completed_group["queue_workstream_id"] is None
+    assert completed_group["workstream_ids"] == []
     with pytest.raises(TaskError, match="completed_task_immutable"):
         store.update_task(parent["id"], completed_group["revision"], {"body": "Changed"})
     with pytest.raises(TaskError, match="completed_task_immutable"):
@@ -563,7 +563,7 @@ def test_group_has_no_execution_gates_and_requires_resolved_decomposition(store,
     assert group["unresolved_items"] == []
     assert group["blocked_by"] == [] and group["attempts"] == []
     for action in (
-        lambda: store.queue_task(parent["id"], ws, group["revision"]),
+        lambda: store.add_to_workstream(parent["id"], ws, group["revision"]),
         lambda: store.set_disposition(parent["id"], group["revision"], "deferred", "Wait"),
         lambda: store.add_unresolved(parent["id"], group["revision"], "Gate"),
         lambda: store.propose_prerequisite(parent["id"], group["revision"], "New task"),
@@ -660,7 +660,7 @@ def test_completed_tasks_and_attempts_are_immutable(store, tmp_path):
     other = task(store, project, ws, "Other")
     actions = (
         lambda: store.update_task(done["id"], done["revision"], {"body": "Changed"}),
-        lambda: store.queue_task(done["id"], ws, done["revision"]),
+        lambda: store.add_to_workstream(done["id"], ws, done["revision"]),
         lambda: store.set_disposition(done["id"], done["revision"], "open", "Reopen"),
         lambda: store.add_unresolved(done["id"], done["revision"], "New gate"),
         lambda: store.add_prerequisite(done["id"], done["revision"], other["id"]),
@@ -711,7 +711,7 @@ def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_pat
     rejected = store.signoff_task(
         created["id"], 2, "rework", "Fix input loss", result["id"], expected_attempt_revision=2
     )
-    assert rejected["queue_workstream_id"] == ws and rejected["status"] == "rework"
+    assert rejected["workstream_ids"] == [ws] and rejected["status"] == "rework"
     retry = store.record_result(
         created["id"],
         ws,
@@ -733,7 +733,7 @@ def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_pat
         retry["id"],
         expected_attempt_revision=2,
     )
-    assert revised["queue_workstream_id"] == ws and revised["unresolved_id"]
+    assert revised["workstream_ids"] == [ws] and revised["unresolved_id"]
     resolved = store.resolve_unresolved(created["id"], 5, revised["unresolved_id"], "Settled")
     accepted = resolved
     accepted = store.update_task(

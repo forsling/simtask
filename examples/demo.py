@@ -277,7 +277,7 @@ async def exercise(database: Path):
                     note="Restore",
                     authorization="Synthetic actual revival instruction",
                 )
-                assert revived["queue_workstream_id"] == workstream_id
+                assert revived["workstream_ids"] == [workstream_id]
         # User origin preserves the request without approving an exploratory spec.
         draft = await call(
             "create_task",
@@ -286,30 +286,29 @@ async def exercise(database: Path):
             source="user",
             user_request="Synthetic design-first request; leave pending",
         )
-        assert (
-            draft["queue_workstream_id"] is None and "body" not in draft and "attempts" not in draft
-        )
+        assert draft["workstream_ids"] == [] and "body" not in draft and "attempts" not in draft
         details = (await call("get_tasks", specification=True, ids=[draft["id"]]))["items"][0]
         assert details["source"] == "user" and details["user_request"]
         accepted = await call(
-            "queue_task",
+            "add_to_workstream",
             task_id=draft["id"],
             expected_revision=draft["revision"],
             workstream_id=workstream_id,
         )
-        assert accepted["queue_workstream_id"] == workstream_id
+        assert accepted["workstream_ids"] == [workstream_id]
         withdrawn = await call(
-            "unqueue_task",
+            "remove_from_workstream",
+            workstream_id=workstream_id,
             task_id=draft["id"],
             expected_revision=accepted["revision"],
         )
         assert (
-            withdrawn["queue_workstream_id"] is None
+            withdrawn["workstream_ids"] == []
             and withdrawn["spec_revision"] == accepted["spec_revision"]
         )
         assert "inbox" in withdrawn["gate_diagnostics"]
         approved_again = await call(
-            "queue_task",
+            "add_to_workstream",
             task_id=draft["id"],
             expected_revision=withdrawn["revision"],
             workstream_id=workstream_id,
@@ -334,12 +333,11 @@ async def exercise(database: Path):
         )
         assert approved_again["spec_revision"] == 2
         assert (
-            approved_again["queue_workstream_id"] == workstream_id
-            and approved_again["spec_changed"]
+            approved_again["workstream_ids"] == [workstream_id] and approved_again["spec_changed"]
         )
         assert "body" not in approved_again and "attempts" not in approved_again
         obsolete = await client.call_tool(
-            "queue_task",
+            "add_to_workstream",
             {
                 "task_id": draft["id"],
                 "expected_revision": approved_again["revision"],
@@ -428,7 +426,7 @@ async def exercise(database: Path):
         assert reference["project_id"] == second["project"]["id"] and reference["blocking"]
         assert reference["project_name"] == second["project"]["name"]
         assert (
-            linked["queue_workstream_id"] == workstream_id
+            linked["workstream_ids"] == [workstream_id]
             and linked["spec_revision"] == 1
             and linked["revision"] == 2
         )

@@ -123,7 +123,7 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                 f"- Workflow: {VIEWS[task['view']]} ({task['view']})",
                 f"- Stored disposition: {task['status']}",
                 f"- Revision: {task['revision']}; specification: {task['spec_revision']}",
-                f"- Owning queue: {task['queue_workstream_id'] or 'inbox'}",
+                f"- Workstream memberships: {', '.join(task['workstream_ids']) or 'inbox'}",
                 f"- Request origin: {task['source']}",
                 f"- Updated: {task['updated_at']}",
             ]

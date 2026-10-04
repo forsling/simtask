@@ -32,11 +32,13 @@ and returns the link. No browser is launched automatically.
 - Shared groups show all members across all projects and global completion.
   Opening a member moves to its own project's queue. A group's completion does
   not mean a particular local workstream delivered all of its members.
-- New tasks are queued on the selected branch, or created in the project inbox
-  from All tasks. Edits preserve placement. **Queue for <branch>** chooses the
-  owning branch, with a picker where needed; **Move to inbox** removes placement.
-  These controls require no typed note and preserve all specification/proof history.
-  Queueing starts no implementation and leaves questions/prerequisites intact.
+- New tasks are added to the selected workstream, or have no direct membership
+  from All tasks (existing group inclusion may still apply). Edits preserve scope.
+  **Add to workstream** and **Remove from workstream** identify the workstream
+  being changed; adding retains existing memberships and removing changes only
+  the named one. Details list every effective membership accurately. The inbox
+  contains tasks included in none. Controls require no typed note, preserve proof
+  and clear no questions/prerequisites.
 - Answer questions or defer/resume/drop with an actual decision note. Dropped and
   deferred context remains recoverable; revival from dropped needs authorization.
   Completed requirements cannot be edited; summary corrections remain available.
