@@ -67,17 +67,26 @@ def create_server(
         "task-mcp",
         version=RUNTIME_IDENTITY["package_version"],
         instructions=(
-            "Init an explicit checkout/branch and retain its IDs. Continue with returned "
-            "revisions; reconcile conflicts. Queue concrete agreed work on exactly one branch; "
-            "unqueue moves it to the inbox. Edits retain placement. Record independent "
-            "review and informed human verdicts. Full specifications govern work. "
-            "Prerequisites clear on current-spec passed/human review by default; "
-            "signoff links are rare exceptions for work very likely wasted "
-            "without a human verdict. "
-            "Use add_prerequisite to link a blocker; remove_prerequisite with the last "
-            "dependent revision and an actual decision note to remove a mistaken or obsolete "
-            "link. Removal preserves queue placement and proof; an absent link is a no-op. "
-            "A satisfied canonical milestone does not prove integration into this checkout."
+            "Follow explicit user instructions over this workflow guidance. Init an explicit "
+            "checkout/branch and retain its IDs and returned revisions; reconcile conflicts. "
+            "Queue user-requested work on the current branch, including gated design briefs; "
+            "confirmed agent ideas go to the inbox. Queueing starts no implementation. "
+            "Fetch get_default_skills(name=...) for feature-capture ('add a design task'), "
+            "feature-design ('let's design X'/'review design tasks'), proposal-review, "
+            "superdevloop or signoff. Decide worth-doing before feature design. Implement "
+            "the full specification and use latest_rejection reasons; record design/value "
+            "doubts as concerns and carry on, or add an unexpected blocker and move on. "
+            "Independent review judges Build within the spec: fixes requiring a spec change "
+            "are concerns, not rework. Pass sound Build with serious concerns; optional "
+            "new features are ideas. 'Sign off X' requests asked/built/verified presentation "
+            "then a verdict; explicit 'approve X' needs no walkthrough. Address every concern "
+            "and judge Value, Design, Build independently in that order. Only the user "
+            "approves; signoff verdicts are approve/rework/revise/drop. Confirm the mapping "
+            "of a generic rejection; queue removal work when dropped code must go. Express "
+            "ordering with add_prerequisite, not queue position. Review milestones clear "
+            "on current-spec passed/human-reviewed work; signoff links are only for work "
+            "very likely wasted before the verdict. Satisfaction proves no branch integration. "
+            "Use remove_prerequisite with the actual decision note for obsolete/mistaken links."
         ),
         lifespan=lifespan,
     )
@@ -689,8 +698,11 @@ def create_server(
 
     @server.tool(annotations=catalog, structured_output=True)
     def get_default_skills(name: str | None = None) -> dict[str, Any]:
-        """Read a skill index, or one named workflow: feature-capture for briefs,
-        feature-design for design discussions; superdevloop/signoff for delivery."""
+        """Read the index or one skill: feature-capture for 'add a design task',
+        feature-design for 'let's design X'/'review design tasks', superdevloop for
+        queued Build work/review and signoff for the user's Value/Design/Build verdict.
+        Explicit user instructions override the reference guidance.
+        """
         return default_skills(name)
 
     return server

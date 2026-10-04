@@ -1,81 +1,80 @@
 ---
 name: task-mcp-signoff
-description: Present reviewed implementation attempts for informed human sign-off.
+description: Walk through reviewed results and record the user's explicit sign-off verdict.
 ---
 
 # Sign-off
 
-Use the scoped card's relevant attempt reference, or the known reviewed attempt ID,
-and request `get_tasks(ids=[...], specification=true, workstream_id=...,
-attempt_ids=[...])` once for the full specification and exactly that proof.
-Select its passed or explicitly human-reviewed current-spec attempt. Present
-one current task at a time with these explicit fields:
+Follow explicit user instructions over this guidance. "Sign off X" requests a
+walkthrough of what was asked, what was built and how it was verified, followed
+by the user's verdict. "Approve X" supplies that verdict; explicit approval
+without a walkthrough is valid. Only the user approves. If the user says
+"reject" with reasons, propose the matching verdict below and confirm it.
 
-- **Asked:** the approved goal and constraints.
-- **Built:** the actual delivered behavior and its difference from that goal.
-- Actual verification and independent review, with fitting inspection handles.
-- What the user should judge, material limitations and your recommendation.
-- A judgment question seeking the informed explicit verdict.
+Use the scoped card's attempt reference or a known reviewed attempt ID. Fetch
+`get_tasks(ids=[...], specification=true, workstream_id=..., attempt_ids=[...])`
+once for the complete specification and exact proof. Select a current-spec
+passed or explicitly human-reviewed attempt. List and address every recorded
+concern, with its source/author; use `concerns_has_more` and totals to retrieve
+omitted concerns through deliberate attempt reads rather than treating the
+bounded specification window as complete.
 
-Present the task's purpose and current specification separately from result,
-verification, independent review and material limitations. An informed verdict
-can judge purpose and result together. No earlier purpose decision is reused.
+Present one task at a time:
 
-Attribute every alternative to its workstream and specification revision.
-Check actual checkout/commit applicability before presenting it as locally
-delivered, especially after rebinding. An open task deliberately integrated
-elsewhere needs its own target-local result with origin/source/target provenance,
+- **Asked:** the specified goal, constraints and acceptance criteria.
+- **Built:** the delivered behavior and any difference from the specification.
+- **Verified:** actual checks, independent review, inspection handles and limits.
+- **Value:** is this work worth doing at all, given present needs?
+- **Design:** is the specified approach substantially right?
+- **Build:** is the result well implemented within that approach?
+
+Judge Value, then Design, then Build on their own evidence before implementation
+quality colours the view. Never use an earlier judgment as a premise for the
+next. Explain your recommendation and seek the user's verdict; recommend
+approval only when all three hold. A faithfully built specification can still
+have a serious value/design concern.
+
+Attribute alternatives to their workstream/specification. Check actual
+checkout/commit applicability before describing a result as locally delivered,
+especially after rebinding. Deliberate integration of open work needs a new
+target-local result citing origin attempt/workstream and source/target commits,
 target verification and fresh independent review; origin review is not inherited.
-Completed tasks retain their selected human-approved result. A later integration
-requirement is a new task, never a rewrite of completed proof.
+Completed proof is immutable; later integration requirements need a new task.
 
-Only after the user's explicit informed verdict call `signoff_task` with the
-last-read task `expected_revision`, selected `attempt_id` and its
-`expected_attempt_revision`, actual `user_note`, and one `decision`:
+Record the actual verdict with `signoff_task(task_id, expected_revision,
+attempt_id, expected_attempt_revision, decision, reasons)`, using the last
+returned task and selected attempt revisions:
 
-- `approve`: accepts purpose and result and completes the task. An applicable current-spec passed/human-reviewed attempt and clear completion
-  gates are required. Completed requirements and proof are immutable.
-- `rework`: purpose remains approved; repair this implementation, record a new
-  result and obtain fresh review. The selected attempt goes to rework.
-- `revise`: keep placement and pass the actual concrete
-  `specification_question`. The sound reviewed result survives. Recording this
-  verdict does not edit requirements or advance `spec_revision`; later real
-  edits do.
-- `drop`: keep queue placement, history, context and proof. Revival
-  requires actual supporting authorization.
-- `defer`: pause while retaining queue placement, context and proof for resumption.
+- `approve`: completes the task. Current-spec passed/human-reviewed proof and
+  clear completion gates are required.
+- `rework`: fix Build problems within the specification, then record a result
+  and obtain fresh review. The selected attempt returns to implementation.
+- `revise`: solve the Design problem substantially differently. Reasons become
+  an open question; later requirement edits advance `spec_revision`.
+- `drop`: close Value failures or obsolete/superseded work without approval.
+  If delivered code must be removed, create a queued removal task in the same
+  step, preserving the removal scope and the user's reasons.
 
-`revise`, `drop` and `defer` leave human result quality `not_judged` by default.
-Only when the user separately supplied an actual technical judgment pass
-`result_judgment="accepted"` or `"rework"` and the actual `result_note`.
-Independent review remains its own evidence; a direction change alone does not
-make a sound attempt rework. `approve` itself covers purpose and result;
-`rework` itself retains purpose and judges the implementation in need of repair.
-The service records assertions, not authenticated identity or proven reviewer
-independence. Do not sign off on behalf of the user.
+`reasons` is required for rework/revise and optional for approve/drop. There are
+no separate quality judgments. Verdicts preserve queue placement and factual
+history. Deferral uses `set_disposition`, not a sign-off verdict. Ordinary
+drop/defer needs no reviewed attempt; revival from dropped requires actual
+`authorization`. The service records assertions, not authenticated user or
+reviewer identity. `human_review` requires actual user review or explicit
+direction to skip further review; never self-issue it.
 
-Signoff and ordinary `set_disposition` return compact IDs, revisions, disposition
-and any new `unresolved_id`; signoff also returns `decision_ref` and selected
-attempt continuation state and the recorded purpose/result judgments. `get_attempt` retrieves
-one known proof. Use paged `list_events(task_id=..., include_details=true)` for
-historical signoff audit snapshots. Ordinary drop/defer needs no reviewed attempt;
-both preserve queue placement, and leaving dropped status requires
-`authorization` with the actual revival instruction. Neither dropped nor
-deferred work satisfies a prerequisite. Shared-group completion still needs all
-members human signed off across projects; there is no separate group sign-off.
-Default `review` prerequisite links may already be satisfied by a current-spec
-passed/human-reviewed attempt before sign-off, for every group member. Explicit
-`signoff` links are rare exceptions for work very likely wasted without the
-user's verdict. Rework or a spec change can block review links again without
-erasing dependent results. Satisfaction proves no local code integration.
+Default `review` blockers clear on done or current-spec passed/human-reviewed
+proof, across workstreams; every member of a nonempty group must satisfy them.
+Use `milestone="signoff"` only when proceeding before the verdict would very
+likely waste work. Dropped/deferred blockers remain unsatisfied; rework/spec
+changes can block review links again without erasing dependent results.
+Satisfaction proves no integration into the dependent branch. Shared-group
+completion still requires every member's human sign-off, with no group verdict.
 
-Use last returned entity revisions after user pauses and successful writes. No
-routine read-before-write or confirming read is needed. Fetch and reconcile for
-conflicts, uncertainty or missing information; inspect the board before retrying
-an uncertain creation. Cards never carry body previews or replacement tokens.
-For whole-field body/criteria replacements use the full-specification etag from
-your complete read or create/update acknowledgement. Valid token-bearing updates
-return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve queue placement and proof.
-Page deliberate attempt history/membership with `list_task_attempts`
-and `list_group_members`. Never write a card or summary back as a specification.
+Continue from last returned revisions after writes and user pauses. Reconcile
+conflicts; no routine confirming read is needed. Cards/summaries are not
+specifications. Whole-field body/criteria replacements need the full-spec etag;
+token-bearing updates return its successor. Fetch only needed proof with
+`get_attempt` or chosen `get_tasks` attempt IDs, and page history deliberately
+with `list_task_attempts`/`list_events`. Inspect the board before retrying an
+uncertain task creation.

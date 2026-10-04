@@ -1,76 +1,69 @@
 ---
 name: task-mcp-proposal-review
-description: Review ordinary pending proposals and unresolved items with the user; route feature design to feature-design.
+description: Review ordinary inbox proposals and unresolved items with the user; route feature design to feature-design.
 ---
 
 # Proposal and unresolved-item review
 
-For a feature awaiting design discussion, load `feature-design` from
-`get_default_skills(name="feature-design")` and follow it for research and decisions.
-An explicit design brief or `Feature design required (feature-design):` gate
-identifies that work; a generic blocker alone does not. Capturing an exploratory
-feature (including "add a design task") uses `feature-capture` first.
+Follow explicit user instructions over this guidance. Fetch `feature-design`
+through `get_default_skills` for an explicit design request/brief or
+`Feature design required (feature-design):` gate. A generic blocker alone does
+not imply design. Saving an exploratory feature, including "add a design task",
+uses `feature-capture` first. Judging delivered Value, Design and Build belongs
+to `signoff`, rather than treating recorded concerns as automatic blockers.
 
-Use `list_tasks` and full `get_tasks` to present inbox proposals and unresolved
-items with their goals, boundaries, acceptance criteria and questions.
-Agent-suggested work starts in the inbox. Queue concrete agreed work on the
-intended branch using `queue_task`; a concrete user request can authorize creation
-with `workstream_id` without another confirmation. Queueing starts no implementation.
-Explicit inbox/design-first requests take precedence. Resolve only settled items,
-folding material decisions into the spec. Edits retain queue placement; real
-requirement edits advance spec revision and leave older proof historical.
-A session working on a task may
-add an unresolved item or prerequisite directly. An observer proposes a gate
-with `handling="observer"`; it does not block until accepted. Resolve ambiguous
-scope references with stable IDs. The active coordinator should use
-`accept_gate_proposal` only for a valid gate, or `dismiss_gate_proposal` with a
-clear decision note for an unwanted, stale, or invalid proposal. Dismissal is
-audited and does not apply the gate; it still works if a proposed prerequisite
-was later dropped. Resolve unresolved items and gate proposals
-before converting a task into a group. `create_group` makes an empty group in
-the current workstream scope, while `list_groups` discovers the same group
-through its member projects. Pass the current group revision when creating or
-attaching a member, including a member in another project. Groups hold context
-and whole-group completion only; put execution blockers on concrete members.
-Preserve deferred context and audit history.
+After `init`, use `list_tasks` and relevant full specifications to present inbox
+proposals and unresolved items with their goal, scope, criteria and questions.
+Decide whether proposed work is worth doing before choosing its design.
+User-requested tasks are queued on the current branch; confirmed agent-invented
+ideas go to the inbox. Respect explicit placement instructions. Concrete requests
+authorize their exact specification without another confirmation. Use
+`create_task(workstream_id=...)` for settled new work or `queue_task` for existing
+work; queueing starts no implementation and clears no other gate. Gate exploratory
+briefs before queueing through feature-capture.
 
-Use `add_prerequisite` to add a link. For a mistaken or obsolete active link, use
-`remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` with the
-dependent task's last revision and the actual decision note. It removes either
-milestone link and immediately recalculates the gate, preserving specification,
-queue placement and proof. A deletion advances the task revision once; an absent
-link returns `changed=false` without advancing it. Stale revisions still fail,
-completed tasks stay immutable, and actor/note are audited even for a no-op.
-Use proposal dismissal for a pending observer gate; do not remove a real blocker
-merely to make the queue eligible.
+Resolve only settled items, folding decisions/reasons into the specification
+and replacing superseded wording. Edits retain placement; real requirements
+advance spec revision and leave prior proof historical. Preserve deferred
+context/history. Source/user_request are descriptive, never extra authority.
+Correct mistaken placement with `unqueue_task`, preserving requirements/proof.
 
-Prerequisites use canonical task/group IDs across any projects; shared membership
-is not required. Links do not add remote work to local scope or share attempts,
-reviews or code. Default `milestone="review"` clears on done or any current-spec
-`passed`/`human_review` attempt; every member of a nonempty group must satisfy it.
-Reserve explicit `milestone="signoff"` for rare cases where proceeding before
-the user's verdict would very likely waste work. Dropped/deferred work still
-blocks. Rework/spec changes can block review links again; dependent results stay.
-Use compact prerequisite references to inspect identity/milestone/satisfaction,
-and explicit full task reads for requirements or proof. Verify IDs and meaning before
-replacing a known prose gate: add real links first, then resolve the old item.
-Never infer dependencies by parsing prose or claim another branch is integrated.
-Milestone satisfaction is canonical state, not proof of integration into the
-dependent checkout; inspect actual code and commits before relying on it.
+A session handling a task adds necessary unresolved items/prerequisites
+directly; an observer uses `handling="observer"` to propose a nonblocking gate.
+The active coordinator accepts only valid proposals with `accept_gate_proposal`,
+or uses `dismiss_gate_proposal` with the actual reason for stale/unwanted ones,
+including proposals whose targets were dropped. Resolve IDs explicitly.
+Unresolved questions materially risk wasted work or need user-only decisions;
+routine reversible choices belong to the implementer.
 
-Origin and user_request are descriptive. Respect actual delegated authority and
-its limits; never infer it from an idea or general encouragement. Correct mistaken
-placement with `unqueue_task`, preserving requirements/revisions and proof. Queueing
-clears no other gates. Completed requirements and proof remain immutable.
+Express real ordering as blockers, not queue position. `add_prerequisite` links
+canonical tasks/groups across projects without sharing scope/proof/code.
+Default `milestone="review"` clears on done or any current-spec passed/human-
+reviewed attempt, for every member of a nonempty group. Use `signoff` only when
+proceeding before the user's verdict would very likely waste work. Dropped/
+deferred blockers remain unsatisfied; rework/spec changes can block links again
+without erasing dependent results. A satisfied blocker proves reviewed work
+exists, not integration into the dependent branch.
 
-Use last returned entity revisions after user pauses and successful writes. No
-routine read-before-write or confirming read is needed. Fetch and reconcile for
-conflicts, uncertainty or missing information; inspect the board before retrying
-an uncertain creation. Cards never carry body previews or replacement tokens.
-For whole-field body/criteria replacements use the full-specification etag from
-your complete read or create/update acknowledgement. Valid token-bearing updates
-return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve queue placement and proof.
-Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
-or `get_attempt`; page deliberate history/membership with `list_task_attempts`
-and `list_group_members`. Never write a card or summary back as a specification.
+Inspect reference identity/milestone/satisfaction; fetch remote requirements or
+proof only when needed. Verify IDs/meaning and add real links before resolving
+an old prose gate. Do not parse prose into dependencies. Remove mistaken/
+obsolete links with `remove_prerequisite(task_id, expected_revision,
+blocked_by_id, note)` and the actual decision reason. Removal preserves spec,
+queue and proof; absent links are no-ops. Dismiss pending proposals through
+proposal dismissal instead. Never remove real blockers just to make work eligible.
+
+Resolve settled questions/proposals before converting a task to a group.
+Groups hold context/whole-group completion, with execution gates on concrete
+members. `create_group` starts an empty scoped group; `list_groups` discovers it
+through member projects. Creating/attaching a member, including from another
+project, requires the current group revision. Completed requirements/proof stay
+immutable; changed needs become new tasks.
+
+Continue from last returned revisions after writes/pauses. Reconcile conflicts;
+inspect the board before retrying uncertain creation. No routine confirming
+read is needed. Cards/summaries cannot replace a specification. Whole-field
+body/criteria edits need the full-spec etag; valid updates return its successor.
+Fetch only needed proof with `get_tasks(specification=true, attempt_ids=[...])`
+or `get_attempt`, and page deliberate history/membership with
+`list_task_attempts`/`list_group_members`.

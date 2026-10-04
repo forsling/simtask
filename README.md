@@ -364,9 +364,23 @@ on the same task. An independent reviewer named differently from the implementer
 returns a verdict; the coordinator records it with `record_review`. A recorded
 `human_review` can satisfy the review gate when the user actually reviews the
 result or explicitly directs that further review is unnecessary. Agents must
-not self-issue it. One informed `signoff_task` decision selects the exact reviewed attempt.
+not self-issue it. Implementers follow the specification, record design/value
+concerns and carry on, or save an unexpected blocker and move on. Independent
+review judges Build: unattended fixes within the specification are rework;
+problems requiring a different specification are concerns. A sound Build passes
+with serious concerns, and optional extra features are new ideas. Use the task's
+`latest_rejection` reasons when implementing/reviewing.
+
+"Sign off X" requests asked/built/verified presentation followed by the user's
+verdict; explicit "approve X" is valid without a walkthrough. Address every
+recorded concern and judge Value, then Design, then Build independently, never
+using an earlier judgment as a premise. Recommend approval only when all three
+hold. Generic rejection with reasons needs a confirmed mapping: Build rework,
+substantially different Design revise, Value/obsolete work drop. Only the user
+approves. One `signoff_task` decision selects the exact reviewed attempt.
 `approve` completes it; `rework` requests repair and fresh review; `revise` returns
 to design with the reasons as an open question; `drop` closes without approval.
+When dropped delivered code must be removed, queue a removal task in the same step.
 The single `reasons` field is required for rework/revise and optional for
 approve/drop. Queue placement and factual history survive every verdict.
 Deferral is an ordinary status change. The service stores the actual verdict and
@@ -408,26 +422,27 @@ init → feature-capture → feature-design → queued implementation → review
 An ordinary **"add a task to do X"** request can authorize a concrete specification
 without another confirmation. Create it with the intended `workstream_id` to queue
 it there, or call `queue_task` for an existing task. Queueing starts no implementation.
-Explicit inbox/design-first requests take precedence. Agent-suggested additions
-and material unresolved scope stay in the inbox with appropriate design gates.
+Explicit placement instructions take precedence. Agent-suggested additions
+go to the inbox after user confirmation. User-requested design briefs belong on
+the current branch with active design gates; queueing starts no implementation.
 
 Say **"add a design task for X"** or ask to save an exploratory idea to use
 `feature-capture`. The agent does bounded preliminary research and saves the
 desired outcome, motivation, current context, tentative scope, assumptions,
 possible directions and material open questions. You do not need to answer all
-of those questions during capture. The ordinary task starts pending and gets a
-`Feature design required (feature-design): ...` unresolved item; neither the
-capture request nor the intermediate create call makes it implementation-ready.
+of those questions during capture. Create the brief in the inbox, add a
+`Feature design required (feature-design): ...` gate, then queue user-requested
+work on the current branch. The gate keeps it from implementation selection.
 
 Say **"let's design X"**, **"review design tasks"**, or **"designrev"** to use
-`feature-design`. The agent refreshes its code understanding, explains what
-exists, compares approaches and tradeoffs, recommends a path, and works through
-decisions with you. It saves the resulting specification and acceptance
+`feature-design`. First decide whether the work is worth doing, then research
+current behavior, compare approaches and work through decisions. Save the
+resulting specification and acceptance
 criteria, preserving unsettled questions. Larger features can become a group of
-concrete implementation tasks. Queue the exact resulting scope only when the user's decision covers building it
-on that branch. Design discussion alone does not authorize implementation. Keep
-unsettled questions blocking, and retain inbox placement when the user only asked
-to design. Queue moves are one atomic action; no separate scope step is needed.
+concrete implementation tasks. Queue user-requested results where the user is
+working, after adding member gates. Keep unsettled questions blocking and respect
+explicit placement instructions. Queueing and design discussion start no
+implementation; queue moves need no separate scope step.
 
 "Design task" is conversational shorthand for this workflow, not a stored task
 type. The design-gate prefix is a readable skill convention, not parsed server
@@ -540,7 +555,7 @@ advance every changed task and affected workstream revision once.
 
 Protocol 10/schema 6 replace the separate purpose-decision tools and payloads
 with `queue_task`/`unqueue_task`; the catalog advertises 42 tools. The reference
-catalog is 1.14.0, and Markdown export is `task-mcp/v5`. Schema 6 uses
+catalog is 1.15.0, and Markdown export is `task-mcp/v5`. Schema 6 uses
 `queue_members` with unique task ownership. Migration moves scoped mutable work
 without a current-spec legacy decision into the inbox. Multiple eligible scopes
 choose the most recent attempt's workstream, then oldest workstream creation time
@@ -581,8 +596,7 @@ old defer decisions and judgment fields unchanged. Schema 7 adds only an indexed
 projection over factual audit records, with no business-row rewrite. Existing
 databases use the same verified online backup/transactional migration mechanism,
 now with a `*.pre-schema-7.*.sqlite3` backup. Markdown export v5 includes latest
-rejection context and signoff history. The reference workflow skill update is a
-separate change.
+rejection context and signoff history.
 
 ## Deferred work
 
@@ -600,5 +614,4 @@ initializes empty metadata without inferring concerns from historical evidence;
 every original evidence byte survives, including reserved JSON lookalikes.
 Reviewer additions never rewrite evidence, and omitted/null/empty input preserves
 both evidence and existing metadata bytes. Refresh client discovery to see the
-optional inputs and concern projections. The fuller workflow skills guidance is
-separate from this tool contract.
+optional inputs and concern projections.

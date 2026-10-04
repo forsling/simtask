@@ -1,120 +1,104 @@
 ---
 name: task-mcp-superdevloop
-description: Implement queued tasks with a fresh implementer and reviewer.
+description: Implement queued tasks with a fresh implementer and independent reviewer.
 ---
 
 # Superdevloop
 
-Run `init` for the explicit target checkout and branch/name. Resume its `ready`
-context; settle `new_branch`, `unregistered_checkout` or `mismatch` through the
-init workflow before work. Retain that returned workstream ID, even when the
-session is handling other repositories. Use
-`get_next_action(workstream_id)` to select one explicit `implement` or `review`
-action without claiming it. It includes one full current task/specification with
-revisions/read token. `review` includes exactly one complete applicable local
-attempt and its evidence/review provenance; no second history read is needed.
-`action:null` is a useful stop; report its bounded waiting counts, including human
-sign-off. Follow shared project order across both action kinds. Pending local
-review precedes another implementation of the same task. Passed/human-reviewed
-results wait for the user. Rework returns the attempt and relevant findings.
-Do not queue feature briefs or clear design gates to drain the queue. When the
-user requests a design discussion, fetch `get_default_skills(name="feature-design")` and follow
-`feature-design`; save exploratory feature ideas through `feature-capture`.
-Shared project order determines the next eligible action. Queue placement,
-active disposition, unresolved items and prerequisites gate both autonomous
-implementation and review. Never invent a queued task or move work into
-another workstream. Agent-suggested new work is a proposal in the inbox. Concrete user-requested additions retain authorization for their
-exact scope without another confirmation; respect explicit inbox/design-first requests.
-Title tasks by observable outcome; keep progress and evidence out of task bodies.
-Group references are context, not executable tasks. Explicit group scope queues a snapshot of current local members; future members
-retain their placement; inspect whole-group
-progress separately with `get_tasks(ids=[group_id])` or `workstream_status`.
+Follow explicit user instructions over this guidance. Run `init` for the explicit
+checkout and branch/name; resolve setup through the init workflow, then retain
+its workstream ID. Use `get_next_action(workstream_id)` to select one `implement`
+or `review` action. It returns the full current spec/read token and
+`latest_rejection`; review also includes exactly one complete local attempt,
+its proof/concerns and provenance. No second history read or claim is needed.
+At `action:null`, report bounded waiting counts, including human sign-off.
 
-Continue using the durable workstream ID and its retained scope/history.
-Ordinary selection and execution gates use only its current-spec attempts;
-other-workstream or older-spec attempts are attributed history and do not block
-competing local implementations. Prerequisites are a separate canonical milestone:
-default `review` links clear on done or any current-spec `passed`/`human_review`
-attempt, across workstreams. Every member of a nonempty group must satisfy it.
-Explicit `milestone="signoff"` is a rare exception only when proceeding before
-the user's verdict would very likely waste work. Dropped/deferred blockers remain
-unsatisfied. Rework/spec changes can block review links again; dependent results
-survive. Inspect `milestone`, `satisfied` and `blocking` in prerequisite references
-to explain waits. A cleared milestone proves no integration into this checkout.
-Add required links with `add_prerequisite`. Use
-`remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` only for a
-mistaken or obsolete link, with the dependent task's last revision and the actual
-decision note. Removal immediately recalculates the gate and preserves spec,
-queue placement and proof; only a real deletion advances the revision. An absent
-link returns `changed=false`, while stale revisions and completed tasks still fail.
-The configured actor and note are audited. Never remove a real blocker merely to
-drain the queue.
-Before relying on recorded proof, inspect the
-actual checkout, working diff and relevant commits against the current full
-specification, particularly after rebinding. Reuse applicable work as part of
-normal implementation; do not add routine checkpoints or repeated repository
-scans.
+Follow shared project order across eligible actions. Pending local review
+precedes another implementation of that task; passed/human-reviewed results
+wait for the user. Queue placement, active disposition, unresolved items and
+prerequisites gate both action kinds. Never clear a real gate or move work just
+to drain the queue. User-requested additions go on the current branch without
+reconfirming settled scope; confirmed agent ideas go to the inbox. Respect
+explicit placement instructions. Fetch `feature-capture`/`feature-design` through
+`get_default_skills` for exploratory work/design discussions. Queueing starts
+no implementation. Put scope/questions in task bodies and progress/proof in
+attempts; group references are context, not executable tasks.
 
-When deliberately merging/cherry-picking an open task's implementation from
-another workstream, inspect its origin attempt/source commits and the target's
-current full specification, scope and actual checkout. Verify the integrated
-target tree and commits. Record an ordinary new target-local `record_result`
-whose evidence cites the origin attempt/workstream, actual integrated source
-and target commits, target verification and material limits. Then send that new
-attempt and target checkout to a fresh independent reviewer. Never copy the
-origin review or infer integration from a title, branch name, deployment report
-or prose. Recording checks mutability, project identity, concurrency and the full-spec token;
-it grants no approval/completion and never clears the execution gates.
-Completed tasks keep their selected human-approved proof; a later integration
-requirement is a new task. No adoption API or shared working state is needed.
+## Implement the specification
 
-Dispatch a `review` action directly to a **fresh independent reviewer** who did
-not implement the selected attempt. Give that reviewer the returned full task,
-selected complete attempt and actual checkout/artifact references. Verify their
-applicability before relying on proof, including after restart/rebind. Never
-reimplement merely because a previous session ended. The reviewer returns
-findings; the coordinator calls `record_review` with the actual reviewer identity
-and verdict. Keep explicit/manual review authority rules unchanged; selection
-never authorizes blocked work.
+Dispatch implementation to a **fresh implementer**, with the complete spec,
+returned rework proof/findings and latest rejection reasons. Inspect the actual
+checkout/diff and relevant commits, reusing applicable work after interruption
+or rebind. Build what the specification says. If its design appears substantially
+wrong, record a value/design concern and carry on rather than inventing another
+design. If unexpectedly blocked, add a concrete blocker or unresolved question
+and move on; keep that factual handoff in the task, not a partial-progress log.
 
-Dispatch an `implement` action to a **fresh implementer**, supplying any returned
-rework attempt/findings. The implementer inspects the normal checkout/diff and
-relevant history, reuses applicable work, changes code and verifies it. On a
-finished durable attempt call `record_result` once with the last-read task
-revision, `specification_etag`, actual implementer/summary/context `evidence`,
-`artifacts=[{"kind": "commit", "reference": <actual hash>} ]` (or kind
-`artifact` with the actual path/URL)
-and a `verification` string with the actual checks/outcomes and limits. The ACK
-returns attempt `id`/`revision`, `task_revision`, unchanged `queue_workstream_id`/`status`
-and active gate diagnostics; it does not echo evidence. Then select again and
-send the `review` action to a fresh reviewer. No start/claim/checkpoint is needed.
+On a finished durable result call `record_result` once with the last returned
+task revision, `specification_etag`, actual implementer/summary/context evidence,
+concrete `artifacts=[{kind: "commit"|"artifact", reference: ...}]` and
+`verification` describing actual checks, outcomes and limits. Optional
+`concerns=[{kind: "value"|"design", text: ...}]` records doubts that need a
+specification change. The ACK gives attempt/task revisions and gates, omitting
+proof/concern prose. Select again and dispatch review; no start/checkpoint is needed.
 
-If interrupted work is durably implemented but unrecorded, read the current full
-spec and inspect the actual checkout/commits before factual recording. This rare
-recovery may record proof while in the inbox, unresolved, prerequisite-blocked,
-deferred or dropped; it never queues, resumes, clears gates, completes a
-prerequisite or manufactures review. Do not use factual recording as permission
-to start autonomous implementation. Existing Git files/history are ordinary
-continuation evidence; add no routine extra scan, partial-progress log or
-external historical-example repair.
+Factual recovery of an already durable but unrecorded result requires checking
+the current full spec and actual artifacts first. Recording is possible while
+inbox, blocked, deferred or dropped, but grants no execution authority, queues
+nothing and clears no gates. Do not use that recovery path to start blocked work.
 
-If rework is requested, repeat eligible implementation and independent review;
-after the workflow's bounded retry cap add a concrete unresolved item explaining
-failed rounds and recovery options. `human_review` is reserved for an actual
-user review or an explicit user direction to skip further review. Do not
-self-issue it. Review passed makes the result ready for human sign-off only when
-all completion gates permit it; it does not complete the task. Multiple
-workstreams may record alternatives, which the user can compare at sign-off.
+## Review Build independently
 
+Dispatch a selected review directly to a **fresh independent reviewer** who did
+not implement the attempt. Supply the complete task, exact proof/concerns,
+latest rejection and actual checkout/artifact references. Check applicability
+before trusting the result. Treat the agreed design as substantially correct
+and judge Build within it.
 
-Use last returned entity revisions after user pauses and successful writes. No
-routine read-before-write or confirming read is needed. Fetch and reconcile for
-conflicts, uncertainty or missing information; inspect the board before retrying
-an uncertain creation. Cards never carry body previews or replacement tokens.
-For whole-field body/criteria replacements use the full-specification etag from
-your complete read or create/update acknowledgement. Valid token-bearing updates
-return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve queue placement and proof.
-Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
-or `get_attempt`; page deliberate history/membership with `list_task_attempts`
-and `list_group_members`. Never write a card or summary back as a specification.
+Use this test: could an implementer fix the problem unattended without changing
+the task's goal, scope, decided design or acceptance criteria? If so, it is
+`rework`; otherwise it is a value/design concern. Choices left open by the spec
+belong to the implementer, so a poor choice is rework. When faithfully following
+the spec causes a real problem, pass a sound Build with a serious concern.
+Never fail review over a Value or Design doubt. "It would be nice to add X" is
+a new idea, not a concern; ask whether to capture it rather than expanding scope.
+
+The coordinator records the actual independent identity, `pass`/`rework`,
+findings in `note` and optional structured concerns with `record_review`, using
+the last attempt revision. Concerns retain contributor attribution, preserve
+implementer concerns and affect no gate/verdict. Review pass is readiness for
+human sign-off when other gates permit, never task completion. Only the user
+approves through `signoff`. `human_review` requires actual user review or explicit
+direction to skip further review; never self-issue it. Rework repeats eligible
+implementation and fresh review, using the latest reasons; if repeated rounds
+exhaust normal recovery, save a concrete unresolved question and move on.
+
+## Blockers and branch applicability
+
+Express real ordering with `add_prerequisite`, not queue position. Default
+`milestone="review"` clears on done or any current-spec passed/human-reviewed
+attempt across workstreams; every member of a nonempty group must satisfy it.
+Use `signoff` only when proceeding before the verdict would very likely waste
+work. Dropped/deferred blockers stay unsatisfied; rework/spec changes can block
+links again while dependent results survive. Inspect milestone/satisfaction in
+returned references. A satisfied blocker means reviewed work exists, not that it
+is integrated into this branch. Remove only mistaken/obsolete links with
+`remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` and the
+actual decision reason; removal preserves specifications, placement and proof.
+
+Ordinary selection uses current-spec local attempts; other-workstream/older-spec
+proof is attributed history, not a competing local execution gate. Deliberate
+merge/cherry-pick of open work requires inspecting origin proof/source commits,
+the target's full spec and actual checkout, then verifying the integrated tree.
+Record a new target-local result citing origin attempt/workstream, actual
+source/target commits and target verification/limits, then obtain fresh review.
+Never inherit origin review or infer integration from names/prose. Completed
+selected proof is immutable; later integration needs a new task.
+
+Continue from last returned revisions after writes/pauses. Reconcile conflicts;
+inspect the board before retrying uncertain creation. No routine confirming
+reads or repeated repository scans are needed. Cards/summaries are not specs.
+Whole-field body/criteria replacements need the full-spec etag; valid updates
+return its successor. Fetch only missing requirements/exact proof with
+`get_tasks(specification=true, attempt_ids=[...])` or `get_attempt`; page
+history/membership deliberately with `list_task_attempts`/`list_group_members`.

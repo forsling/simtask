@@ -5,68 +5,58 @@ description: Discover or resume an explicit Task MCP checkout and workstream.
 
 # Init
 
-At the start of every task-using session, call `init` with the absolute path of
-the repository actually being worked on and its branch. Session cwd is only a
-possible path default; a session in a parent directory may name any child repo.
-For detached HEAD or non-Git work, supply an explicit `workstream_name`. Retain
-the returned project and workstream IDs for subsequent task calls. A session may
-retain several returned contexts at once; do not treat `list_projects` as a
+Follow explicit user instructions over this guidance. At the start of a
+task-using session call `init` with the absolute target repository path and
+branch, or `workstream_name` for detached/non-Git work. Session cwd may suggest
+a path, including a child repo, but does not select it. Retain returned project/
+workstream IDs; a session may hold several contexts. `list_projects` is not a
 current-project selector.
 
-An exact binding returns `ready`, its scope revision and compact scoped queue.
-Resume it directly, with no confirmation or separate preflight. `new_branch`
-lists registered workstreams in that project. Choose a new scope or an explicit
-rebind; neither branch names nor Git history imply scope. `unregistered_checkout`
-lists candidates and offers `create_project`, `attach_workstream`, or
-`rebind_workstream`. A mismatch requires resolving the named conflicting binding.
-Show the target path, branch/name, chosen project/workstream and scope to the
-user before calling `init` again with the chosen `action` and `confirmed=true`.
-Rebind also requires the selected `workstream_id` and its last read
-`expected_revision`. Repeat calls for an already exact binding return `ready`
-without another mutation.
+An exact binding returns `ready` and a compact scoped queue. Resume without a
+confirmation or separate preflight. `new_branch` lists workstreams;
+`unregistered_checkout` offers create/attach/rebind; `mismatch` identifies a
+conflicting binding. Choose setup, show its target path, branch/name, project/
+workstream and scope, then call `init` with the chosen `action` and
+`confirmed=true`. Rebind also needs `workstream_id` and its last
+`expected_revision`. Exact retries return ready without another mutation.
+Names and Git history never imply queue scope.
 
-Continue on that durable workstream ID; rebind preserves its scope and recorded
-history, not the files in the checkout. Before relying on an existing result,
-read the current full specification and inspect the actual checkout, working
-diff and relevant commits, especially after the binding moves. Verify the
-required behavior in the current tree. Registered bindings, branch names and
-old prose do not establish applicability. This is ordinary task verification,
-not an extra repository scan or progress checkpoint at every step.
+Rebind preserves the durable workstream's queue/history, not checkout files.
+Before relying on proof inspect the current full specification, actual checkout/
+diff and relevant commits, especially after a binding move. Verify behavior in
+the tree; registered bindings or prose do not establish applicability. This is
+ordinary verification, not an extra scan/checkpoint at every step.
 
-`none` begins with an empty queue. A workstream ID/name as the first expression
-term snapshots its actual queue. With `set_scope`, pass the destination's last
-returned `expected_revision`. `+task-id` and `-task-id` adjust that snapshot.
-Explicit `+group-id` queues its current local members; later membership preserves
-placement. Exclusions apply to the current expression. Selected tasks move from
-their previous queues, so each task keeps one owner. Only members owned by this workstream's project
-enter its executable queue; `groups` and `referenced_groups` show global
-progress separately. Use `list_workstreams` for global or project
-filtered candidates and `workstream_status` to inspect a scoped queue without
-binding the current session to it. Those calls report registered bindings and
-task state, never whether an agent is running. The older setup and `preflight`
-primitives remain available to existing clients.
+`none` starts empty. A workstream ID/name as the first `set_scope` term snapshots
+its queue; `+task-id`/`-task-id` adjust it. Explicit groups snapshot current local
+members, preserving future members' placement. Selected tasks move ownership,
+never duplicate it. Pass the destination's last workstream revision. Only its
+project's concrete tasks execute; groups/referenced groups show global context.
+Use `list_workstreams` for global/project discovery and `workstream_status` for
+scoped counts/gates without binding this session. State does not track agent
+liveness. Older setup/preflight primitives remain available.
 
-An ordinary "add a task" request does not automatically require feature design.
-Queue concrete user-authorized scope on the intended branch without asking again;
-preserve explicit inbox/design-first requests and leave agent-invented scope in the inbox. Queueing
-work does not start implementation.
+User-requested tasks belong on the current branch, including gated design
+briefs; confirmed agent-invented ideas belong in the inbox. Respect explicit
+placement instructions and reuse concrete authorization without asking again.
+Queueing starts no implementation. Express real ordering with blockers, not
+queue position. Default review links clear on current-spec passed/human-reviewed
+work; signoff links are only for work very likely wasted before the verdict.
+Satisfaction proves no integration into the dependent branch.
 
-For "add a design task" or an exploratory feature idea to save for later, fetch
-`get_default_skills(name="feature-capture")` and follow it. For "let's
-design X", "review design tasks" or `designrev`, use `feature-design`.
-These are ordinary tasks with unresolved design gates; no client installation
-or new task type is needed. Use `proposal-review` for ordinary proposals and
-non-design unresolved items, and `signoff` for judging delivered work.
+Fetch `get_default_skills(name=...)` for the relevant workflow:
+`feature-capture` for "add a design task"/saving an exploratory brief;
+`feature-design` for "let's design X"/"review design tasks"/`designrev`;
+`proposal-review` for other proposals/questions; `superdevloop` for autonomous
+queued implementation/review; `signoff` for a walkthrough of delivered work.
+"Sign off X" requests that walkthrough and a verdict; "approve X" supplies the
+user's verdict and does not require another walkthrough. Skills need no client
+installation or new task type.
 
-
-Use last returned entity revisions after user pauses and successful writes. No
-routine read-before-write or confirming read is needed. Fetch and reconcile for
-conflicts, uncertainty or missing information; inspect the board before retrying
-an uncertain creation. Cards never carry body previews or replacement tokens.
-For whole-field body/criteria replacements use the full-specification etag from
-your complete read or create/update acknowledgement. Valid token-bearing updates
-return a refreshed token; unchanged specifications retain it. Title/summary-only
-edits need no full read. Summary edits preserve queue placement and proof.
-Retrieve exactly needed proof with `get_tasks(specification=true, attempt_ids=[...])`
-or `get_attempt`; page deliberate history/membership with `list_task_attempts`
-and `list_group_members`. Never write a card or summary back as a specification.
+Continue from last returned revisions after writes/pauses. Reconcile conflicts;
+inspect the board before retrying uncertain creation. No routine confirming
+reads are needed. Cards/summaries are not specifications. Whole-field body/
+criteria replacements need the full-spec etag; valid updates return its successor.
+Fetch only needed full specifications and chosen proof with `get_tasks(
+specification=true, attempt_ids=[...])` or `get_attempt`, and page deliberate
+history/membership with `list_task_attempts`/`list_group_members`.

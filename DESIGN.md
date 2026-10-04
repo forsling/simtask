@@ -170,6 +170,21 @@ or an explicit human review must pass an attempt before human sign-off. Sign-off
 selects a reviewed attempt. Rejection chooses rework on the current specification or opens an unresolved
 specification question. Queue placement stays unchanged. The service cannot authenticate the reviewer or the user's verdict;
 workflow clients must obtain and accurately record those decisions.
+"Sign off" requests asked/built/verified presentation and then a verdict;
+explicit approval needs no walkthrough. Judge Value, Design and Build
+independently in that order, addressing every concern. Only the user approves.
+Build failures map to rework, substantially wrong Design to revise, and Value
+failures/obsolete work to drop; queue removal work when dropped code must go.
+Confirm the matching verdict for a generic rejection with reasons.
+
+Implementers follow the spec and record value/design concerns instead of
+substituting a different design. Unexpected blockers/questions are saved before
+moving on. Independent review assumes the agreed design is substantially right:
+an unattended fix within goal/scope/decided design/criteria is Build rework,
+including poor choices left open to the implementer. A real problem caused by
+faithful specification is a concern, so sound Build passes with it. Value/design
+doubts never fail review; optional additions are new ideas. Explicit user
+instructions override this reference workflow guidance.
 
 Continuation keeps the durable workstream ID, scope and history through
 `init`/rebind. Recorded state does not prove checkout applicability: callers
@@ -260,20 +275,23 @@ semantics. The service does not authenticate the human behind a token.
 The initial recommended path is `init -> proposal/unresolved review ->
 superdevloop -> sign-off`. Features with unsettled design use `feature-capture`
 then `feature-design` before implementation. Capture does bounded research and
-saves an inbox feature brief with an active unresolved design gate. Inbox
-creation precedes adding the gate and any requested branch placement so there is
-no queued, ungated intermediate task. The human-readable `Feature design required (feature-design):` prefix
+saves a feature brief with an active unresolved design gate. Create in the
+inbox, add the gate, then queue user-requested briefs on the current branch;
+confirmed agent ideas stay in the inbox. Explicit placement instructions override
+these defaults. This avoids a queued, ungated intermediate task. The readable
+`Feature design required (feature-design):` prefix
 identifies the workflow by convention; no schema, task type or parser is added.
-Design resumes those briefs, researches current behavior, compares alternatives,
-recommends an approach and records the user's decisions. Selection includes
+Design first asks whether the work is worth doing, then researches behavior,
+compares approaches and records the user's decisions. Selection includes
 inbox tasks alongside queued tasks with unresolved gates.
 Unrelated unresolved items do not automatically imply feature design.
 
 Design saves the agreed specification before resolving settled gates, keeping
 unfinished decisions blocked. Unqueue the parent before clearing settled gates for decomposition; children
-then start in the inbox. Queue only the concrete agreed specifications. Prior informed
-authorization remains usable; a capture/design request alone is not permission
-to implement. Finishing design creates no implementation attempt or review.
+then start in the inbox. Add member gates and queue the resulting user-requested
+specifications where the user is working. Prior decisions remain usable;
+queueing and design discussion start no implementation. Finishing design creates
+no implementation attempt or review.
 MCP instructions route familiar design-task language to the two packaged skills
 through `get_default_skills`, making them discoverable without client installation.
 The database enforces the gates; interpreting language, researching choices and
