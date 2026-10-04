@@ -7,6 +7,23 @@ user data directory. The browser cannot select another database. The MCP
 `open_task_viewer` tool explicitly starts/reuses the same viewer for its Store
 and returns the link. No browser is launched automatically.
 
+## Location URLs
+
+After the launch link connects, the address bar shows where you are, for example
+`/#/project/<project-id>/workstream/<workstream-id>/task/<task-id>`. The view is
+`all` (All tasks), `workstream/<id>`, `groups` (the project's task groups) or
+`shared-groups`, optionally followed by `task/<id>` or, in group views,
+`group/<id>`. Reloading returns to the same project, view and selection.
+Back/forward move between locations visited in the viewer: sidebar links, task
+and group clicks, group chips, prerequisite, member and workstream links and **Next agent
+action** each add an entry, while `j`/`k` moves and automatic first-task selection
+update the current entry. A copied or bookmarked location reopens in a tab that
+already holds the token; elsewhere, open the private launch link first, which
+starts on the first project's first workstream. Location URLs never contain the
+token. A location whose project, workstream, task or group no longer exists, or
+which the task has left, opens the nearest valid view (the project's All tasks,
+the first project, or the view's first item) with a short notice.
+
 ## Working with tasks
 
 - The sidebar lists projects; the current project expands to its registered
@@ -94,8 +111,10 @@ a high-entropy token in a custom header, JSON content type, and the exact
 same-origin Origin header. No CORS permission is granted; cross-site browser
 requests are rejected. CSP disallows remote resources, framing and inline
 scripts. The private link places its token in the URL fragment, which is not
-sent to HTTP logs; the app immediately removes it from the address bar and
-retains it in that tab's session storage. Restarting the viewer rotates the
+sent to HTTP logs; the app immediately removes it from the address bar,
+retains it in that tab's session storage and replaces it with a token-free
+location URL. Location URLs are fragments too, so the server still serves only
+`/` and its assets. Restarting the viewer rotates the
 token. Other local processes with the same user's filesystem privileges remain
 inside this trust boundary; actor labels and human assertions are not identity
 authentication.

@@ -62,7 +62,9 @@ wraps:
 .venv/bin/task-mcp ui --db /absolute/path/tasks.sqlite3 --stop
 ```
 
-Open the private link printed by the command. Repeated launches reuse the live
+Open the private link printed by the command. The address bar then shows a
+token-free location URL (project, view and selected task or group), so reload,
+back/forward and bookmarks keep your place in a tab that holds the token. Repeated launches reuse the live
 viewer for that database. The explicit `open_task_viewer` MCP tool returns the
 same link for its configured database; it does not change client approvals or
 open a browser automatically. The listener stays running after the CLI or MCP
@@ -90,7 +92,8 @@ remain available through MCP.
 The listener binds only `127.0.0.1` on an ephemeral port. Its private launch link
 is a bearer credential: keep it private. Host/Origin checks, a custom token
 header, strict content policy and no external assets protect browser access.
-The token is removed from the address bar and kept in per-tab session storage.
+The token is removed from the address bar and kept in per-tab session storage;
+location URLs never contain it.
 Reads still append Store audit events. Whole-server pre-approval now includes
 the ability to explicitly launch this local listener and expose the configured
 database to a token-holding browser; it is not a read-only viewer. Nothing here

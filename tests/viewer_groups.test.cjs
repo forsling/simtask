@@ -18,7 +18,7 @@ const get = id => {
 const context = vm.createContext({
   document: {getElementById: get, createElement: element, addEventListener() {}, querySelectorAll() {return [];}},
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
-  sessionStorage: {getItem() {return "";}}, history: {replaceState() {}},
+  sessionStorage: {getItem() {return "";}}, history: {replaceState() {}, pushState() {}},
 });
 const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
 const run = code => vm.runInContext(code, context);

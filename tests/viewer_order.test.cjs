@@ -46,7 +46,7 @@ const context = vm.createContext({
   document: {getElementById: get, createElement: element, createElementNS: (_, tag) => element(tag), createDocumentFragment: element,
     createTextNode: text => Object.assign(element(), {textContent: text}), addEventListener() {}, querySelectorAll: () => []},
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
-  sessionStorage: {getItem: () => ""}, history: {replaceState() {}},
+  sessionStorage: {getItem: () => ""}, history: {replaceState() {}, pushState() {}},
 });
 const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
