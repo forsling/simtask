@@ -1084,6 +1084,13 @@ class Store:
                         "AND name=?",
                         (chosen["id"], workstream_name),
                     ).fetchone()
+
+            def binding(ws_branch, ws_name, ws_path):
+                # A name-bound (detached or non-Git) binding has no branch to report.
+                if ws_branch:
+                    return f"branch {ws_branch!r} at {ws_path}"
+                return f"name {ws_name!r} (no branch) at {ws_path}"
+
             if candidate and candidate["checkout_path"] == canonical and selected:
                 ws = dict(candidate)
                 if workstream_id and workstream_id != ws["id"]:
@@ -1103,8 +1110,9 @@ class Store:
                         )
                     else:
                         message = (
-                            f"Workstream {target['name']!r} is bound to branch "
-                            f"{target['branch']!r} at {target['checkout_path']}; {local}"
+                            f"Workstream {target['name']!r} is bound to "
+                            f"{binding(target['branch'], target['name'], target['checkout_path'])}"
+                            f"; {local}"
                         )
                     return {
                         "state": "mismatch",
@@ -1145,18 +1153,17 @@ class Store:
                         "branch": branch,
                         "project": chosen,
                         "workstream": target,
-                        "choices": [
-                            "new_workstream" if selected else "attach_workstream",
-                            "rebind_workstream",
-                        ],
+                        # rebind_workstream cannot move a workstream across projects
+                        # (workstream_project_mismatch), so it is not offered here.
+                        "choices": ["new_workstream" if selected else "attach_workstream"],
                     }
                 return {
                     "state": "mismatch",
                     "message": (
-                        f"Workstream {target['name']!r} is bound to branch "
-                        f"{target['branch']!r} at {target['checkout_path']}, not branch "
-                        f"{branch!r} at {canonical}; confirm init action=rebind_workstream "
-                        "to move it, or choose another workstream"
+                        f"Workstream {target['name']!r} is bound to "
+                        f"{binding(target['branch'], target['name'], target['checkout_path'])}"
+                        f", not {binding(branch, workstream_name, canonical)}; confirm init "
+                        "action=rebind_workstream to move it, or choose another workstream"
                     ),
                     "path": canonical,
                     "branch": branch,

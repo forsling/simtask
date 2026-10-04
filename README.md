@@ -159,7 +159,8 @@ workstream identities, revision, binding and compact scoped queue. No confirmati
 is needed for ordinary resume. Passing a known `workstream_id` also checks that it
 is bound to this checkout and branch; otherwise `mismatch` reports the requested
 workstream's own binding (or its other project), any workstream already bound
-here as `bound_workstream`, and the choices; an unknown ID is an
+here as `bound_workstream`, and the choices (`rebind_workstream` only for a
+workstream of the same project, since rebinding never crosses projects); an unknown ID is an
 `unknown_workstream` error. A known checkout on an
 unbound branch returns `new_branch` and that project's registered workstream
 candidates. An unknown checkout returns `unregistered_checkout` with project and

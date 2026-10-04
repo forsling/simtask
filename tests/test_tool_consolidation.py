@@ -138,7 +138,18 @@ def test_init_actions_and_checkout_branch_match_check(mcp, tmp_path):
         )
         cross_new = await call("init", path=repo, branch="topic", workstream_id=foreign_id)
         assert cross_new["state"] == "mismatch" and cross_new["workstream"]["id"] == foreign_id
-        assert "another project" in cross_new["message"] and cross_new["choices"]
+        assert "another project" in cross_new["message"]
+        # Rebinding never crosses projects, so it is not offered for a foreign workstream.
+        assert cross_new["choices"] == ["new_workstream"]
+        assert "workstream_project_mismatch" in await fail(
+            "init",
+            path=repo,
+            branch="topic",
+            action="rebind_workstream",
+            workstream_id=foreign_id,
+            expected_revision=foreign["workstream"]["revision"],
+            confirmed=True,
+        )
         moved = await call("init", path=other, branch="hotfix", workstream_id=main)
         assert moved["state"] == "mismatch" and moved["workstream"]["id"] == main
         assert "'main'" in moved["message"] and other in moved["message"]
@@ -156,6 +167,164 @@ def test_init_actions_and_checkout_branch_match_check(mcp, tmp_path):
         assert rebound["workstream"]["id"] == main
         assert rebound["workstream"]["checkout_path"] == other
         assert (await call("init", path=other, branch="hotfix"))["workstream"]["id"] == main
+
+    run(exercise())
+
+
+def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
+    repo, other = str(tmp_path / "repo"), str(tmp_path / "other")
+    foreign_path, loose = str(tmp_path / "foreign"), str(tmp_path / "loose")
+
+    def tools(tag):
+        server = create_server(Store(tmp_path / f"{tag}.sqlite3"), tracing=False)
+
+        async def call(name, **arguments):
+            result = await server.call_tool(name, arguments)
+            assert not result.is_error, result.content
+            return result.structured_content
+
+        return call
+
+    async def setup(call):
+        made = await call("init", path=repo, branch="main", action="create_project", confirmed=True)
+        project = made["project"]["id"]
+        ids = {"main": made["workstream"]["id"], "project": project}
+        for key, extra in (
+            ("feature", {"path": repo, "branch": "feature", "action": "new_workstream"}),
+            ("notes", {"path": repo, "workstream_name": "notes", "action": "new_workstream"}),
+            (
+                "release",
+                {"path": other, "branch": "release", "action": "attach_workstream"}
+                | {"project": project},
+            ),
+            ("foreign", {"path": foreign_path, "branch": "main", "action": "create_project"}),
+        ):
+            ids[key] = (await call("init", confirmed=True, **extra))["workstream"]["id"]
+        return ids
+
+    # (request, exact choices); a request is built from the setup IDs.
+    scenarios = {
+        "bound_here_same_project": (
+            lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["feature"]},
+            ["use_bound_workstream", "init_requested_binding"],
+        ),
+        "bound_here_name_bound_target": (
+            lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["notes"]},
+            ["use_bound_workstream", "init_requested_binding"],
+        ),
+        "bound_here_foreign": (
+            lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["foreign"]},
+            ["use_bound_workstream", "init_requested_binding"],
+        ),
+        "unbound_branch_foreign": (
+            lambda ids: {"path": repo, "branch": "topic", "workstream_id": ids["foreign"]},
+            ["new_workstream"],
+        ),
+        "unregistered_with_project_foreign": (
+            lambda ids: (
+                {"path": loose, "branch": "topic", "project": ids["project"]}
+                | {"workstream_id": ids["foreign"]}
+            ),
+            ["attach_workstream"],
+        ),
+        "unbound_branch_same_project": (
+            lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["feature"]},
+            ["rebind_workstream", "new_workstream"],
+        ),
+        "unbound_branch_name_bound_target": (
+            lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["notes"]},
+            ["rebind_workstream", "new_workstream"],
+        ),
+        "unbound_name_same_project": (
+            lambda ids: (
+                {"path": repo, "workstream_name": "scratch"} | {"workstream_id": ids["feature"]}
+            ),
+            ["rebind_workstream", "new_workstream"],
+        ),
+        "unregistered_without_project": (
+            lambda ids: {"path": loose, "branch": "topic", "workstream_id": ids["feature"]},
+            ["rebind_workstream", "attach_workstream"],
+        ),
+        # No choices list: the message offers rebind_workstream of the reported binding.
+        "branch_bound_to_other_checkout": (
+            lambda ids: {"path": repo, "branch": "release"},
+            None,
+        ),
+    }
+
+    async def follow(call, request, response, choice):
+        keys = ("path", "branch", "workstream_name")
+        here = {key: request[key] for key in keys if key in request}
+        target = response["workstream"]
+        if choice == "use_bound_workstream":
+            expected = response["bound_workstream"]["id"]
+            followed = await call("init", **here)
+        elif choice == "init_requested_binding":
+            expected = target["id"]
+            own = {"branch": target["branch"]} if target["branch"] else {}
+            followed = await call(
+                "init",
+                path=target["checkout_path"],
+                **(own or {"workstream_name": target["name"]}),
+            )
+        elif choice == "rebind_workstream":
+            expected = target["id"]
+            followed = await call(
+                "init",
+                **here,
+                action=choice,
+                workstream_id=target["id"],
+                expected_revision=target["revision"],
+                confirmed=True,
+            )
+            assert followed["workstream"]["checkout_path"] == response["path"]
+            assert followed["workstream"]["branch"] == request.get("branch")
+        else:
+            expected = None
+            project = (response["project"] or {}).get("id", target["project_id"])
+            followed = await call(
+                "init",
+                **here,
+                action=choice,
+                **({"project": project} if choice == "attach_workstream" else {}),
+                confirmed=True,
+            )
+            assert followed["changed"] and followed["project"]["id"] == project
+            assert followed["workstream"]["id"] != target["id"]
+            assert followed["workstream"]["checkout_path"] == response["path"]
+            assert followed["workstream"]["branch"] == request.get("branch")
+        assert followed["state"] == "ready", (choice, followed)
+        if expected:
+            assert followed["workstream"]["id"] == expected, choice
+        # The followed choice is now a stable binding: a plain resume returns it unchanged.
+        if choice not in {"use_bound_workstream", "init_requested_binding"}:
+            resumed = await call("init", **here)
+            assert resumed["state"] == "ready" and not resumed["changed"]
+            assert resumed["workstream"]["id"] == followed["workstream"]["id"]
+
+    async def mismatch(label, call, choices):
+        request = scenarios[label][0](await setup(call))
+        response = await call("init", **request)
+        assert response["state"] == "mismatch", label
+        assert response.get("choices") == choices, label
+        assert "None" not in response["message"], label
+        return request, response
+
+    async def exercise():
+        followed = 0
+        for label, (_, choices) in scenarios.items():
+            offered = choices
+            if choices is None:
+                _, response = await mismatch(label, tools(f"{label}-probe"), None)
+                assert "action=rebind_workstream" in response["message"]
+                offered = ["rebind_workstream"]
+            for choice in offered:
+                # Follow each choice from the same starting state in its own database.
+                call = tools(f"{label}-{choice}")
+                request, response = await mismatch(label, call, choices)
+                await follow(call, request, response, choice)
+                followed += 1
+        assert followed == 17
 
     run(exercise())
 
