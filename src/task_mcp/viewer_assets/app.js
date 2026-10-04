@@ -442,6 +442,9 @@ async function changeScope(id) {
 }
 async function reload({ quiet = false } = {}) {
   const generation = ++state.listGeneration;
+  // A row click or navigation that starts while this board loads owns the detail pane
+  // (and bumps state.generation); auto-selecting here would cancel it.
+  const detailGeneration = state.generation;
   const project = state.project;
   const groups = state.groups;
   const stream = state.stream;
@@ -478,6 +481,7 @@ async function reload({ quiet = false } = {}) {
     }, "btn small"));
     renderNav();
     renderList();
+    if (detailGeneration !== state.generation) return;
     if (state.selected && (rows.some((r) => r.id === state.selected) || (groups && state.linkedGroup === state.selected))) await selectTask(state.selected, { quiet });
     else if (rows.length) {
       const first = orderedRows()[0] || rows[0];
@@ -493,7 +497,7 @@ async function reload({ quiet = false } = {}) {
     }
   } catch (e) {
     if (stale()) return;
-    $("detail").classList.remove("loading");
+    if (detailGeneration === state.generation) $("detail").classList.remove("loading");
     toast(e.message, true);
     $("list").replaceChildren(emptyState("Couldn't load tasks", "Refresh to try again."));
   }

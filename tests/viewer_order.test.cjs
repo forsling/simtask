@@ -9,7 +9,7 @@ const all = [];
 const roots = new Map();
 function element(tag = "div") {
   const node = {tag, children: [], textContent: "", disabled: false, hidden: false, draggable: false,
-    value: "", checked: false, required: false, dataset: {}, className: "", parentElement: null,
+    value: "", checked: false, required: false, dataset: {}, style: {}, className: "", parentElement: null,
     get classList() {
       const self = this, names = () => self.className.split(/\s+/).filter(Boolean);
       const list = {
@@ -83,10 +83,11 @@ run(`
       server.order[w] = [...payload.task_ids, ...rest]; server.revision[w]++;
       return {workstream_id: w, workstream_order_revision: server.revision[w], changed: true};
     }
+    if (action === "details") return {items: payload.ids.map(id => id === "group" ? group : {id, object_type: "task", title: id.toUpperCase()})};
     throw new Error("unexpected " + action);
   };
   pages = async () => [{id: "a", branch: "A", project_id: "project"}, {id: "b", branch: "B", project_id: "project"}];
-  selectTask = async () => {};
+  realSelectTask = selectTask; selectTask = async () => {};
   state.project = "project"; state.projects = [{id: "project", name: "Project"}]; state.stream = "a";
 `);
 
@@ -266,7 +267,79 @@ async function test() {
   deq(run("server.order.a"), ["beta", "inbox", "hidden", "alpha", "done"]);
   deq(shown(), ["beta", "inbox", "hidden", "alpha", "done"]);
   assert.equal(run("state.orderRevision"), 32);
-  run("api = baseApi;");
+
+  // Navigating while a board load is in flight: the load must not swallow the click by
+  // auto-selecting a row when it lands (the real selectTask bumps state.generation).
+  run(`
+    selectTask = realSelectTask; includedWorkstreams = async () => [];
+    renderDetail = t => $("detail").replaceChildren(node("p", "detail:" + t.id));
+    basePages = pages; pagesGate = null; detailsGate = null;
+    group = {id: "group", object_type: "group", title: "GROUP", progress: {total: 1, done: 0, by_project: {project: {total: 1, done: 0}}}};
+    pages = async (action, ...args) => {
+      if (pagesGate) { const gate = pagesGate; pagesGate = null; await gate; } // holds only the next lookup
+      return action === "groups" ? [group] : basePages(action, ...args);
+    };
+    api = async (action, payload) => {
+      if (action === "tasks" && tasksGate) await tasksGate;
+      if (action === "details" && detailsGate) await detailsGate;
+      return baseApi(action, payload);
+    };
+    holdPages = () => { pagesGate = new Promise(resolve => { releasePages = resolve; }); };
+    holdDetails = () => { detailsGate = new Promise(resolve => { releaseDetails = () => { detailsGate = null; resolve(); }; }); };
+  `);
+  const detailText = () => descendants(get("detail")).map(n => n.textContent).join(" ");
+  const headingText = () => descendants(get("heading")).map(n => typeof n === "string" ? n : n.textContent).join(" ");
+
+  // Workstream link during a refresh: the refresh lands first, then the link's lookup.
+  run("hold(); holdPages();");
+  let board = run("reload({quiet: true})");
+  let nav = run('navigateWorkstream({id: "b", project_id: "project"})');
+  await ticks();
+  run("releaseTasks()");
+  await board;
+  deq(shown(), ["beta", "inbox", "hidden", "alpha", "done"], "The refresh of A lands first");
+  run("releasePages()");
+  await nav;
+  assert.equal(run("state.stream"), "b", "The workstream link was not swallowed by the refresh");
+  assert.match(headingText(), /\bB\b/);
+  deq(shown(), ["beta", "alpha", "done"]);
+  assert.equal(run("state.orderRevision"), 3);
+  assert.equal(run("state.selected"), "beta");
+  assert.match(detailText(), /detail:beta/);
+  deq(run("server.order.a"), ["beta", "inbox", "hidden", "alpha", "done"], "Navigation saves nothing");
+
+  // Parent-group chip during a post-drop reconcile in A: the save lands, then the group opens.
+  await run('changeScope("a")');
+  run("hold(); holdDetails();");
+  pending = run('commitDrop("done", "beta", "before")');
+  await ticks();
+  nav = run('openGroup("group")');
+  await ticks();
+  run("releaseTasks()");
+  await ticks();
+  deq(shown(), ["done", "beta", "inbox", "hidden", "alpha"], "The reconcile still lands");
+  assert.equal(run("state.orderRevision"), 33);
+  run("releaseDetails()");
+  assert.equal(await pending, true);
+  await nav;
+  assert.equal(run("state.groups"), "project", "The group chip was not swallowed by the reconcile");
+  assert.equal(run("state.selected"), "group");
+  assert.match(detailText(), /detail:group/);
+  deq(shown(), ["group"]);
+
+  // A row click during a refresh still owns the detail pane, and the refresh still lands.
+  run("pages = basePages;");
+  await run('changeScope("a")');
+  run("hold();");
+  board = run("reload({quiet: true})");
+  await ticks();
+  await run('selectTask("inbox", {open: true})');
+  run("releaseTasks()");
+  await board;
+  assert.equal(run("state.selected"), "inbox");
+  assert.match(detailText(), /detail:inbox/);
+  assert.equal(run("state.orderRevision"), 33);
+  run("selectTask = async () => {}; api = baseApi;");
 
   // Project-wide and group views have no workstream order to edit.
   await run("changeScope(null)");
@@ -286,6 +359,6 @@ async function test() {
   assert.equal(await run('commitDrop("done", "beta", "before")'), true);
   deq(reorders().at(-1).payload, {workstream_id: "b", task_ids: ["done"], expected_order_revision: 3});
   deq(run("server.order.b"), ["done", "beta", "alpha"]);
-  deq(run("server.order.a"), ["beta", "inbox", "hidden", "alpha", "done"]);
+  deq(run("server.order.a"), ["done", "beta", "inbox", "hidden", "alpha"]);
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});
