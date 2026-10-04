@@ -1128,6 +1128,39 @@ class Store:
             if candidate and not (
                 action == "rebind_workstream" and confirmed and workstream_id == candidate["id"]
             ):
+                if workstream_id and workstream_id != candidate["id"]:
+                    # Another workstream is named while this branch is bound elsewhere: report
+                    # the requested workstream and the branch's actual binding, never one in
+                    # place of the other; an unknown ID raises unknown_workstream.
+                    target = self._workstream(db, workstream_id)
+                    bound = dict(candidate)
+                    here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
+                    if target["project_id"] != chosen["id"]:
+                        requested = (
+                            f"Workstream {target['name']!r} belongs to another project "
+                            f"({target['project_id']})"
+                        )
+                    else:
+                        requested = (
+                            f"Workstream {target['name']!r} is bound to "
+                            f"{binding(target['branch'], target['name'], target['checkout_path'])}"
+                        )
+                    return {
+                        "state": "mismatch",
+                        "message": (
+                            f"{requested}; {here} of project {chosen['name']!r} is bound to "
+                            f"workstream {bound['name']!r} ({bound['id']}) at another checkout "
+                            f"({bound['checkout_path']}); init the requested workstream at its "
+                            "own binding, or confirm init action=rebind_workstream with "
+                            f"workstream_id={bound['id']} to move that workstream here"
+                        ),
+                        "path": canonical,
+                        "branch": branch,
+                        "project": chosen,
+                        "workstream": target,
+                        "bound_workstream": bound,
+                        "choices": ["rebind_bound_workstream", "init_requested_binding"],
+                    }
                 return {
                     "state": "mismatch",
                     "message": (

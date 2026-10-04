@@ -183,6 +183,12 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
             assert not result.is_error, result.content
             return result.structured_content
 
+        async def fail(name, **arguments):
+            with pytest.raises(ToolError) as error:
+                await server.call_tool(name, arguments)
+            return str(error.value)
+
+        call.fail = fail
         return call
 
     async def setup(call):
@@ -245,6 +251,19 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
             lambda ids: {"path": loose, "branch": "topic", "workstream_id": ids["feature"]},
             ["rebind_workstream", "attach_workstream"],
         ),
+        # Another workstream named while this branch is bound at another checkout.
+        "branch_bound_elsewhere_same_project": (
+            lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["feature"]},
+            ["rebind_bound_workstream", "init_requested_binding"],
+        ),
+        "branch_bound_elsewhere_name_bound_target": (
+            lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["notes"]},
+            ["rebind_bound_workstream", "init_requested_binding"],
+        ),
+        "branch_bound_elsewhere_foreign": (
+            lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["foreign"]},
+            ["rebind_bound_workstream", "init_requested_binding"],
+        ),
         # No choices list: the message offers rebind_workstream of the reported binding.
         "branch_bound_to_other_checkout": (
             lambda ids: {"path": repo, "branch": "release"},
@@ -267,14 +286,15 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 path=target["checkout_path"],
                 **(own or {"workstream_name": target["name"]}),
             )
-        elif choice == "rebind_workstream":
-            expected = target["id"]
+        elif choice in {"rebind_workstream", "rebind_bound_workstream"}:
+            moving = target if choice == "rebind_workstream" else response["bound_workstream"]
+            expected = moving["id"]
             followed = await call(
                 "init",
                 **here,
-                action=choice,
-                workstream_id=target["id"],
-                expected_revision=target["revision"],
+                action="rebind_workstream",
+                workstream_id=moving["id"],
+                expected_revision=moving["revision"],
                 confirmed=True,
             )
             assert followed["workstream"]["checkout_path"] == response["path"]
@@ -324,7 +344,46 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 request, response = await mismatch(label, call, choices)
                 await follow(call, request, response, choice)
                 followed += 1
-        assert followed == 17
+        assert followed == 23
+
+        # The branch-bound-elsewhere report names both workstreams, not one for the other.
+        call = tools("bound-elsewhere-report")
+        ids = await setup(call)
+        report = await call("init", path=repo, branch="release", workstream_id=ids["feature"])
+        assert report["workstream"]["id"] == ids["feature"]
+        assert report["bound_workstream"]["id"] == ids["release"]
+        assert "'feature'" in report["message"] and ids["release"] in report["message"]
+        assert str(tmp_path / "other") in report["message"]
+        foreign = await call("init", path=repo, branch="release", workstream_id=ids["foreign"])
+        assert "another project" in foreign["message"] and ids["release"] in foreign["message"]
+        # A confirmed rebind of the requested workstream onto the occupied branch reports the
+        # same mismatch and changes nothing.
+        refused = await call(
+            "init",
+            path=repo,
+            branch="release",
+            action="rebind_workstream",
+            workstream_id=ids["feature"],
+            expected_revision=report["workstream"]["revision"],
+            confirmed=True,
+        )
+        assert refused["state"] == "mismatch" and refused["choices"] == report["choices"]
+        assert refused["workstream"] == report["workstream"]
+        kept = await call("init", path=other, branch="release")
+        assert kept["workstream"] == report["bound_workstream"] and not kept["changed"]
+        # An unknown requested ID is an unknown-workstream error, not a binding report.
+        assert "unknown_workstream" in await call.fail(
+            "init", path=repo, branch="release", workstream_id="wst_nope"
+        )
+        assert "unknown_workstream" in await call.fail(
+            "init",
+            path=repo,
+            branch="release",
+            action="rebind_workstream",
+            workstream_id="wst_nope",
+            expected_revision=1,
+            confirmed=True,
+        )
 
     run(exercise())
 

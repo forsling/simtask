@@ -165,7 +165,9 @@ workstream of the same project, since rebinding never crosses projects); an unkn
 unbound branch returns `new_branch` and that project's registered workstream
 candidates. An unknown checkout returns `unregistered_checkout` with project and
 workstream candidates and the choices `create_project`, `attach_workstream`, and
-`rebind_workstream`. A branch bound to another checkout returns `mismatch`.
+`rebind_workstream`. A branch bound to another checkout returns `mismatch`; when
+another `workstream_id` is requested, it reports that workstream and the branch's
+binding as `bound_workstream` separately.
 Candidates are recorded bindings, not scanned Git refs or running agents. The
 initial call may append an audit event but changes no project, task, scope or
 workstream state.
