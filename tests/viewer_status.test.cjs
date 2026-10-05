@@ -156,14 +156,16 @@ async function test() {
   assert.match(bodyText(), /Latest rejection/);
   assert.match(bodyText(), /Stale revision/);
 
-  // The sign-off panel: plain language, the three questions, no IDs or agent labels.
+  // The sign-off panel: plain language, a walkthrough with an agent, no IDs or agent labels.
   context.task.attempts.push({id: "att_new", state: "passed", spec_revision: 1, workstream_id: "w", revision: 2,
     implementer: "codex-gpt5 implementer", reviewer: "opus reviewer", created_at: "2026-10-05T09:00:00.000000Z"});
   const panel = run('nextStep(task, "signoff")');
   const prose = descendants(panel).filter(n => n.tag === "p" || n.tag === "strong").map(n => n.textContent).join(" ");
   assert.match(prose, /Ready for your sign-off/);
-  assert.match(prose, /Worth doing\? Right approach\? Built well\?/);
+  assert.match(prose, /Sign-off is a walkthrough with an agent/);
   assert.doesNotMatch(prose, /att_|codex|opus|implementer|purpose|result|rework|review round/i);
+  const labels = descendants(panel).filter(n => n.tag === "button").map(n => n.textContent);
+  assert.deepEqual(labels, ["Sign off with an agent"]);
   const human = {...context.task.attempts[1], state: "human_review"};
   context.task.attempts[1] = human;
   assert.match(descendants(run('nextStep(task, "signoff")')).map(n => n.textContent).join(" "), /You reviewed the delivered work below yourself/);
@@ -175,7 +177,7 @@ async function test() {
   assert.doesNotMatch(bodyText(), /Open questions/);
   const held = descendants(run('nextStep(task, "decision")')).map(n => n.textContent).join(" ");
   assert.match(held, /A design\/decision needs your answer/);
-  assert.doesNotMatch(held, /Approve & sign off/);
+  assert.doesNotMatch(held, /Sign off with an agent|Answer/);
 }
 
 // Every workstream's sidebar count equals what its Needs input section shows, also for

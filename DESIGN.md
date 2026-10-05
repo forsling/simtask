@@ -272,11 +272,11 @@ The optional local browser companion invokes a narrow allowlist of the same
 Store operations as MCP. It adds no task state model, business transition
 logic, synchronization or agent dependency. Project/workstream queues retain
 their derived views; stored disposition and global group progress are labelled
-separately. Human decision dialogs require explicit confirmation; signoff reasons are required
-for rework/revise and optional for approve/drop;
-attempt review revisions and task sign-off revisions remain distinct. Text is
-rendered as text, never trusted HTML. Failed concurrent writes preserve drafts
-and require explicit reconciliation with the current version.
+separately. The browser shows and steers: it asks questions, changes
+membership, order and disposition, and hands sign-off to an agent as a copied
+prompt; it creates, edits, answers, reviews and signs off nothing. Text is
+rendered as text, never trusted HTML. Failed concurrent writes preserve what the
+user entered and require explicit reconciliation with the current version.
 
 Only an explicit CLI `ui` command or `open_task_viewer` MCP call launches the
 companion. A POSIX lock and private per-database sidecar discover and reuse its

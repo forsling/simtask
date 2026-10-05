@@ -115,11 +115,8 @@ function button(text, fn, cls = "btn") {
   return b;
 }
 const ICONS = {
-  plus: "M12 5v14M5 12h14",
   search: "M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16zM21 21l-4.3-4.3",
   refresh: "M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6",
-  more: "M5 12h.01M12 12h.01M19 12h.01",
-  edit: "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z",
   close: "M18 6 6 18M6 6l12 12",
   back: "M15 18l-6-6 6-6",
   chevron: "M9 6l6 6-6 6",
@@ -138,7 +135,6 @@ function icon(name, size = 16) {
   svg.setAttribute("height", size);
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("class", "i");
-  if (name === "more") svg.setAttribute("class", "i bold");
   const path = document.createElementNS(ns, "path");
   path.setAttribute("d", ICONS[name]);
   svg.append(path);
@@ -621,12 +617,10 @@ async function boot() {
   $("refresh").append(icon("refresh"));
   $("close").append(icon("close"));
   $("search-icon").append(icon("search", 15));
-  $("new").prepend(icon("plus", 15));
   try {
     state.projects = await pages("projects");
     if (!state.projects.length) {
       renderNav();
-      $("new").disabled = true;
       $("list").replaceChildren(
         emptyState("No projects yet", "Initialize a project through Task MCP to get started."),
       );
@@ -734,7 +728,6 @@ async function reload({ quiet = false, requested = null } = {}) {
   $("heading").replaceChildren(
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
   );
-  $("new").hidden = state.groups;
   try {
     const board = groups ? null : await taskBoard({ project, workstream_id: state.stream });
     const loaded = groups
@@ -757,15 +750,6 @@ async function reload({ quiet = false, requested = null } = {}) {
     $("subheading").textContent = groups
       ? `${groups === "project" ? projectName(project) : "Across projects"} · ${rows.length} group${rows.length === 1 ? "" : "s"}`
       : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}`;
-    if (!groups && state.stream) $("subheading").append(" · ", button("Next agent action", async () => {
-      try {
-        const selected = await api("next-action", {workstream_id: state.stream});
-        if (selected.action) {
-          await selectTask(selected.task.id, { entry: "push" });
-          toast(selected.action === "review" ? "Next: fresh independent reviewer. Verify the actual checkout and saved proof." : "Next: implementer. Use the current checkout and relevant existing work.");
-        } else toast(`No autonomous action. ${selected.diagnostics.signoff || 0} task(s) await human sign-off; other gates remain on the board.`);
-      } catch (e) { toast(e.message, true); }
-    }, "btn small"));
     renderNav();
     renderList();
     if (detailGeneration !== state.generation) return;
@@ -790,7 +774,7 @@ async function reload({ quiet = false, requested = null } = {}) {
       $("detail").replaceChildren(
         state.groups
           ? emptyState(groups === "shared" ? "No shared task groups" : "No task groups", groups === "shared" ? "Task groups with members in more than one project appear here." : "Task groups belonging to or included in this project appear here.")
-          : emptyState("Nothing here yet", "Create a task, or pick another workstream.", button("New task", createTask, "btn primary")),
+          : emptyState("Nothing here yet", "Tasks appear here when an agent adds them. You can also pick another workstream."),
       );
     }
   } catch (e) {
@@ -893,8 +877,8 @@ function skeleton() {
   for (let i = 0; i < 6; i++) wrap.append(node("div"));
   return wrap;
 }
-function emptyState(title, text, action) {
-  return el("div", "empty", node("h3", title), node("p", text), action);
+function emptyState(title, text) {
+  return el("div", "empty", node("h3", title), node("p", text));
 }
 
 /* ---------- drag-and-drop ordering ---------- */
@@ -1098,12 +1082,13 @@ function renderDetail(t) {
   const d = $("detail");
   if (t.object_type === "group") return renderGroup(t);
   const standing = taskStanding(t);
-  const locked = t.status === "done";
-
-  const actions = [button("Edit summary", () => editSummary(t))];
-  if (!locked) {
-    actions.push(iconButton("edit", "Edit (e)", () => editTask(t)));
-    actions.push(iconButton("more", "More actions", (e) => moreMenu(e.currentTarget, t)));
+  // A completed task cannot change, so it offers no actions.
+  const actions = [];
+  if (t.status !== "done") {
+    const menu = button("Actions", (e) => actionsMenu(e.currentTarget, t));
+    menu.setAttribute("aria-haspopup", "menu");
+    menu.title = "Ask a question, change workstreams, or defer, resume or drop this task";
+    actions.push(menu);
   }
   const crumbs = [node("span", projectName(t.project_id))];
   if (state.stream) crumbs.push(node("span", "/", "sep"), branchLabel(streamName(state.stream)));
@@ -1139,74 +1124,109 @@ function currentAttempt(t, requiredStates = null) {
     (!requiredStates || requiredStates.includes(a.state))
   ) || null;
 }
-// The one thing the human can do next, stated plainly with its buttons. The standing
-// is where the task is for the user (see standingOf); prose names no attempt IDs,
-// implementer labels or internal workflow stages.
+// What, if anything, the user can do next, stated plainly. The standing is where the
+// task is for the user (see standingOf); prose names no attempt IDs, agent labels or
+// internal workflow stages. The browser shows and steers: agents write and decide with
+// the user, so sign-off hands a ready prompt to an agent instead of recording a verdict.
 function nextStep(t, standing) {
-  const a = currentAttempt(t, standing === "signoff" ? ["passed", "human_review"] : ["review"]);
   const member = t.workstream_ids?.length && !(state.stream && !t.workstream_ids.includes(state.stream));
-  const blocking = t.prerequisites?.some((p) => p.blocking);
-  let title, text, buttons = [];
+  const blockers = (t.prerequisites || []).filter((p) => p.blocking);
+  const blocking = blockers.length > 0;
+  // A result that passed review stays with the user for sign-off even while a
+  // prerequisite is open; the walkthrough weighs the blocker.
+  const passed = standing === "signoff" ? currentAttempt(t, ["passed", "human_review"]) : null;
+  let title, text, buttons = [], extra = null, signoff = false;
   if (t.status === "done") {
     title = "Signed off";
     text = "This task is complete. A new requirement becomes a new task.";
   } else if (standing === "deferred" || standing === "dropped") {
     title = standing === "deferred" ? "Deferred" : "Dropped";
-    text = t.status === "dropped" ? "History, workstream memberships and results are kept. Reviving it needs your actual instruction." : "Workstream memberships, context and results are kept for when it resumes.";
-    buttons.push(button("Resume task", () => disposition(t, "open", "Resume"), "btn primary"));
+    text = standing === "deferred"
+      ? "Its workstreams, details and results are kept for when it resumes."
+      : "Its workstreams, details and results are kept. Resume brings it back.";
+    buttons.push(button("Resume", () => resumeTask(t), "btn primary"));
   } else if (!member) {
     title = "Add this task to a workstream";
-    text = "Choose the branch where this task should be built. Design/decision questions and prerequisites still apply.";
+    text = "Choose the branch where this task should be built. Its questions and prerequisites still apply.";
     buttons.push(button(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true)), "btn primary"));
-    buttons.push(button("Edit first", () => editTask(t)));
   } else if (t.unresolved_items.length) {
     const n = t.unresolved_items.length;
     title = n === 1 ? "A design/decision needs your answer" : `${n} design/decision questions need your answers`;
-    text = "Work on this task waits until each question below is answered.";
+    text = "Work on this task waits until each question below is settled. Talk it through with an agent, who records the answer.";
+  } else if (passed) {
+    signoff = true;
+    title = "Ready for your sign-off";
+    text = passed.state === "human_review" ? "You reviewed the delivered work below yourself." : "The delivered work below passed independent review.";
+    if (blocking) {
+      const names = blockers.map((p) => `“${p.title}”`).join(", ");
+      text += blockers.length === 1
+        ? ` A prerequisite is still open: ${names}. Weigh it in the walkthrough.`
+        : ` ${blockers.length} prerequisites are still open: ${names}. Weigh them in the walkthrough.`;
+    }
+    extra = node("p", "Sign-off is a walkthrough with an agent: copy the prompt, paste it into your agent, and decide together.", "muted");
+    const prompt = signoffPrompt(t);
+    buttons.push(button("Sign off with an agent", (e) => copyPrompt(prompt, e.currentTarget), "btn primary"));
   } else if (blocking) {
     title = "Waiting on prerequisites";
     text = "Work on this task waits for the prerequisites below: reviewed by default, or signed off where marked.";
   } else if (standing === "signoff") {
-    if (!a) return null;
-    title = "Ready for your sign-off";
-    text = (a.state === "human_review" ? "You reviewed the delivered work below yourself." : "The delivered work below passed independent review.") +
-      " Judge it on the three sign-off questions: Worth doing? Right approach? Built well? Approve when all three hold.";
-    buttons.push(button("Approve & sign off", () => signoff(t, a), "btn primary"));
-    buttons.push(button("Request changes", () => requestChanges(t, a)));
+    return null;
   } else if (standing === "progress") {
     title = "In progress";
-    if (a) {
-      text = "A result is recorded and is with the agents for independent review. You can also review it yourself.";
-      buttons.push(button("Record my review", () => humanReview(a)));
-    } else text = "A result was sent back for changes and the agents are fixing it.";
+    text = currentAttempt(t, ["review"])
+      ? "A result is recorded and is with the agents for independent review."
+      : "A result was sent back for changes and the agents are fixing it.";
   } else {
     title = "Open";
     text = "No result is recorded yet. An agent can pick this up.";
   }
-  if (!member || t.unresolved_items.length || blocking || ["deferred", "dropped"].includes(t.status)) {
-    if (t.attempts.some((x) => x.spec_revision === t.spec_revision && (!state.stream || x.workstream_id === state.stream))) {
+  if (!signoff && (!member || t.unresolved_items.length || blocking || ["deferred", "dropped"].includes(t.status))) {
+    if (t.attempts.some((x) => x.spec_revision === t.spec_revision && (!state.stream || x.workstream_id === state.stream)))
       text += " A recorded result is kept below; it does not change this.";
-      const pending = currentAttempt(t, ["review"]);
-      if (pending) buttons.push(button("Record my review", () => humanReview(pending)));
-    }
   }
   const tone = (STANDINGS[standing] || STANDINGS.open).tone;
   return el(
     "div",
     "next tone-" + (t.status === "done" ? "done" : tone),
-    el("div", "next-text", node("strong", title), node("p", text)),
+    el("div", "next-text", node("strong", title), node("p", text), extra),
     buttons.length ? el("div", "next-actions", ...buttons) : null,
   );
 }
+// Plain text an agent understands: the full task ID and its title.
+function signoffPrompt(t) {
+  return `Sign off ${t.id} — ${t.title}`;
+}
+// Copy a prompt for the user to paste into an agent. The browser launches no agent.
+// The Clipboard API needs a secure context (127.0.0.1 is one); when it is missing or
+// refused, the prompt is shown selected beside the button so the user can copy it.
+async function copyPrompt(text, anchor) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+    toast("Copied. Paste it into your agent to start the sign-off.");
+  } catch {
+    const host = anchor?.closest?.(".next");
+    let box = host?.querySelector(".prompt-copy");
+    if (host && !box) {
+      box = node("input", undefined, "prompt-copy");
+      box.readOnly = true;
+      box.setAttribute("aria-label", "Sign-off prompt to copy");
+      host.append(box);
+    }
+    if (box) {
+      box.value = text;
+      box.focus();
+      box.select();
+    }
+    toast("Couldn't copy automatically. The prompt is selected: press Ctrl+C (⌘C on a Mac) to copy it.", true);
+  }
+}
 function body(t) {
   const out = [];
-  const locked = t.status === "done";
   if (t.unresolved_items.length) {
     const list = el("div", "questions");
     t.unresolved_items.forEach((q) => {
-      const item = el("div", "question", markdown(q.text));
-      if (!locked) item.append(el("div", "q-actions", button("Answer", () => resolve(t, q), "btn small")));
-      list.append(item);
+      list.append(el("div", "question", markdown(q.text)));
     });
     out.push(section("Design/decision", list));
   }
@@ -1299,18 +1319,15 @@ function attemptCard(a, t) {
   if (concerns) card.append(concerns);
   return card;
 }
-// Concerns on a result. The history keeps their provenance; the sign-off panel
-// (plain) says only who raised them, without attempt IDs or agent labels.
-function concernPanel(a, { plain = false } = {}) {
+// Concerns on a result, with their provenance.
+function concernPanel(a) {
   if (!a.concerns?.length) return null;
   const panel = el("div", "sub", node("h4", "Value and design concerns"),
-    node("p", plain
-      ? "Raised about this work. Concerns do not block review or sign-off; weigh them in your answers."
-      : `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
+    node("p", `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
   for (const concern of a.concerns) {
     const kind = concern.kind === "value" ? "Value" : "Design";
     const source = concern.source === "implementer" ? "Implementer" : "Reviewer";
-    panel.append(node("h4", plain ? `${kind} · raised by the ${source.toLowerCase()}` : `${kind} · ${source} ${concern.author}`), markdown(concern.text));
+    panel.append(node("h4", `${kind} · ${source} ${concern.author}`), markdown(concern.text));
   }
   return panel;
 }
@@ -1345,7 +1362,7 @@ function renderGroup(t) {
   if (!t.included_workstreams.length)
     workstreams.append(node("p", "Not included as a group in any workstream. Member tasks may be scoped individually.", "empty-text"));
   d.replaceChildren(
-    topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], [button("Edit summary", () => editSummary(t))]),
+    topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], []),
     el(
       "div",
       "content",
@@ -1468,7 +1485,7 @@ function activity(t) {
 
 /* ---------- menus ---------- */
 
-function moreMenu(anchor, t) {
+function actionsMenu(anchor, t) {
   const pop = $("popover");
   if (!pop.hidden && pop.dataset.for === t.id) return closeMenu();
   const item = (label, fn, cls = "") =>
@@ -1476,11 +1493,13 @@ function moreMenu(anchor, t) {
       closeMenu();
       fn();
     }, "menu-item " + cls);
-  const items = [item("Ask a question", () => askQuestion(t))];
+  const items = [];
+  // Questions belong to open work; a closed task gets none.
+  if (t.status === "open") items.push(item("Ask a question", () => askQuestion(t)));
   items.push(item(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true))));
   if (t.workstream_ids?.length) items.push(item("Remove from workstream", () => removeFromWorkstreamTask(t).catch(e => toast(e.message, true))));
-  if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => disposition(t, "open", "Resume")));
-  else items.push(item("Defer", () => disposition(t, "deferred", "Defer")), item("Drop", () => disposition(t, "dropped", "Drop"), "danger"));
+  if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => resumeTask(t)));
+  else items.push(item("Defer", () => changeStatus(t, "deferred")), item("Drop", () => dropTask(t), "danger"));
   items.forEach((b) => b.setAttribute("role", "menuitem"));
   pop.replaceChildren(...items);
   pop.dataset.for = t.id;
@@ -1503,19 +1522,18 @@ function closeDrawer() {
 
 /* ---------- dialogs ---------- */
 
-function field(name, label, value = "", kind = "textarea", required = true, hint) {
+// A short, single-line text input.
+function field(name, label, { required = true, maxLength = 500 } = {}) {
   const wrap = el("div", "field");
   const l = node("label", label);
   l.htmlFor = "field-" + name;
-  const i = node(kind === "input" ? "input" : "textarea");
+  const i = node("input");
   i.id = "field-" + name;
   i.name = name;
-  i.value = value;
   i.required = required;
-  if (kind === "tall") i.rows = 9;
-  else if (kind !== "input") i.rows = 4;
+  i.maxLength = maxLength;
+  i.autocomplete = "off";
   wrap.append(l, i);
-  if (hint) wrap.append(node("small", hint, "field-hint"));
   $("fields").append(wrap);
   return i;
 }
@@ -1532,9 +1550,9 @@ function openDialog(title, description, saveLabel, danger = false) {
   $("submit").textContent = saveLabel;
   $("submit").className = "btn " + (danger ? "danger" : "primary");
   $("dialog").showModal();
-  setTimeout(() => $("fields").querySelector("input,textarea")?.focus(), 0);
+  setTimeout(() => $("fields").querySelector("input,select")?.focus(), 0);
 }
-function confirmation(text = "This is my decision. Record it in the task history.") {
+function confirmation(text) {
   const l = node("label", undefined, "check");
   const i = node("input");
   i.type = "checkbox";
@@ -1542,60 +1560,35 @@ function confirmation(text = "This is my decision. Record it in the task history
   l.append(i, node("span", text));
   $("fields").append(l);
 }
-function decision({ title, description, action, data, key, label, submit, danger, before }) {
-  openDialog(title, description, submit || "Confirm", danger);
-  before?.();
-  const input = field(key, label || (key === "text" ? "Question" : "Note"), "", "textarea", action !== "signoff");
-  if (action === "signoff") {
-    const choice = $("field-decision");
-    const sync = () => { input.required = ["rework", "revise"].includes(choice.value); };
-    choice.onchange = sync; sync();
-  }
-  confirmation();
-  const taskId = state.task.id;
-  submitAction = async (values) => {
-    const payload = { ...data, [key]: values.get(key) };
-    if (action === "signoff") {
-      payload.decision = values.get("decision") || data.decision;
-    }
-    if (values.has("authorization")) payload.authorization = values.get("authorization");
+// Submit a change to one task with the revision this dialog read. If the task changed
+// meanwhile, the Store refuses it; the dialog keeps the user's input and shows the
+// current task before they choose to submit against it.
+function taskAction(t, action, extra) {
+  let revision = t.revision;
+  submitAction = async values => {
     try {
-      return await api(action, payload);
-    } catch (e) {
-      if (e.conflict) {
-        $("conflict").replaceChildren(
-          button("Show me what changed", async () => {
-            const latest = (await api("details", { ids: [taskId] })).items[0];
-            const n = el(
-              "div",
-              "conflict-box",
-              node("strong", "Current version"),
-              node("p", latest.title, "c-title"),
-              markdown(latest.body),
-              markdown(latest.acceptance_criteria),
-            );
-            latest.unresolved_items.forEach((q) => n.append(node("p", "Question: " + q.text)));
-            const a = data.attempt_id ? latest.attempts.find((a) => a.id === data.attempt_id) : null;
-            if (a) n.append(node("p", `${VIEWS[a.state]?.label || a.state}: ${a.summary}`), node("p", a.evidence, "muted"));
-            n.append(
-              button("I've reviewed it — use this version", () => {
-                data.expected_revision = action === "human-review" ? a.revision : latest.revision;
-                $("fields").querySelector("[type=checkbox]").checked = false;
-                $("form-error").textContent = "Check your note, confirm again, then submit.";
-                n.remove();
-              }, "btn small"),
-            );
-            $("conflict").replaceChildren(n);
-          }, "btn small"),
-        );
-      }
-      throw e;
+      return await api(action, { task_id: t.id, expected_revision: revision, ...extra(values) });
+    } catch (error) {
+      if (error.conflict) $("conflict").replaceChildren(button("Show the current task", async () => {
+        const latest = (await api("details", { ids: [t.id] })).items[0];
+        $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
+          node("p", "Status: " + (STANDINGS[taskStanding(latest)]?.label || latest.status)),
+          markdown(latest.body), markdown(latest.acceptance_criteria),
+          node("p", latest.workstream_ids?.length ? "Currently in " + latest.workstream_ids.map(streamName).join(", ") : "Currently in the inbox"),
+          button("I've checked it — use this version", () => {
+            revision = latest.revision;
+            $("form-error").textContent = "Check your choice, then submit again.";
+            $("conflict").replaceChildren();
+          }, "btn small")));
+      }, "btn small"));
+      throw error;
     }
   };
 }
+// Names the open workstream only when the task is not in it yet.
 function membershipLabel(t) {
   const target = state.streams.find((w) => w.id === state.stream && w.project_id === t.project_id);
-  return target ? `Add to ${target.branch || target.name}` : "Add to workstream";
+  return target && !t.workstream_ids?.includes(target.id) ? `Add to ${target.branch || target.name}` : "Add to workstream";
 }
 async function membershipDialog(t, adding) {
   if (submissionPending) return;
@@ -1616,192 +1609,53 @@ async function membershipDialog(t, adding) {
   $("fields").append(el("div", "field", label, picker));
   $("submit").disabled = !streams.length;
   if (!streams.length) $("fields").append(node("p", adding ? "Initialize a branch workstream before adding this task." : "This task has no workstream memberships.", "warn-text"));
-  placementAction(t, adding ? "add-to-workstream" : "remove-from-workstream", values => ({ workstream_id: values.get("workstream_id") }));
+  taskAction(t, adding ? "add-to-workstream" : "remove-from-workstream", values => ({ workstream_id: values.get("workstream_id") }));
 }
 async function addToWorkstreamTask(t) { return membershipDialog(t, true); }
 async function removeFromWorkstreamTask(t) { return membershipDialog(t, false); }
-function placementAction(t, action, extra) {
-  let revision = t.revision;
-  submitAction = async values => {
-    try {
-      return await api(action, { task_id: t.id, expected_revision: revision, ...extra(values) });
-    } catch (error) {
-      if (error.conflict) $("conflict").replaceChildren(button("Show the current task", async () => {
-        const latest = (await api("details", { ids: [t.id] })).items[0];
-        $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
-          markdown(latest.body), markdown(latest.acceptance_criteria),
-          node("p", latest.workstream_ids?.length ? "Currently in " + latest.workstream_ids.map(streamName).join(", ") : "Currently in the inbox"),
-          button("I've reviewed it — use this version", () => {
-            revision = latest.revision;
-            $("form-error").textContent = "Check the chosen membership, then submit again.";
-            $("conflict").replaceChildren();
-          }, "btn small")));
-      }, "btn small"));
-      throw error;
-    }
-  };
-}
 function askQuestion(t) {
-  decision({
-    title: "Ask a question",
-    description: "A design/decision question holds the task until it's answered.",
-    action: "question",
-    data: { task_id: t.id, expected_revision: t.revision },
-    key: "text",
-    label: "Question",
-    submit: "Add question",
+  openDialog("Ask a question", "Your question holds this task until it's settled. An agent talks it through with you and records the answer.", "Add question");
+  field("text", "Question");
+  taskAction(t, "question", values => ({ text: values.get("text") }));
+}
+// The Store keeps a reason with every status change; these stand in when the user
+// gives none.
+const STATUS_NOTES = {
+  deferred: "Deferred in the browser.",
+  open: "Resumed in the browser.",
+  dropped: "Dropped in the browser.",
+};
+// Defer and resume (from Later) take effect at once: nothing is lost and either can be
+// undone from the same menu.
+async function changeStatus(t, value) {
+  if (submissionPending) return;
+  submissionPending = true;
+  try {
+    await api("disposition", { task_id: t.id, expected_revision: t.revision, disposition: value, note: STATUS_NOTES[value] });
+    toast(value === "deferred" ? "Deferred. It waits under Later until you resume it." : "Resumed.");
+  } catch (e) {
+    toast(e.conflict ? "This task changed elsewhere, so nothing was saved. Showing its latest version; try again if you still want to." : e.message, true);
+  } finally {
+    submissionPending = false;
+  }
+  await reload({ quiet: true });
+}
+function dropTask(t) {
+  openDialog("Drop this task?", `Are you sure you want to drop “${t.title}”? It moves to Done as dropped. Its workstreams, details and results are kept, and Resume can bring it back.`, "Drop task", true);
+  field("note", "Reason (optional)", { required: false, maxLength: 200 });
+  taskAction(t, "disposition", values => ({ disposition: "dropped", note: values.get("note")?.trim() || STATUS_NOTES.dropped }));
+}
+// Bringing back a dropped task needs a reason, which the Store keeps as the instruction
+// that revived it.
+function resumeTask(t) {
+  if (t.status !== "dropped") return changeStatus(t, "open");
+  openDialog("Bring back this dropped task?", `“${t.title}” returns with its workstreams, details and results. Say why it's coming back; this is kept in its history.`, "Resume");
+  field("note", "Why bring it back?", { maxLength: 200 });
+  taskAction(t, "disposition", values => {
+    const reason = (values.get("note") || "").trim();
+    if (!reason) throw Object.assign(new Error("Say why it's coming back."), { local: true });
+    return { disposition: "open", note: reason, authorization: reason };
   });
-}
-function resolve(t, q) {
-  decision({
-    title: "Answer question",
-    description: q.text,
-    action: "resolve",
-    data: { task_id: t.id, expected_revision: t.revision, item_id: q.id },
-    key: "user_note",
-    label: "Your answer",
-    submit: "Resolve",
-  });
-}
-function disposition(t, value, label) {
-  decision({
-    title: `${label} this task?`,
-    description: value === "dropped" ? "Dropping preserves workstream memberships, history and proof. Revival will need actual authorization." : "Workstream memberships, context and proof are kept.",
-    action: "disposition",
-    data: { task_id: t.id, expected_revision: t.revision, disposition: value },
-    key: "note",
-    label: "Reason",
-    submit: label,
-    danger: value === "dropped",
-    before: () => {
-      if (t.status === "dropped" && value !== "dropped") field("authorization", "Actual instruction authorizing revival");
-    },
-  });
-}
-function humanReview(a) {
-  decision({
-    title: "Record your review",
-    description: "Confirm you reviewed this result and its evidence yourself, or that more independent review isn't needed. This doesn't sign off the task.",
-    action: "human-review",
-    data: { attempt_id: a.id, expected_revision: a.revision },
-    key: "user_note",
-    label: "Review note",
-    submit: "Record review",
-  });
-}
-function signoff(t, a, initial = "approve") {
-  decision({
-    title: "Sign off the task",
-    description: `“${t.title}”. Answer the three sign-off questions: Worth doing? Right approach? Built well? Approve completes the task and cannot be undone; rework and revise need reasons.`,
-    action: "signoff",
-    data: { task_id: t.id, expected_revision: t.revision, attempt_id: a.id,
-      expected_attempt_revision: a.revision, decision: initial },
-    key: "reasons",
-    label: "Reasons",
-    submit: "Record decision",
-    before: () => {
-      $("fields").append(section("Reviewed work", el("div", "", markdown(a.summary || ""),
-          node("p", a.state === "human_review" ? "You reviewed this work yourself." : "This work passed independent review."),
-          markdown(a.review_note || a.human_review_note || ""))));
-      const concerns = concernPanel(a, { plain: true });
-      if (concerns) $("fields").append(concerns);
-      const choice = node("select");
-      choice.id = "field-decision"; choice.name = "decision";
-      for (const [value, label] of [
-        ["approve", "Approve: all three hold; complete the task"],
-        ["rework", "Rework: not built well; fix and review again"],
-        ["revise", "Revise: not the right approach; back to design"],
-        ["drop", "Drop: not worth doing; close without approval"],
-      ]) {const option = node("option", label); option.value = value; choice.append(option);}
-      choice.value = initial;
-      $("fields").append(el("div", "field", node("label", "Decision"), choice));
-    },
-  });
-}
-function requestChanges(t, a) { signoff(t, a, "rework"); }
-function editSummary(t) {
-  openDialog("Edit descriptive summary", "Intent or settled constraints, up to 240 characters on one line. Requirements and acceptance criteria stay in the specification.", "Save summary");
-  const summary = field("summary", "Summary (optional)", t.summary || "", "input", false);
-  summary.maxLength = 240;
-  submitAction = async values => api("edit", {
-    task_id: t.id, expected_revision: t.revision,
-    changes: { summary: values.get("summary") || null },
-  });
-}
-function editTask(t) {
-  if (!t || t.object_type !== "task" || t.status === "done") return;
-  let revision = t.revision;
-  let etag = t.specification_etag;
-  openDialog("Edit task", "Save the specification. Workstream memberships stay unchanged; other gates still apply.", "Save task");
-  $("dialog").classList.add("wide");
-  field("title", "Title", t.title, "input");
-  const summary = field("summary", "Summary (optional descriptive intent)", t.summary || "", "input", false);
-  summary.maxLength = 240;
-  field("body", "Specification", t.body, "tall", false, "Markdown is supported.");
-  field("acceptance_criteria", "Acceptance criteria", t.acceptance_criteria, "textarea", false);
-  submitAction = async (values) => {
-    const payload = {
-      task_id: t.id, expected_revision: revision, specification_etag: etag,
-      changes: { ...Object.fromEntries(["title", "body", "acceptance_criteria"].map(key => [key, values.get(key)])), summary: values.get("summary") || null },
-    };
-    try {
-      return await api("edit", payload);
-    } catch (e) {
-      if (e.conflict) {
-        $("conflict").replaceChildren(
-          button("Show the current version next to my draft", async () => {
-            const latest = (await api("details", { ids: [t.id] })).items[0];
-            const n = el(
-              "div",
-              "conflict-box",
-              node("strong", "Current version"),
-              node("p", latest.title, "c-title"),
-              markdown(latest.body),
-              markdown(latest.acceptance_criteria),
-              button("I've merged my draft — save over this version", () => {
-                revision = latest.revision;
-                etag = latest.specification_etag;
-                $("form-error").textContent = "Check your merged draft, then save again.";
-                n.remove();
-              }, "btn small"),
-            );
-            $("conflict").replaceChildren(n);
-          }, "btn small"),
-        );
-      }
-      throw e;
-    }
-  };
-}
-function createTask() {
-  if (state.groups || !state.project || $("new").disabled || submissionPending) return;
-  const projectId = state.project, workstreamId = state.stream;
-  openDialog(
-    "New task",
-    state.stream
-      ? `Adds a task to ${streamName(state.stream)}. It will be included in this workstream.`
-      : `Adds a task to the ${projectName(state.project)} inbox.`,
-    "Create task",
-  );
-  $("dialog").classList.add("wide");
-  field("title", "Title", "", "input");
-  const summary = field("summary", "Summary (optional descriptive intent)", "", "input", false);
-  summary.maxLength = 240;
-  field("body", "What needs to happen?", "", "tall", false, "Markdown is supported.");
-  field("acceptance_criteria", "How will you know it's done?", "", "textarea", false);
-  field("user_request", "Your original request", "", "textarea", false, "Preserved as descriptive context.");
-  submitAction = async (values) => {
-    const payload = {
-      title: values.get("title"), body: values.get("body"), summary: values.get("summary") || null,
-      acceptance_criteria: values.get("acceptance_criteria"),
-      user_request: values.get("user_request"), source: "user",
-      project: projectId,
-      workstream_id: workstreamId,
-    };
-    const r = await api("create", payload);
-    state.selected = r.id;
-    return r;
-  };
 }
 $("form").onsubmit = async (e) => {
   e.preventDefault();
@@ -1819,8 +1673,8 @@ $("form").onsubmit = async (e) => {
   } catch (e) {
     $("form-error").textContent =
       e.message +
-      (e.conflict
-        ? " Recorded state changed. Your draft is kept; review the current version before retrying."
+      (e.local ? "" : e.conflict
+        ? " This task changed elsewhere. What you entered is kept; check the current task before trying again."
         : " If you're unsure whether it saved, check the task before retrying.");
   } finally {
     submissionPending = false;
@@ -1834,12 +1688,10 @@ $("dialog").oncancel = (e) => {
   // Escape must not abandon a write whose eventual outcome still owns this dialog.
   if (submissionPending) e.preventDefault();
 };
-$("dialog").onclose = () => $("dialog").classList.remove("wide");
 
 /* ---------- global controls ---------- */
 
 $("search").oninput = renderList;
-$("new").onclick = createTask;
 $("refresh").onclick = () => reload({ quiet: true }).then(() => toast("Up to date"));
 $("menu").onclick = () => $("shell").classList.add("drawer-open");
 $("scrim").onclick = closeDrawer;
@@ -1857,7 +1709,6 @@ $("stop").onclick = () => {
     $("shell").classList.add("stopped");
     $("detail").replaceChildren(emptyState("Viewer stopped", "You can close this tab."));
     $("list").replaceChildren();
-    $("new").disabled = true;
     submitAction = null;
     return result;
   };
@@ -1893,12 +1744,6 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "k" || e.key === "ArrowUp") {
     e.preventDefault();
     moveSelection(-1);
-  } else if (e.key === "n") {
-    e.preventDefault();
-    createTask();
-  } else if (e.key === "e" && state.task) {
-    e.preventDefault();
-    editTask(state.task);
   } else if (e.key === "r") {
     reload({ quiet: true });
   }

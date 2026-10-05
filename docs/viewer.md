@@ -1,7 +1,10 @@
 # Local task workspace
 
 Run `task-mcp ui` and open the printed private link. This works independently of
-any MCP host or model. `--db /absolute/path/tasks.sqlite3` selects a database at
+any MCP host or model. The browser shows and steers: you read tasks, ask
+questions, change workstreams, reorder and defer, resume or drop work there.
+Agents write tasks and record results, reviews and decisions with you; the
+browser creates, edits and signs off nothing. `--db /absolute/path/tasks.sqlite3` selects a database at
 launch; the default follows `TASK_MCP_DB`, then `XDG_DATA_HOME`, then the normal
 user data directory. The browser cannot select another database. The MCP
 `open_task_viewer` tool explicitly starts/reuses the same viewer for its Store
@@ -33,8 +36,8 @@ open (after a reload, the group's own project or the first project).
 
 Reloading returns to the same project, view and selection.
 Back/forward move between locations visited in the viewer: sidebar links, task
-and group clicks, group chips, prerequisite, member and workstream links and **Next agent
-action** each add an entry, while `j`/`k` moves and automatic first-task selection
+and group clicks, group chips, and prerequisite, member and workstream links
+each add an entry, while `j`/`k` moves and automatic first-task selection
 update the current entry. A copied or bookmarked location reopens in a tab that
 already holds the token; elsewhere, open the private launch link first, which
 starts on the first project's first workstream. Location URLs never contain the
@@ -62,8 +65,8 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   and **Done** (done/dropped, collapsed). Cards carry no other badges; whether
   work is a first attempt or a rework round shows in the task's details and
   history, where the latest rejection appears only until a newer result exists.
-  Search filters titles across every section. Keyboard: `/` search, `j`/`k` move, `n` new
-  task, `e` edit, `r` refresh.
+  Search filters titles across every section. Keyboard: `/` search, `j`/`k` move,
+  `r` refresh.
 - In a named workstream, drag a task onto the upper or lower half of another
   task to place it before or after that task. A row's tooltip gives its position
   in that workstream (sections mix positions, so rows show no numbers); a drop
@@ -76,8 +79,16 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   recorded order has reloaded; clicking a task meanwhile does not cancel that
   reload. All tasks and group views have no order to edit.
 - Each task opens with a single “next step” panel stating what, if anything,
-  you can do now, with its buttons. The sign-off panel asks the three sign-off
-  questions (Worth doing? Right approach? Built well?) in plain language. A
+  you can do now. A task waiting for sign-off offers **Sign off with an agent**:
+  sign-off is a walkthrough with an agent, so the button copies a ready prompt
+  (`Sign off tsk_<id> — <title>`) for you to paste into your agent and confirms
+  with a short notice. The browser launches no agent and records no verdict.
+  Where the clipboard cannot be written, the prompt appears selected beside the
+  button for you to copy. A result that passed review stays under Sign-off even
+  while a prerequisite is still open; the panel names the open prerequisite in
+  one line so the walkthrough can weigh it. Blocked tasks without a passed
+  result show the prerequisites they wait for. Design/decision questions are
+  shown for reading; you settle them with an agent, which records the answer. A
   passed result does not remove design/decision questions or prerequisites;
   Store still validates every decision.
 - Prerequisites show compact ID/title, project name/ID, the required review or
@@ -92,25 +103,24 @@ earlier `#/project/...` addresses are not supported; they open the default view.
 - Shared groups show all members across all projects and global completion.
   Opening a member moves to its own project's queue. A group's completion does
   not mean a particular local workstream delivered all of its members.
-- New tasks are added to the selected workstream, or have no direct membership
-  from All tasks (existing group inclusion may still apply). Edits preserve scope.
+- A task's **Actions** menu offers **Ask a question** (open tasks only),
+  **Add to workstream**, **Remove from workstream**, and **Defer** and **Drop**,
+  or **Resume** for deferred and dropped tasks. Completed tasks offer no actions.
   **Add to workstream** and **Remove from workstream** identify the workstream
   being changed; adding retains existing memberships and removing changes only
   the named one. Details list every effective membership accurately. The inbox
   contains tasks included in none. Controls require no typed note, preserve proof
   and clear no questions/prerequisites.
-- Answer questions or defer/resume/drop with an actual decision note. Dropped and
-  deferred context remains recoverable; revival from dropped needs authorization.
-  Completed requirements cannot be edited; summary corrections remain available.
-- Review the result and evidence before recording a human review. The dialog
-  records your review or your explicit instruction that additional independent
-  review is unnecessary; it does not sign off. A separately confirmed sign-off
-  offers approve (complete), rework (repair implementation), revise (return to
-  design with an open question), and drop (close without approval). Its single
-  reasons field is required for rework/revise and optional for approve/drop.
-  Deferral remains an ordinary status change. Latest rejection reasons appear
-  with their originating attempt/workstream in the task; list rows carry a flag.
-  Historical defer decisions and judgment fields remain readable.
+- **Ask a question** takes one short line; the question holds the task until an
+  agent settles it with you. **Defer** and **Resume** (from Later) take effect at
+  once. **Drop** asks “are you sure” and takes an optional short reason. Bringing
+  back a dropped task with **Resume** asks why it is coming back, which the Store
+  keeps as the instruction that revived it. Each change records a reason in the
+  history: yours, or a plain stand-in such as “Deferred in the browser.”
+  Workstreams, details and results are kept through every status change.
+- Latest rejection reasons appear with their originating attempt/workstream in
+  the task. Sign-off decisions, including historical defer decisions and
+  judgment fields, remain readable.
 - Activity shows actor, action, outcome and decision notes; routine read
   events are counted rather than listed. Task text is rendered as a safe
   Markdown subset (paragraphs, lists, headings, code, bold/italic) built from
@@ -119,22 +129,21 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   semicolons is displayed as a list; the stored text is unchanged. No remote
   fonts, scripts or image services load. Light and dark themes follow the OS.
 
-This first browser version does not create projects/workstreams, edit bulk group scope
-or group membership, record implementation results, or handle gate proposals.
-Those operations remain available in MCP. It intentionally has no general
-Store method, SQL or shell command endpoint.
+The browser does not create or edit tasks, projects or workstreams, answer
+design/decision questions, record results or reviews, sign off, pick the next
+agent action, edit group scope or membership, or handle gate proposals. Agents
+do these through MCP, with you. The browser intentionally has no general Store
+method, SQL or shell command endpoint.
 
 ## Concurrent edits
 
-Dialogs submit the revision they read. If another browser or agent changes the
-same task, the Store rejects the stale write. Your unsaved fields and note stay
-open. Load the current version alongside your draft, reconcile the contents,
-and explicitly choose that revision before submitting again. Full-detail reads
-also supply the replacement token used when saving the body/criteria. Reconciliation
-refreshes both revision and token. Decision dialogs require their confirmation checkbox again after reconciliation.
-Placement conflicts preserve the chosen branch until explicit review of current state. The Store always makes the
-final eligibility check. A network failure is not proof a write failed: inspect
-the queue/history before retrying a create, which is not deduplicated.
+Every change submits the revision the browser read. If another browser or agent
+changes the same task, the Store rejects the stale write. In a dialog, what you
+entered stays open: show the current task, then explicitly choose that version
+before submitting again. **Defer** and **Resume** from the menu save nothing on a
+conflict; the task reloads and says so, and you can try again. The Store always
+makes the final eligibility check. A network failure is not proof a write
+failed: check the task's history before retrying.
 
 ## Security and lifecycle
 
@@ -172,8 +181,8 @@ The launch MCP annotation is a non-read-only, non-destructive, idempotent,
 closed-world operation. It creates/reuses a local listener and discovery files;
 it is not a static read. Whole-server trust/pre-approval therefore also covers
 this explicitly invoked capability. Browser reads append audit records through
-Store, and browser edits have the same revisions, workflow checks and history
-as MCP edits. Possession of the link grants access to all projects in that
+Store, and browser changes have the same revisions, workflow checks and history
+as MCP changes. Possession of the link grants access to all projects in that
 configured database, not just the current workstream.
 
 ## Disposable verification
@@ -182,10 +191,11 @@ configured database, not just the current workstream.
 two-project initiative, a reviewed result, open question, proposal and deferred
 task. It prints the private link and exact stop command. All decisions in that
 database are synthetic. `pytest tests/test_viewer.py` covers protected access,
-allowed edit and decision flows, stale revisions, Store gate enforcement,
-local/global scope distinctions and cross-process launch/stop/restart.
+the allowed membership, question and status changes, rejection of removed
+actions, stale revisions, Store gate enforcement, local/global scope
+distinctions and cross-process launch/stop/restart.
 
-Result details and the sign-off dialog show value/design concerns with the
+Result details show value/design concerns with the
 implementer or reviewer name and original attempt/workstream/specification.
 These concerns are nonblocking; recorded gates and the user's actual verdict
 retain their existing meaning. Other/superseded results keep their own concerns

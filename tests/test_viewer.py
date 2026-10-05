@@ -60,6 +60,7 @@ def request(server, action, data=None, headers=None, method="POST"):
 
 
 def create(server, context, **overrides):
+    # The browser creates no tasks; agents do, through the Store.
     args = {
         "project": context["project"]["id"],
         "workstream_id": context["workstream"]["id"],
@@ -67,61 +68,49 @@ def create(server, context, **overrides):
         "body": "The specification",
         "acceptance_criteria": "Verified outcome",
         "user_request": "An explicit synthetic human request",
+        "source": "user",
         **overrides,
     }
-    status, task = request(server, "/api/create", args)
-    assert status == 200, task
+    task = server.store.create_task(**args)
     return request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
 
 
-def test_browse_edit_conflicts_and_decisions(viewer):
+def test_browse_membership_questions_and_status_changes(viewer):
     server, store, context = viewer
     task = create(server, context)
     assert task["workstream_ids"]
     assert request(server, "/api/projects")[1]["items"][0]["id"] == context["project"]["id"]
     assert request(server, "/api/workstreams")[1]["items"][0]["id"] == context["workstream"]["id"]
-    status, edited = request(
-        server,
-        "/api/edit",
-        {"task_id": task["id"], "expected_revision": 1, "changes": {"title": "Updated"}},
-    )
-    assert status == 200 and edited["workstream_ids"] == [context["workstream"]["id"]]
-    status, conflict = request(
-        server,
-        "/api/edit",
-        {"task_id": task["id"], "expected_revision": 1, "changes": {"title": "Stale"}},
-    )
-    assert status == 409 and "revision_conflict" in conflict["error"]
-    assert store.get_tasks([task["id"]])["items"][0]["title"] == "Updated"
     status, task = request(
         server,
         "/api/remove-from-workstream",
         {
             "task_id": task["id"],
             "workstream_id": context["workstream"]["id"],
-            "expected_revision": 2,
+            "expected_revision": 1,
         },
     )
     assert status == 200 and task["workstream_ids"] == []
     status, task = request(
         server,
         "/api/question",
-        {"task_id": task["id"], "expected_revision": 3, "text": "Which variant?"},
+        {"task_id": task["id"], "expected_revision": 2, "text": "Which variant?"},
     )
-    assert status == 200
-    item = task["unresolved_items"][0]
-    status, task = request(
+    assert status == 200 and task["unresolved_items"][0]["text"] == "Which variant?"
+    status, conflict = request(
         server,
-        "/api/resolve",
-        {
-            "task_id": task["id"],
-            "expected_revision": 4,
-            "item_id": item["id"],
-            "user_note": "Use the simpler variant",
-        },
+        "/api/question",
+        {"task_id": task["id"], "expected_revision": 2, "text": "Stale"},
     )
-    assert status == 200 and not task["unresolved_items"]
-    for disposition in ("deferred", "open", "dropped", "open"):
+    assert status == 409 and "revision_conflict" in conflict["error"]
+    assert len(store.get_tasks([task["id"]])["items"][0]["unresolved_items"]) == 1
+    # Defer, resume and drop carry the viewer's stand-in reason when the user gives none;
+    # leaving dropped still needs the user's reason as its authorization.
+    for disposition, extra in (
+        ("deferred", {"note": "Deferred in the browser."}),
+        ("open", {"note": "Resumed in the browser."}),
+        ("dropped", {"note": "Dropped in the browser."}),
+    ):
         status, task = request(
             server,
             "/api/disposition",
@@ -129,14 +118,25 @@ def test_browse_edit_conflicts_and_decisions(viewer):
                 "task_id": task["id"],
                 "expected_revision": task["revision"],
                 "disposition": disposition,
-                "note": "Explicit synthetic decision",
-                "authorization": "Synthetic actual revival instruction",
+                **extra,
             },
         )
         assert status == 200 and task["status"] == disposition
+    revive = {
+        "task_id": task["id"],
+        "expected_revision": task["revision"],
+        "disposition": "open",
+        "note": "Needed after all",
+    }
+    status, refused = request(server, "/api/disposition", revive)
+    assert status == 400 and "revival_authorization_required" in refused["error"]
+    status, task = request(
+        server, "/api/disposition", {**revive, "authorization": "Needed after all"}
+    )
+    assert status == 200 and task["status"] == "open"
 
 
-def test_review_and_signoff_use_separate_revisions_and_store_gates(viewer):
+def test_viewer_offers_no_create_edit_answer_review_or_signoff_actions(viewer):
     server, store, context = viewer
     task = create(server, context)
     attempt = store.record_result(
@@ -148,50 +148,35 @@ def test_review_and_signoff_use_separate_revisions_and_store_gates(viewer):
         "Evidence",
         artifacts=[{"kind": "artifact", "reference": "tests/test_viewer.py"}],
         verification="Evidence",
-        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
+        specification_etag=task["specification_etag"],
     )
-    signoff = {
-        "task_id": task["id"],
-        "expected_revision": 2,
-        "attempt_id": attempt["id"],
-        "decision": "approve",
-        "expected_attempt_revision": 2,
-        "reasons": "I approve",
-    }
-    assert request(server, "/api/signoff", signoff)[0] == 400
-    assert (
-        request(
-            server,
-            "/api/human-review",
-            {"attempt_id": attempt["id"], "expected_revision": 2, "user_note": "My review"},
-        )[0]
-        == 409
-    )
-    assert (
-        request(
-            server,
-            "/api/human-review",
+    store.record_review(attempt["id"], 1, "reviewer", "pass", "Checked")
+    before = store.get_tasks([task["id"]])["items"][0]
+    for action, data in (
+        ("create", {"project": context["project"]["id"], "title": "From the browser"}),
+        ("edit", {"task_id": task["id"], "expected_revision": 2, "changes": {"title": "No"}}),
+        (
+            "resolve",
+            {"task_id": task["id"], "expected_revision": 2, "item_id": "x", "user_note": ""},
+        ),
+        ("human-review", {"attempt_id": attempt["id"], "expected_revision": 2, "user_note": "n"}),
+        (
+            "signoff",
             {
+                "task_id": task["id"],
+                "expected_revision": 2,
                 "attempt_id": attempt["id"],
-                "expected_revision": 1,
-                "user_note": "I reviewed the evidence",
+                "expected_attempt_revision": 2,
+                "decision": "approve",
+                "reasons": "No",
             },
-        )[0]
-        == 200
-    )
-    task = store.add_unresolved(task["id"], 2, "Late unresolved decision")
-    assert request(server, "/api/signoff", {**signoff, "expected_revision": 3})[0] == 400
-    store.resolve_unresolved(task["id"], 3, task["unresolved_items"][0]["id"], "Resolved")
-    status, completed = request(server, "/api/signoff", {**signoff, "expected_revision": 4})
-    assert status == 200 and completed["status"] == "done"
-    assert (
-        request(
-            server,
-            "/api/edit",
-            {"task_id": task["id"], "expected_revision": 5, "changes": {"title": "No"}},
-        )[0]
-        == 400
-    )
+        ),
+        ("next-action", {"workstream_id": context["workstream"]["id"]}),
+    ):
+        status, error = request(server, "/api/" + action, data)
+        assert (status, error) == (400, {"error": "unknown_action"}), action
+    assert store.get_tasks([task["id"]])["items"][0] == before
+    assert store.list_tasks(context["project"]["id"])["total"] == 1
 
 
 def test_scope_and_global_group_progress_remain_distinct(viewer, tmp_path):
@@ -268,19 +253,10 @@ def test_remote_prerequisites_transport_is_compact_and_review_clears_default_lin
     assert status == 200 and [row["id"] for row in queue["items"]] == [dependent["id"]]
     assert queue["items"][0]["prerequisites"] == [{**ref, "satisfied": True, "blocking": False}]
     assert queue["items"][0]["view"] == "ready"
-    status, signed_off = request(
-        server,
-        "/api/signoff",
-        {
-            "task_id": blocker["id"],
-            "expected_revision": 2,
-            "expected_attempt_revision": 2,
-            "attempt_id": attempt["id"],
-            "decision": "approve",
-            "reasons": "Synthetic informed approval",
-        },
+    signed_off = store.signoff_task(
+        blocker["id"], 2, "approve", "Synthetic informed approval", attempt["id"], 2
     )
-    assert status == 200 and signed_off["status"] == "done"
+    assert signed_off["status"] == "done"
     ref = request(server, "/api/details", {"ids": [dependent["id"]]})[1]["items"][0][
         "prerequisites"
     ][0]
@@ -644,117 +620,17 @@ def test_queue_inbox_moves_return_compact_continuation_without_notes(viewer):
         )[0]
         == 400
     )
-    status, created = request(
-        server,
-        "/api/create",
-        {
-            "project": context["project"]["id"],
-            "workstream_id": ws,
-            "title": "Queued creation",
-            "user_request": "Actual request",
-        },
-    )
-    assert status == 200 and created["workstream_ids"] == [ws]
-    assert not {"title", "body", "attempts", "user_request"} & created.keys()
-
-
-def test_approved_and_draft_amendment_http_flow(viewer):
-    server, store, context = viewer
-    task = create(server, context)
-    payload = {
-        "task_id": task["id"],
-        "expected_revision": task["revision"],
-        "changes": {"body": "Complete amended scope", "acceptance_criteria": "New proof"},
-    }
-    status, denied = request(server, "/api/edit", payload)
-    assert status == 400 and "specification_read_required" in denied["error"]
-    assert store.get_tasks([task["id"]])["items"][0] == task
-    payload["specification_etag"] = task["specification_etag"]
-    status, saved = request(server, "/api/edit", payload)
-    assert (
-        status == 200
-        and saved["workstream_ids"] == [context["workstream"]["id"]]
-        and saved["spec_changed"]
-    )
-    assert saved["spec_revision"] == 2
-    assert not {"body", "attempts", "acceptance_note"} & saved.keys()
-    status, conflict = request(server, "/api/edit", {**payload, "changes": {"body": "Stale"}})
-    assert status == 409 and "full specification" in conflict["error"]
-    latest = request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
-    assert latest["body"] == "Complete amended scope"
-    status, draft = request(
-        server,
-        "/api/edit",
-        {
-            "task_id": task["id"],
-            "expected_revision": latest["revision"],
-            "specification_etag": latest["specification_etag"],
-            "changes": {"body": "Draft scope"},
-        },
-    )
-    assert (
-        status == 200
-        and draft["workstream_ids"] == [context["workstream"]["id"]]
-        and draft["spec_revision"] == 3
-    )
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
-def test_creation_edits_queue_and_inbox_form_handlers():
+def test_membership_and_dialog_form_handlers():
     script = Path(__file__).with_name("viewer_queue.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize(
-    "decision,disposition",
-    [
-        ("approve", "done"),
-        ("rework", "rework"),
-        ("revise", "open"),
-        ("drop", "dropped"),
-    ],
-)
-def test_purpose_result_decisions_over_real_viewer_transport(viewer, decision, disposition):
-    server, store, context = viewer
-    task = create(server, context)
-    attempt = store.record_result(
-        task["id"],
-        context["workstream"]["id"],
-        1,
-        "worker",
-        "Result",
-        "Actual evidence",
-        artifacts=[{"kind": "artifact", "reference": "tests/test_viewer.py"}],
-        verification="Actual evidence",
-        specification_etag=store.get_tasks([task["id"]])["items"][0]["specification_etag"],
-    )
-    store.record_review(attempt["id"], 1, "reviewer", "pass", "Independent review")
-    data = {
-        "task_id": task["id"],
-        "expected_revision": 2,
-        "attempt_id": attempt["id"],
-        "expected_attempt_revision": 1,
-        "decision": decision,
-        "reasons": "Actual synthetic verdict",
-    }
-    assert request(server, "/api/signoff", data)[0] == 409
-    data["expected_attempt_revision"] = 2
-    status, ack = request(server, "/api/signoff", data)
-    assert status == 200 and ack["status"] == disposition
-    assert not {"attempts", "body", "signoff_decisions"} & ack.keys()
-    saved = request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
-    judgment = saved["signoff_decisions"][0]
-    assert judgment["decision_ref"] == ack["decision_ref"]
-    assert judgment["reasons"] == "Actual synthetic verdict"
-    assert not {"purpose_source", "result_judgment"} & judgment.keys()
-    if decision in {"rework", "revise"}:
-        assert saved["latest_rejection"]["reasons"] == judgment["reasons"]
-    assert saved["attempts"][0]["review_note"] == "Independent review"
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
-def test_frontend_purpose_result_decision_forms():
+def test_frontend_signoff_handoff_and_status_controls():
     script = Path(__file__).with_name("viewer_signoff.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -845,19 +721,10 @@ def test_concerns_reach_real_viewer_details_and_status(viewer):
     assert status == 200 and overview["concern_tasks"]["items"][0]["view"] == "signoff"
     assert overview["concern_tasks"]["items"][0]["concern_count"] == 2
     assert "Another design" not in json.dumps(overview)
-    status, ack = request(
-        server,
-        "/api/signoff",
-        {
-            "task_id": task["id"],
-            "expected_revision": attempt["task_revision"],
-            "attempt_id": attempt["id"],
-            "expected_attempt_revision": 2,
-            "decision": "approve",
-            "reasons": "Synthetic verdict",
-        },
+    ack = store.signoff_task(
+        task["id"], attempt["task_revision"], "approve", "Synthetic verdict", attempt["id"], 2
     )
-    assert status == 200 and ack["status"] == "done"
+    assert ack["status"] == "done"
     assert store.get_attempt(attempt["id"])["concerns"] == proof["concerns"]
 
 

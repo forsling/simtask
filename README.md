@@ -48,7 +48,8 @@ that the existing client has refreshed its process and discovered tools.
 
 ## Local browser workspace
 
-An optional browser viewer/editor works without an agent or model. The quickest
+An optional browser viewer works without an agent or model. It shows and steers;
+agents write and decide with you. The quickest
 way is `./run.sh`, which starts the viewer (or reuses the running one) and prints
 its link; `./run.sh --restart` and `./run.sh --stop` restart or stop it, and
 `TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh` selects another database. The script
@@ -83,9 +84,14 @@ more than one project. Both show whole-group progress and project counts;
 Group details list workstreams that explicitly include the group, with
 project/branch links to their task lists. Independently scoped member tasks
 do not imply that the whole group is included in a workstream.
-Dedicated dialogs
-record creation, edits, branch workstream membership or moves to the inbox,
-questions, defer/resume/drop, human review and sign-off. Concurrent changes retain your draft and offer reconciliation.
+You can ask a question on an open task, add a task to or remove it from a
+workstream, drag to reorder a workstream, and defer, resume or drop tasks
+(Drop asks for confirmation; reasons are optional except when bringing back a
+dropped task). A task waiting for sign-off offers **Sign off with an agent**,
+which copies a ready prompt to paste into your agent: sign-off is a walkthrough
+with an agent, not a browser form. The browser does not create or edit tasks,
+answer questions, record reviews or sign off. Concurrent changes keep what you
+entered and offer reconciliation.
 The app uses the existing Store and database; it has no synchronized copy.
 Task text is displayed as safe, whitespace-preserving text, including Markdown
 source. Full task setup, result recording and uncommon workflow operations
@@ -412,8 +418,8 @@ explicit attempt/history reads. `get_next_action` includes the chosen local
 review proof and its implementer concerns in one call. `workstream_status` exposes
 `concern_tasks`, a separate page at its `limit`/`offset`, prioritizing tasks awaiting
 sign-off. These references/counts include only current-spec attempts on that
-workstream. The viewer shows full concerns on results and in the sign-off dialog;
-exports retain them in labelled attempt history.
+workstream. The viewer shows full concerns on results; exports retain them in
+labelled attempt history.
 
 The ordinary path is:
 
@@ -480,7 +486,7 @@ those rare workflows are deferred.
 | Specification and gates | `create_task`, `update_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
 | Inspection | `list_events`, `export_workstream`, `get_default_skills`, `runtime_info` |
-| Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
+| Local browser | `open_task_viewer` (explicit loopback viewer launch) |
 
 Mutations that change a task or workstream use the last returned entity revision, checked atomically; user pauses do not invalidate it.
 Workstream board/action/init/status responses expose `workstream_order_revision`.

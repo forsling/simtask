@@ -36,24 +36,16 @@ def dispatch(store, action, data):
         "groups": store.list_groups,
         "tasks": store.list_tasks,
         "details": store.get_tasks,
-        "next-action": store.get_next_action,
         "resolve-prefix": store.resolve_prefix,
         "events": store.list_events,
-        "create": store.create_task,
-        "edit": store.update_task,
         "reorder": store.reorder_tasks,
         "add-to-workstream": store.add_to_workstream,
         "remove-from-workstream": store.remove_from_workstream,
         "disposition": store.set_disposition,
         "question": store.add_unresolved,
-        "resolve": store.resolve_unresolved,
-        "human-review": store.human_review,
-        "signoff": store.signoff_task,
     }
     if action not in operations:
         raise TaskError("unknown_action")
-    if action == "create":
-        data = {**data, "source": "user"}
     if action == "question":
         data = {**data, "handling": "user"}
     return operations[action](**data)
