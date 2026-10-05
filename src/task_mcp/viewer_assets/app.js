@@ -1248,7 +1248,10 @@ function renderDetail(t) {
         : null,
     ),
   );
-  if (t.summary) head.append(node("p", t.summary, "muted"), node("p", t.summary_stale ? "Descriptive summary predates the current specification." : "Descriptive summary; read the specification below for requirements.", "muted"));
+  if (t.summary) {
+    head.append(node("p", t.summary, "muted"));
+    if (t.summary_stale) head.append(node("p", "Descriptive summary predates the current specification.", "muted"));
+  }
   d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, standing), ...body(t)));
 }
 function currentAttempt(t, requiredStates = null) {
