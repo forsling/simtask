@@ -239,23 +239,25 @@ only when recording a durable result. Parallel workstreams may produce
 alternative attempts on one canonical task. An independent declared reviewer
 or an explicit human review must pass an attempt before human sign-off. Sign-off
 selects a reviewed attempt. Rejection chooses rework on the current specification or opens an unresolved
-specification question. Queue membership stays unchanged. The service cannot authenticate the reviewer or the user's verdict;
+specification question. Workstream membership stays unchanged. The service cannot authenticate the reviewer or the user's verdict;
 workflow clients must obtain and accurately record those decisions.
 "Sign off" requests asked/built/verified presentation and then a verdict;
-explicit approval needs no walkthrough. Judge Value, Design and Build
-independently in that order, addressing every concern. Only the user approves.
-Build failures map to rework, substantially wrong Design to revise, and Value
-failures/obsolete work to drop; queue removal work when dropped code must go.
-Confirm the matching verdict for a generic rejection with reasons.
+explicit approval needs no walkthrough. The walkthrough answers three questions
+independently, in order: "Worth doing?", "Right approach?" and "Built well?",
+addressing every concern. Only the user approves. A failed "Built well?" maps to
+rework, "Right approach?" to revise, and "Worth doing?" (or obsolete work) to
+drop; a removal task is added when dropped code must go. Confirm the matching
+verdict for a generic rejection with reasons.
 
-Implementers follow the spec and record value/design concerns instead of
-substituting a different design. Unexpected blockers/questions are saved before
-moving on. Independent review assumes the agreed design is substantially right:
-an unattended fix within goal/scope/decided design/criteria is Build rework,
-including poor choices left open to the implementer. A real problem caused by
-faithful specification is a concern, so sound Build passes with it. Value/design
-doubts never fail review; optional additions are new ideas. Explicit user
-instructions override this reference workflow guidance.
+Implementers follow the spec and record worth-doing or approach concerns
+(stored kinds `value`/`design`) instead of substituting a different design.
+Unexpected blockers/questions are saved before moving on. Independent review
+assumes the agreed approach is substantially right: an unattended fix within
+goal/scope/decided approach/criteria is rework, including poor choices left open
+to the implementer. A real problem caused by faithful specification is a
+concern, so well-built work passes with it. Concerns never fail review; optional
+additions are new ideas. Explicit user instructions override this reference
+workflow guidance.
 
 Continuation keeps the durable workstream ID, scope and history through
 `init`/rebind. Recorded state does not prove checkout applicability: callers
@@ -356,28 +358,31 @@ listener capability under the MCP server's existing trust boundary, not an
 approval-policy change. Read requests keep the Store's existing audited-write
 semantics. The service does not authenticate the human behind a token.
 
-The initial recommended path is `init -> proposal/unresolved review ->
-superdevloop -> sign-off`. Features with unsettled design use `feature-capture`
-then `feature-design` before implementation. Capture does bounded research and
-saves a feature brief with an active unresolved design gate. Create in the
-inbox, add the gate, then queue user-requested briefs on the current branch;
-confirmed agent ideas stay in the inbox. Explicit membership instructions override
-these defaults. This avoids a queued, ungated intermediate task. The readable
-`Feature design required (feature-design):` prefix
-identifies the workflow by convention; no schema, task type or parser is added.
+The initial recommended path is `init -> proposal-review -> superdevloop ->
+task-signoff`. Features with unsettled design use `task-capture` then
+`task-design` before implementation. Capture does bounded research and saves a
+feature brief with an active unresolved design gate. Create in the inbox, add
+the gate, then add user-requested briefs to the current workstream; confirmed
+agent ideas stay in the inbox. Explicit membership instructions override these
+defaults. This avoids an ungated intermediate workstream member. The readable
+`Feature design required (task-design):` prefix (older briefs say
+`(feature-design)`) identifies the workflow by convention; no schema, task type
+or parser is added.
 Design first asks whether the work is worth doing, then researches behavior,
 compares approaches and records the user's decisions. Selection includes
-inbox tasks alongside queued tasks with unresolved gates.
+inbox tasks alongside workstream members with unresolved gates.
 Unrelated unresolved items do not automatically imply feature design.
 
 Design saves the agreed specification before resolving settled gates, keeping
 unfinished decisions blocked. Keep unsettled decisions blocking until decomposition; member tasks inherit all
 original parent scopes. Add member gates and adopt the resulting user-requested
 specifications where the user is working. Prior decisions remain usable;
-queueing and design discussion start no implementation. Finishing design creates
+membership and design discussion start no implementation. Finishing design creates
 no implementation attempt or review.
-MCP instructions route familiar design-task language to the two packaged skills
-through `get_default_skills`, making them discoverable without client installation.
+MCP instructions name the packaged skills, and each skill's description routes
+familiar request language to it through `get_default_skills`, making them
+discoverable without client installation. Tool descriptions hold tool mechanics;
+skills hold workflow and judgment, so each fact is stated once.
 The database enforces the gates; interpreting language, researching choices and
 obtaining real user decisions remain agent workflow responsibilities.
 

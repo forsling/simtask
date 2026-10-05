@@ -522,7 +522,7 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
             # Export is a CLI/Store surface, no longer an MCP tool.
             exported = Store(database).export_workstream(ws)
             assert "> " + ATTRIBUTED_LEGACY_LOOKALIKE.replace("\n", "\n> ") in exported["content"]
-            assert "Value concern — reviewer historical" not in exported["content"]
+            assert "Worth-doing concern — reviewer historical" not in exported["content"]
             legacy_reviewed = await call(
                 "record_review",
                 attempt_id=legacy_ack["id"],

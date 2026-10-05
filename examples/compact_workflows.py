@@ -326,8 +326,8 @@ async def exercise(database):
         assert len(events["items"]) == 20 and "request" not in events["items"][0]
         index = await ok("get_default_skills")
         assert all("content" not in s for s in index["items"])
-        named = await ok("get_default_skills", name="signoff")
-        metadata = next(item for item in index["items"] if item["name"] == "signoff")
+        named = await ok("get_default_skills", name="task-signoff")
+        metadata = next(item for item in index["items"] if item["name"] == "task-signoff")
         assert named["items"][0]["sha256"] == metadata["sha256"]
         assert named["items"][0]["content"]
         report["fixture"] = {

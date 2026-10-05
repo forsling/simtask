@@ -84,8 +84,8 @@ context.proof = {...attempt("proof", "alt", "review"), summary: "Built", evidenc
 panel = descendants(run('attemptCard(proof, task)'));
 assert.ok(panel.some(n => n.textContent === "commit: abcdef0123456789"));
 assert.ok(panel.some(n => n.textContent === "Actual check passed"));
-assert.ok(panel.some(n => n.textContent === "Value · Implementer Builder"));
-assert.ok(panel.some(n => n.textContent === "Design · Reviewer Checker"));
+assert.ok(panel.some(n => n.textContent === "Worth-doing concern · Implementer Builder"));
+assert.ok(panel.some(n => n.textContent === "Approach concern · Reviewer Checker"));
 assert.ok(panel.some(n => n.textContent.includes("(alt) · spec 2")), "Concern provenance stays with the original result");
 assert.ok(panel.some(n => n.textContent === context.proof.concerns[1].text));
 assert.equal(run('concernPanel({...proof, concerns: []})'), null);

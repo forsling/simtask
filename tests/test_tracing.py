@@ -437,7 +437,7 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
             assert len((await client.list_tools()).tools) == 28
             assert not (await client.call_tool("list_projects", {})).is_error
             assert not (
-                await client.call_tool("get_default_skills", {"name": "feature-design"})
+                await client.call_tool("get_default_skills", {"name": "task-design"})
             ).is_error
             assert (
                 await client.call_tool("get_tasks", {"ids": [], "specification": "invalid"})

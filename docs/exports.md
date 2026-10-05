@@ -46,8 +46,9 @@ does not depend on a client's cached tool schema.
   attempt, workstream, specification and timestamp. Signoff history records actual
   verdicts/reasons and preserves historical defer/judgment fields.
 - Implementation history includes results, evidence, review notes and optional
-  nonblocking value/design concerns labelled with source and author. Attempts
-  for superseded specifications or other workstreams are labelled accordingly.
+  nonblocking worth-doing/approach concerns (stored kinds value/design) labelled
+  with source and author. Attempts for superseded specifications or other
+  workstreams are labelled accordingly.
   The selected signed-off attempt is identified on completed tasks. These
   labels do not invent a new review or sign-off verdict.
 

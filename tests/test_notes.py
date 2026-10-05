@@ -184,7 +184,7 @@ def test_mcp_tool_sets_notes_and_init_returns_them(tmp_path):
                 "set_note",
                 {"kind": "workstream", "target_id": ws, "expected_revision": 1, "text": "x" * 2001},
             )
-        assert "set_note" in server.instructions and "notes" in server.instructions
+        assert "init" in server.instructions and "notes" in server.instructions
 
     asyncio.run(scenario())
 

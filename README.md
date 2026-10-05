@@ -530,23 +530,27 @@ on the same task. An independent reviewer named differently from the implementer
 returns a verdict; the coordinator records it with `record_review`. Only the
 user's explicit approval can skip independent review: `signoff_task` approve then
 accepts a current-spec result still awaiting review, its reasons must say so, and
-the attempt records that human review. Agents must not self-issue it. Implementers follow the specification, record design/value
-concerns and carry on, or save an unexpected blocker and move on. Independent
-review judges Build: unattended fixes within the specification are rework;
-problems requiring a different specification are concerns. A sound Build passes
-with serious concerns, and optional extra features are new ideas. Use the task's
-`latest_rejection` reasons when implementing/reviewing.
+the attempt records that human review. Agents must not self-issue it.
+Implementers follow the specification, record worth-doing or approach concerns
+and carry on, or save an unexpected blocker and move on. Independent review
+judges "Built well?" within the agreed approach: unattended fixes within the
+specification are rework; problems requiring a different specification are
+concerns. Well-built work passes with serious concerns, and optional extra
+features are new ideas. Use the task's `latest_rejection` reasons when
+implementing/reviewing.
 
 "Sign off X" requests asked/built/verified presentation followed by the user's
 verdict; explicit "approve X" is valid without a walkthrough. Address every
-recorded concern and judge Value, then Design, then Build independently, never
-using an earlier judgment as a premise. Recommend approval only when all three
-hold. Generic rejection with reasons needs a confirmed mapping: Build rework,
-substantially different Design revise, Value/obsolete work drop. Only the user
-approves. One `signoff_task` decision selects the exact reviewed attempt.
+recorded concern and answer "Worth doing?", "Right approach?" and "Built well?"
+in that order, each independently, never using an earlier judgment as a
+premise. Recommend approval only when all three hold. Generic rejection with
+reasons needs a confirmed mapping: "Built well?" failures are rework, a
+different approach is revise, and work not worth doing (or obsolete) is drop.
+Only the user approves. One `signoff_task` decision selects the exact reviewed attempt.
 `approve` completes it; `rework` requests repair and fresh review; `revise` returns
 to design with the reasons as an open question; `drop` closes without approval.
-When dropped delivered code must be removed, queue a removal task in the same step.
+When dropped delivered code must be removed, add a removal task to the current
+workstream in the same step.
 The single `reasons` field is required for rework/revise and optional for
 approve/drop. Workstream membership and factual history survive every verdict.
 Deferral is an ordinary status change. The service stores the actual verdict and
@@ -557,8 +561,8 @@ reviewer independence or the actual human verdict. Workflows must obtain and
 record them truthfully.
 
 Implementers and independent reviewers may supply `concerns=[{kind: "value"|"design", text: ...}]`
-to `record_result` and `record_review`. A concern is a value or design doubt that
-cannot be fixed without changing what the task says. Concerns never change gates,
+to `record_result` and `record_review`. A concern is a worth-doing (`value`) or
+approach (`design`) doubt that cannot be fixed without changing what the task says. Concerns never change gates,
 review verdicts or prerequisite satisfaction. Omission preserves all existing
 contributions; reviewer additions retain the implementer's concerns and label
 both sources/authors. The write ACK returns a count, without concern prose.
@@ -576,39 +580,42 @@ exports retain them in labelled attempt history.
 The ordinary path is:
 
 ```text
-init → proposal/unresolved review → superdevloop → human sign-off
+init → proposal-review → superdevloop → task-signoff
 ```
 
 For a feature whose design is still open, use the two-phase path:
 
 ```text
-init → feature-capture → feature-design → queued implementation → review → human sign-off
+init → task-capture → task-design → implementation → review → task-signoff
 ```
 
 An ordinary **"add a task to do X"** request can authorize a concrete specification
-without another confirmation. Create it with the intended `workstream_id` to queue
-it there, or call `add_to_workstream` for an existing task. Queueing starts no implementation.
-Explicit placement instructions take precedence. Agent-suggested additions
-go to the inbox after user confirmation. User-requested design briefs belong on
-the current branch with active design gates; queueing starts no implementation.
+without another confirmation. Create it with the intended `workstream_id` to add
+it there, or call `add_to_workstream` for an existing task. Explicit placement
+instructions take precedence. Agent-suggested additions go to the inbox after
+user confirmation. User-requested design briefs belong in the current workstream
+with active design gates; membership starts no implementation.
 
 Say **"add a design task for X"** or ask to save an exploratory idea to use
-`feature-capture`. The agent does bounded preliminary research and saves the
+`task-capture`. The agent does bounded preliminary research and saves the
 desired outcome, motivation, current context, tentative scope, assumptions,
 possible directions and material open questions. You do not need to answer all
 of those questions during capture. Create the brief in the inbox, add a
-`Feature design required (feature-design): ...` gate, then queue user-requested
-work on the current branch. The gate keeps it from implementation selection.
+`Feature design required (task-design): ...` gate, then add user-requested work
+to the current workstream. The gate keeps it from implementation selection.
+Briefs saved before the rename say `(feature-design)`; task-design treats them
+the same.
 
 Say **"let's design X"**, **"review design tasks"**, or **"designrev"** to use
-`feature-design`. First decide whether the work is worth doing, then research
+`task-design`. First decide whether the work is worth doing, then research
 current behavior, compare approaches and work through decisions. Save the
 resulting specification and acceptance
 criteria, preserving unsettled questions. Larger features can become a group of
-concrete implementation tasks. Queue user-requested results where the user is
-working, after adding member gates. Keep unsettled questions blocking and respect
-explicit placement instructions. Queueing and design discussion start no
-implementation; membership changes need no separate scope step.
+concrete implementation tasks. Add user-requested results to the workstream
+where the user is working, after adding member gates. Keep unsettled questions
+blocking and respect explicit placement instructions. Membership and design
+discussion start no implementation; membership changes need no separate scope
+step.
 
 "Design task" is conversational shorthand for this workflow, not a stored task
 type. The design-gate prefix is a readable skill convention, not parsed server
@@ -618,9 +625,12 @@ Ordinary proposals and unrelated blockers still use `proposal-review`.
 
 The canonical reference skill files are packaged under
 `src/task_mcp/reference_skills/`. `get_default_skills()` returns a names/versions/hashes/descriptions index;
-`get_default_skills(name="feature-design")` returns that complete skill in one call. MCP startup instructions and the catalog tool route
-these phrases to the matching skill, so a fresh connected session can fetch and
-follow it without prior chat history or installing client skills. Existing
+`get_default_skills(name="task-design")` returns that complete skill in one call.
+The skills are `init`, `task-capture`, `task-design`, `proposal-review`,
+`superdevloop` and `task-signoff`. MCP startup instructions name them and each
+description routes request phrases to it, so a fresh connected session can fetch
+and follow one without prior chat history or installing client skills. Tool
+descriptions hold tool mechanics; skills hold workflow and judgment. Existing
 connections may need to reconnect to receive changed server instructions.
 Agents may also use the primitives directly. Copying
 them to a client's native skill location requires explicit user authorization;
@@ -633,7 +643,7 @@ those rare workflows are deferred.
 | Area | Tools |
 | --- | --- |
 | Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity; notes), `set_note`, `archive_workstream`, `list_projects`, `list_workstreams`, `workstream_status` (archived workstreams hidden unless `include_archived`) |
-| Scope and queue | `add_to_workstream`, `remove_from_workstream` (task or group IDs), `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
+| Scope and order | `add_to_workstream`, `remove_from_workstream` (task or group IDs), `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
 | Groups | `create_task(kind="group")`, `update_task(group_id=...)`, `list_tasks(state="group")`, `list_tasks(group_id=...)`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `decompose_task` |
 | Delivery | `record_result`, `record_review`, `signoff_task` |

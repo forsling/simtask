@@ -49,7 +49,7 @@ def test_capture_inbox_gate_then_queue_and_decide_without_delivery(context):
 def test_project_inbox_design_is_discoverable(context):
     store, project, ws = context
     brief = store.create_task(project, "Explore reset behavior")
-    store.add_unresolved(brief["id"], 1, "Feature design required (feature-design): choose reset")
+    store.add_unresolved(brief["id"], 1, "Feature design required (task-design): choose reset")
     assert [t["id"] for t in store.list_tasks(project, state="inbox")["items"]] == [brief["id"]]
     assert store.list_tasks(project, ws)["items"] == []
 

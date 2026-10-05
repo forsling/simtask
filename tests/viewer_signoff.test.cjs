@@ -109,7 +109,7 @@ async function test() {
   assert.doesNotMatch(allText, /Approval basis|Supporting approval/);
   assert.match(allText, /Actual result/);
   assert.match(allText, /Actual review proof/);
-  assert.match(allText, /Value · Implementer Builder/); assert.match(allText, /Design · Reviewer Checker/);
+  assert.match(allText, /Worth-doing concern · Implementer Builder/); assert.match(allText, /Approach concern · Reviewer Checker/);
   assert.match(allText, /Result attempt · .* \(main\) · spec 4/);
   assert.match(allText, /A priority change needs a scope change/);
   assert.match(allText, /<img src=x onerror=alert\(1\)>/);

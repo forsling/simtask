@@ -530,14 +530,14 @@ async def exercise(database: Path):
         assert "task-mcp/v1" in legacy and "```json" in legacy
         assert export("--export-format", "unsupported").returncode != 0
         catalog = await call("get_default_skills")
-        assert catalog["version"] == "1.20.0"
+        assert catalog["version"] == "2.0.0"
         assert {item["name"] for item in catalog["items"]} == {
             "init",
-            "feature-capture",
-            "feature-design",
+            "task-capture",
+            "task-design",
             "proposal-review",
             "superdevloop",
-            "signoff",
+            "task-signoff",
         }
         for item in catalog["items"]:
             canonical = (root / "src/task_mcp/reference_skills" / item["path"]).read_bytes()

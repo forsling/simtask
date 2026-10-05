@@ -161,8 +161,9 @@ database are synthetic. `pytest tests/test_viewer.py` covers protected access,
 allowed edit and decision flows, stale revisions, Store gate enforcement,
 local/global scope distinctions and cross-process launch/stop/restart.
 
-Result details and the sign-off dialog show value/design concerns with the
-implementer or reviewer name and original attempt/workstream/specification.
+Result details and the sign-off dialog show worth-doing and approach concerns
+(stored kinds `value`/`design`) with the implementer or reviewer name and
+original attempt/workstream/specification.
 These concerns are nonblocking; recorded gates and the user's actual verdict
 retain their existing meaning. Other/superseded results keep their own concerns
 in the existing labelled history.

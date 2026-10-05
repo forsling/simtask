@@ -1194,10 +1194,10 @@ function attemptCard(a, t) {
 }
 function concernPanel(a) {
   if (!a.concerns?.length) return null;
-  const panel = el("div", "sub", node("h4", "Value and design concerns"),
+  const panel = el("div", "sub", node("h4", "Worth-doing and approach concerns"),
     node("p", `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
   for (const concern of a.concerns) {
-    panel.append(node("h4", `${concern.kind === "value" ? "Value" : "Design"} · ${concern.source === "implementer" ? "Implementer" : "Reviewer"} ${concern.author}`), markdown(concern.text));
+    panel.append(node("h4", `${concern.kind === "value" ? "Worth-doing concern" : "Approach concern"} · ${concern.source === "implementer" ? "Implementer" : "Reviewer"} ${concern.author}`), markdown(concern.text));
   }
   return panel;
 }
