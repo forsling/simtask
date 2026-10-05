@@ -1,6 +1,6 @@
 ---
 name: task-mcp-feature-capture
-description: Save a researched feature brief with open design questions. Use for "add a design task" or an idea needing design; use feature-design for the discussion.
+description: Save a researched feature brief with open design questions, or go through saved ideas. Use for "add a design task", an idea needing design or "go through my ideas"; use feature-design for the discussion.
 ---
 
 # Feature capture
@@ -84,3 +84,13 @@ board before retrying uncertain creation. Cards are not specs. Whole body/
 criteria edits need the full-spec etag; valid updates return its successor.
 Fetch chosen proof with `get_tasks` attempt IDs or `get_attempt`; page
 `list_task_attempts`/`list_group_members` deliberately.
+
+## Go through my ideas
+
+Browser **+ Idea** saves inbox tasks held by an item starting `Idea to
+process:`. On request, find them with `list_tasks` and take them one at a
+time with the user, never unattended. Rewrite each in place with
+`update_task` into a proper brief (gated as above) or task, adding it to a
+workstream only when the user wants it built; split it with `decompose_task`;
+or drop it with `set_disposition` once the user agrees. Then resolve the idea
+item with `resolve_unresolved` and the user's outcome.

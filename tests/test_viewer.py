@@ -838,3 +838,70 @@ def test_browser_add_b_retains_a_remove_a_retains_b_and_local_proof(viewer):
     assert status == 200 and removed["workstream_ids"] == [b] and removed["adopted"]
     assert store.get_attempt(proof["id"])["workstream_id"] == a
     assert store.get_next_action(b)["action"] == "implement"
+
+
+def test_quick_idea_is_one_audited_inbox_task_held_until_processed(viewer):
+    server, store, context = viewer
+    project, ws = context["project"]["id"], context["workstream"]["id"]
+    text, note = "  Colour-code stale workstreams ", "Maybe after a week without results."
+    status, saved = request(server, "/api/idea", {"project": project, "text": text, "note": note})
+    assert status == 200 and saved["changed"] and saved["workstream_ids"] == []
+    task = store.get_tasks([saved["id"]])["items"][0]
+    assert (task["title"], task["body"], task["acceptance_criteria"]) == (
+        "Colour-code stale workstreams",
+        note,
+        "",
+    )
+    assert (task["source"], task["user_request"]) == ("user", text + "\n\n" + note)
+    assert task["revision"] == 1 and task["status"] == "open"
+    assert [i["text"] for i in task["unresolved_items"]] == [store_module.IDEA_ITEM]
+    assert store_module.IDEA_ITEM.startswith("Idea to process:")
+    # One audited write holds the task and its item together.
+    events = store.list_events(task_id=task["id"], include_details=True)["items"]
+    assert [
+        (e["action"], e["outcome"], e["actor"]) for e in events if "read" not in e["action"]
+    ] == [("task.idea_captured", "ok", "test-browser")]
+    # All tasks lists it as held (Needs input, Design/decision); no agent picks it up,
+    # even if someone later adds it to a workstream before processing it.
+    row = next(r for r in store.list_tasks(project)["items"] if r["id"] == task["id"])
+    assert row["unresolved_count"] == 1
+    store.add_to_workstream(task["id"], ws, 1)
+    next_action = store.get_next_action(ws)
+    assert next_action["task"] is None and next_action["diagnostics"]["unresolved_items"] == 1
+    # A bare line works too; no note means an empty body and the line as the request.
+    status, bare = request(server, "/api/idea", {"project": project, "text": "Dark mode"})
+    bare = store.get_tasks([bare["id"]])["items"][0]
+    assert (bare["body"], bare["user_request"]) == ("", "Dark mode")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"text": ""},
+        {"text": "   "},
+        {"text": "Two\nlines"},
+        {"text": "x" * 201},
+        {"text": "Fine", "note": "y" * 501},
+        {"text": "Fine", "note": "Two\rlines"},
+        {"text": 3},
+    ],
+)
+def test_quick_idea_rejects_anything_but_a_line_and_a_sentence(viewer, data):
+    server, store, context = viewer
+    status, error = request(server, "/api/idea", {"project": context["project"]["id"], **data})
+    assert status == 400 and "invalid_idea" in error["error"]
+    assert store.list_tasks(context["project"]["id"])["total"] == 0
+    events = store.list_events(project=context["project"]["id"], limit=100)["items"]
+    assert any((e["action"], e["outcome"]) == ("task.idea_captured", "error") for e in events)
+
+
+def test_quick_idea_is_a_viewer_operation_not_an_mcp_tool(tmp_path):
+    tools = asyncio.run(create_server(Store(tmp_path / "tasks.sqlite3")).list_tools())
+    assert not [t.name for t in tools if "idea" in t.name]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_frontend_quick_idea_dialog_confirmation_and_hand_off():
+    script = Path(__file__).with_name("viewer_idea.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr

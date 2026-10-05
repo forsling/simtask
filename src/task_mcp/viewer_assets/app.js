@@ -63,6 +63,12 @@ function taskStanding(t) {
       counts[a.state] = (counts[a.state] || 0) + 1;
   return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0 }, counts);
 }
+// A quick idea saved from the browser: held by the Store's "Idea to process" item until
+// an agent goes through it with the user.
+const IDEA_PREFIX = "Idea to process:";
+function isIdea(t) {
+  return !CLOSED.includes(t.status) && (t.unresolved_items || []).some((i) => i.text.startsWith(IDEA_PREFIX));
+}
 // The latest rejection stays in view only while it is current: no newer result exists.
 function currentRejection(t) {
   const r = t.latest_rejection;
@@ -178,6 +184,7 @@ function branchLabel(name) {
 
 const EVENTS = {
   "task.created": "Created",
+  "task.idea_captured": "Idea saved",
   "task.updated": "Edited",
   "task.workstream_added": "Added to workstream",
   "task.workstream_removed": "Removed from workstream",
@@ -725,6 +732,7 @@ async function reload({ quiet = false, requested = null } = {}) {
   const stream = state.stream;
   const stale = () => generation !== state.listGeneration || project !== state.project || groups !== state.groups || stream !== state.stream;
   if (!quiet) $("list").replaceChildren(skeleton());
+  $("idea").hidden = !!groups || !project;
   $("heading").replaceChildren(
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
   );
@@ -774,7 +782,7 @@ async function reload({ quiet = false, requested = null } = {}) {
       $("detail").replaceChildren(
         state.groups
           ? emptyState(groups === "shared" ? "No shared task groups" : "No task groups", groups === "shared" ? "Task groups with members in more than one project appear here." : "Task groups belonging to or included in this project appear here.")
-          : emptyState("Nothing here yet", "Tasks appear here when an agent adds them. You can also pick another workstream."),
+          : emptyState("Nothing here yet", "Tasks appear here when an agent adds them. Use + Idea to save a quick idea, or pick another workstream."),
       );
     }
   } catch (e) {
@@ -1145,6 +1153,12 @@ function nextStep(t, standing) {
       ? "Its workstreams, details and results are kept for when it resumes."
       : "Its workstreams, details and results are kept. Resume brings it back.";
     buttons.push(button("Resume", () => resumeTask(t), "btn primary"));
+  } else if (isIdea(t)) {
+    title = "An idea waiting to be processed";
+    text = "Nothing is built from an idea as it stands. Go through it with an agent: together you turn it into a proper brief or task, split it up, or drop it.";
+    extra = node("p", "Copy the prompt, paste it into your agent, and decide together.", "muted");
+    const prompt = ideaPrompt(t);
+    buttons.push(button("Go through it with an agent", (e) => copyPrompt(prompt, e.currentTarget, "walkthrough"), "btn primary"));
   } else if (!member) {
     title = "Add this task to a workstream";
     text = "Choose the branch where this task should be built. Its questions and prerequisites still apply.";
@@ -1180,7 +1194,7 @@ function nextStep(t, standing) {
     title = "Open";
     text = "No result is recorded yet. An agent can pick this up.";
   }
-  if (!signoff && (!member || t.unresolved_items.length || blocking || ["deferred", "dropped"].includes(t.status))) {
+  if (!signoff && !isIdea(t) && (!member || t.unresolved_items.length || blocking || ["deferred", "dropped"].includes(t.status))) {
     if (t.attempts.some((x) => x.spec_revision === t.spec_revision && (!state.stream || x.workstream_id === state.stream)))
       text += " A recorded result is kept below; it does not change this.";
   }
@@ -1196,21 +1210,24 @@ function nextStep(t, standing) {
 function signoffPrompt(t) {
   return `Sign off ${t.id} — ${t.title}`;
 }
+function ideaPrompt(t) {
+  return `Go through my ideas, starting with ${t.id} — ${t.title}`;
+}
 // Copy a prompt for the user to paste into an agent. The browser launches no agent.
 // The Clipboard API needs a secure context (127.0.0.1 is one); when it is missing or
 // refused, the prompt is shown selected beside the button so the user can copy it.
-async function copyPrompt(text, anchor) {
+async function copyPrompt(text, anchor, purpose = "sign-off") {
   try {
     if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
     await navigator.clipboard.writeText(text);
-    toast("Copied. Paste it into your agent to start the sign-off.");
+    toast(`Copied. Paste it into your agent to start the ${purpose}.`);
   } catch {
     const host = anchor?.closest?.(".next");
     let box = host?.querySelector(".prompt-copy");
     if (host && !box) {
       box = node("input", undefined, "prompt-copy");
       box.readOnly = true;
-      box.setAttribute("aria-label", "Sign-off prompt to copy");
+      box.setAttribute("aria-label", "Prompt to copy");
       host.append(box);
     }
     if (box) {
@@ -1658,6 +1675,39 @@ function resumeTask(t) {
     return { disposition: "open", note: reason, authorization: reason };
   });
 }
+// A quick idea goes to the open project's inbox, never a workstream, held by an "Idea
+// to process" item so nothing is built from it until an agent goes through it with the
+// user. Saving shows it in All tasks, under Needs input.
+function captureIdea() {
+  const project = state.project;
+  if (!project || state.groups) return;
+  const name = projectName(project);
+  openDialog("Save an idea",
+    `Jot it down before it's lost. It goes to the inbox of ${name}${state.stream ? ", not this workstream" : ""}, and waits under Needs input. Nothing is built from it until you go through it with an agent.`,
+    "Save idea");
+  field("text", "Your idea, in one line", { maxLength: 200 });
+  field("note", "One more sentence (optional)", { required: false, maxLength: 500 });
+  submitAction = async (values) => {
+    const text = values.get("text") || "", note = values.get("note") || "";
+    if (!text.trim()) throw Object.assign(new Error("Write your idea in one line."), { local: true });
+    const saved = await api("idea", { project, text, note });
+    return { afterSave: () => showIdea(saved) };
+  };
+}
+async function showIdea(saved) {
+  toast("Idea saved to the inbox. It waits under Needs input.");
+  if (state.project !== saved.project_id) return reload({ quiet: true });
+  state.groups = false;
+  state.linkedGroup = null;
+  state.stream = null;
+  state.selected = saved.id;
+  state.task = null;
+  $("search").value = "";
+  syncRoute("push");
+  renderNav();
+  $("shell").classList.add("detail-open");
+  await reload({ quiet: true });
+}
 $("form").onsubmit = async (e) => {
   e.preventDefault();
   if (submissionPending) return;
@@ -1667,7 +1717,8 @@ $("form").onsubmit = async (e) => {
   try {
     const result = await submitAction(new FormData($("form")));
     $("dialog").close();
-    if (!result?.stopped) {
+    if (result?.afterSave) await result.afterSave();
+    else if (!result?.stopped) {
       toast("Saved");
       await reload({ quiet: true });
     }
@@ -1693,6 +1744,7 @@ $("dialog").oncancel = (e) => {
 /* ---------- global controls ---------- */
 
 $("search").oninput = renderList;
+$("idea").onclick = captureIdea;
 $("refresh").onclick = () => reload({ quiet: true }).then(() => toast("Up to date"));
 $("menu").onclick = () => $("shell").classList.add("drawer-open");
 $("scrim").onclick = closeDrawer;

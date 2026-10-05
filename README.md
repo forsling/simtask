@@ -89,8 +89,13 @@ add a task to or remove it from a workstream, drag to reorder a workstream, and
 defer, resume or drop tasks (Drop asks for confirmation; reasons are optional
 except when bringing back a dropped task). A task waiting for sign-off offers
 **Sign off with an agent**, which copies a ready prompt to paste into your
-agent: sign-off is a walkthrough with an agent, not a browser form. The browser
-does not create or edit tasks, answer questions, record reviews or sign off.
+agent: sign-off is a walkthrough with an agent, not a browser form. **+ Idea**
+saves a thought before it is lost: one line plus an optional sentence becomes
+an inbox task held by an "Idea to process" item, shown under Needs input until
+you ask an agent to "go through my ideas" (the capture skill turns each into a
+brief or task with you, splits it, or drops it). Apart from these quick ideas,
+the browser does not create or edit tasks, answer questions, record reviews or
+sign off.
 Concurrent changes keep what you entered and offer reconciliation.
 The app uses the existing Store and database; it has no synchronized copy.
 Task text is displayed as safe, whitespace-preserving text, including Markdown

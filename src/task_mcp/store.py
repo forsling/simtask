@@ -99,6 +99,13 @@ SCHEMA = (
 )
 
 
+# A quick idea captured in the browser waits in the inbox, held by this item, until an
+# agent processes it with the user. Agents and the viewer recognise ideas by its prefix.
+IDEA_ITEM = "Idea to process: turn into a proper brief or task with the user"
+IDEA_TITLE_LIMIT = 200
+IDEA_NOTE_LIMIT = 500
+
+
 class TaskError(ValueError):
     """An actionable domain error safe to show to the caller."""
 
@@ -2569,6 +2576,44 @@ class Store:
             return ack
 
         return self._run("task.created", request, operation)
+
+    def capture_idea(self, project, text, note=""):
+        """A quick idea from the browser: one inbox task held by an Idea to process item.
+
+        The task and its item are written together at revision 1, so no state exists in
+        which the idea is buildable as is. Reached only through the viewer, not MCP.
+        """
+        request = dict(project=project, text=text, note=note)
+
+        def operation(db, scope):
+            project_id = self._project(db, project, scope)["id"]
+            if not isinstance(text, str) or not isinstance(note, str):
+                raise TaskError("invalid_idea: the idea and note must be text")
+            title, sentence = text.strip(), note.strip()
+            if not title or len(title) > IDEA_TITLE_LIMIT or "\n" in title or "\r" in title:
+                raise TaskError(f"invalid_idea: one line of up to {IDEA_TITLE_LIMIT} characters")
+            if len(sentence) > IDEA_NOTE_LIMIT or "\n" in sentence or "\r" in sentence:
+                raise TaskError(f"invalid_idea: a note of up to {IDEA_NOTE_LIMIT} characters")
+            task_id = self._insert_task(
+                db,
+                project_id,
+                title,
+                sentence,
+                "",
+                source="user",
+                user_request=text + ("\n\n" + note if sentence else ""),
+            )
+            item = [{"id": _id("unr_"), "text": IDEA_ITEM}]
+            db.execute("UPDATE tasks SET unresolved_json=? WHERE id=?", (_json(item), task_id))
+            task = self._details(db, self._task(db, task_id, scope))
+            scope["after"] = task
+            return self._task_ack(db, task) | {
+                "changed": True,
+                "title": task["title"],
+                "specification_etag": self._specification_etag(task),
+            }
+
+        return self._run("task.idea_captured", request, operation)
 
     def update_task(self, task_id, expected_revision, changes, specification_etag=None):
         request = dict(

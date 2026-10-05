@@ -2,9 +2,10 @@
 
 Run `task-mcp ui` and open the printed private link. This works independently of
 any MCP host or model. The browser shows and steers: you read tasks, ask
-questions, change workstreams, reorder and defer, resume or drop work there.
-Agents write tasks and record results, reviews and decisions with you; the
-browser creates, edits and signs off nothing. `--db /absolute/path/tasks.sqlite3` selects a database at
+questions, save quick ideas, change workstreams, reorder and defer, resume or
+drop work there. Agents write tasks and record results, reviews and decisions
+with you; apart from quick ideas, the browser creates, edits and signs off
+nothing. `--db /absolute/path/tasks.sqlite3` selects a database at
 launch; the default follows `TASK_MCP_DB`, then `XDG_DATA_HOME`, then the normal
 user data directory. The browser cannot select another database. The MCP
 `open_task_viewer` tool explicitly starts/reuses the same viewer for its Store
@@ -119,6 +120,21 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   keeps as the instruction that revived it. Each change records a reason in the
   history: yours, or a plain stand-in such as “Deferred in the browser.”
   Workstreams, details and results are kept through every status change.
+- **+ Idea** (beside Refresh, in All tasks and workstream views) saves a thought
+  before it is lost: **Your idea, in one line** (up to 200 characters) and an
+  optional **One more sentence** (up to 500). Saving creates, in one audited
+  Store step, a task in the project's inbox (no workstream, even when opened
+  from one): the line as title, the sentence as description, source user and
+  the exact text as its request, held by one open item, “Idea to process: turn
+  into a proper brief or task with the user”. The viewer confirms and opens it
+  in **All tasks** under Needs input with the **Design/decision** badge. No
+  agent picks it up as is. Its next step, **Go through it with an agent**,
+  copies a prompt (`Go through my ideas, starting with tsk_<id> — <title>`);
+  the capture skill then goes through your ideas one at a time with you,
+  rewriting each into a proper brief or task (added to a workstream when you
+  want it built), splitting it, or dropping it with your agreement, and
+  resolves the idea item. This is a viewer operation only; there is no MCP tool
+  for it.
 - Latest rejection reasons appear with their originating attempt/workstream in
   the task. Sign-off decisions, including historical defer decisions and
   judgment fields, remain readable.
@@ -130,7 +146,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   semicolons is displayed as a list; the stored text is unchanged. No remote
   fonts, scripts or image services load. Light and dark themes follow the OS.
 
-The browser does not create or edit tasks, projects or workstreams, answer
+Apart from **+ Idea**, the browser does not create or edit tasks, projects or workstreams, answer
 design/decision questions, record results or reviews, sign off, pick the next
 agent action, edit group scope or membership, or handle gate proposals. Agents
 do these through MCP, with you. The browser intentionally has no general Store
@@ -192,7 +208,7 @@ configured database, not just the current workstream.
 two-project initiative, a reviewed result, open question, proposal and deferred
 task. It prints the private link and exact stop command. All decisions in that
 database are synthetic. `pytest tests/test_viewer.py` covers protected access,
-the allowed membership, question and status changes, rejection of removed
+the allowed membership, question, quick idea and status changes, rejection of removed
 actions, stale revisions, Store gate enforcement, local/global scope
 distinctions and cross-process launch/stop/restart.
 

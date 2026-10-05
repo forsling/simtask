@@ -43,6 +43,8 @@ def dispatch(store, action, data):
         "remove-from-workstream": store.remove_from_workstream,
         "disposition": store.set_disposition,
         "question": store.add_unresolved,
+        # A quick idea becomes an inbox task held by an Idea to process item (no MCP tool).
+        "idea": store.capture_idea,
     }
     if action not in operations:
         raise TaskError("unknown_action")
