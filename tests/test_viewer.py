@@ -76,6 +76,25 @@ def create(server, context, **overrides):
     return request(server, "/api/details", {"ids": [task["id"]]})[1]["items"][0]
 
 
+def test_browser_idea_uses_shared_specification_escape_guard(viewer):
+    server, store, context = viewer
+    project = context["project"]["id"]
+    before = store.list_tasks(project)["total"]
+    status, error = request(
+        server,
+        "/api/idea",
+        {
+            "project": project,
+            "text": "Escaped idea",
+            "note": r"Goal\n- First outcome\n- Second outcome",
+        },
+    )
+    assert status == 400
+    assert "likely_double_escaped_specification: body" in error["error"]
+    assert "No task was created" in error["error"]
+    assert store.list_tasks(project)["total"] == before
+
+
 def test_browse_membership_questions_and_status_changes(viewer):
     server, store, context = viewer
     task = create(server, context)

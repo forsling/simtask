@@ -18,6 +18,8 @@ description: Save a task, bug or researched feature brief with its open design q
    current behavior, scope and exclusions, constraints, possible approaches and
    material open questions. Separate the user's decisions from suggestions.
    Acceptance criteria go in their own field; evidence belongs in attempts.
+   Pass ordinary text with actual line breaks through your JSON serializer;
+   do not pre-escape the specification.
 
 5. For a bug, write a reproduction requirement into the task: the work must
    demonstrate the bug before changing code.

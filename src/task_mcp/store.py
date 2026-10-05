@@ -3231,6 +3231,8 @@ class Store:
                 or not isinstance(acceptance_criteria, str)
             ):
                 raise TaskError("invalid_specification")
+            for field, value in (("body", body), ("acceptance_criteria", acceptance_criteria)):
+                self._validate_specification_text(value, field, creating=True)
             now = timestamp()
             self._validate_summary(summary)
             group_id = self._public_task_id(db, title, public_id)
@@ -3303,6 +3305,45 @@ class Store:
             raise TaskError("prerequisite_cycle")
 
     @staticmethod
+    def _validate_specification_text(value, field, *, creating=False):
+        """Reject strong prose-separator signals, without decoding any input.
+
+        Code spans/blocks are examples, not prose. Look within actual lines so
+        ordinary multiline specifications and technical escape mentions stay
+        untouched. Ambiguous escapes deliberately pass this conservative guard.
+        """
+        prose = re.sub(
+            r"(?ms)^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[ \t]*$|\Z)",
+            " ",
+            value,
+        )
+        prose = re.sub(r"(`+)(?!`).*?(?<!`)\1(?!`)", " ", prose, flags=re.DOTALL)
+        escape = r"\\+n"
+        for line in prose.splitlines():
+            if len(re.findall(escape, line)) < 2:
+                continue
+            # Two escaped bullet boundaries or a blank paragraph between prose
+            # are strong signals. Sentence boundaries cover single-line prose
+            # whose author escaped every line, but require repeated evidence.
+            bullets = re.findall(escape + r"[ \t]*(?:[-*+] |\d+[.)] )", line)
+            paragraphs = re.split(escape + r"[ \t]*" + escape, line)
+            paragraph_signal = any(
+                len(re.findall(r"\b[A-Za-z]+\b", left)) >= 3
+                and len(re.findall(r"\b[A-Za-z]+\b", right)) >= 3
+                and re.search(r"[.!?]$", left.rstrip())
+                and re.match(r"[ \t]*[A-Z][a-z]+\b", right)
+                for left, right in zip(paragraphs, paragraphs[1:], strict=False)
+            )
+            sentences = re.findall(r"[.!?]" + escape + r"[ \t]*[A-Z][a-z]+ ", line)
+            if len(bullets) >= 2 or paragraph_signal or len(sentences) >= 2:
+                outcome = "No task was created" if creating else "No changes were saved"
+                raise TaskError(
+                    f"likely_double_escaped_specification: {field} contains likely "
+                    "double-escaped line breaks. Submit actual line breaks through your "
+                    f"JSON serializer without pre-escaping the text. {outcome}."
+                )
+
+    @staticmethod
     def _insert_task(
         db,
         project_id,
@@ -3313,11 +3354,17 @@ class Store:
         source="agent",
         user_request="",
         public_id=None,
+        specification_creating=True,
+        specification_prefix="",
     ):
         if not isinstance(title, str) or not title.strip() or not isinstance(body, str):
             raise TaskError("invalid_specification: title and description required")
         if not isinstance(acceptance_criteria, str):
             raise TaskError("invalid_specification: acceptance criteria must be text")
+        for field, value in (("body", body), ("acceptance_criteria", acceptance_criteria)):
+            Store._validate_specification_text(
+                value, specification_prefix + field, creating=specification_creating
+            )
         if not isinstance(source, str) or source not in {"agent", "user", "unknown"}:
             raise TaskError("invalid_source: agent, user or unknown")
         if not isinstance(user_request, str):
@@ -3591,6 +3638,9 @@ class Store:
                 or any(not isinstance(after[k], str) for k in ("body", "acceptance_criteria"))
             ):
                 raise TaskError("invalid_specification")
+            for field in ("body", "acceptance_criteria"):
+                if field in changes:
+                    self._validate_specification_text(changes[field], field)
             spec_changed = any(before[k] != after[k] for k in allowed - {"summary"})
             if spec_changed:
                 after["spec_revision"] = before["spec_revision"] + 1
@@ -3911,7 +3961,7 @@ class Store:
             ).fetchall():
                 self._touch_workstream(db, row["workstream_id"])
             children = []
-            for member in members:
+            for index, member in enumerate(members):
                 child_id = self._insert_task(
                     db,
                     before["project_id"],
@@ -3920,6 +3970,8 @@ class Store:
                     member.get("acceptance_criteria", ""),
                     task_id,
                     public_id=member.get("public_id"),
+                    specification_creating=False,
+                    specification_prefix=f"members[{index}].",
                 )
                 self._copy_prerequisites(db, child_id, task_id)
                 children.append(child_id)
