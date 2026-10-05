@@ -72,6 +72,10 @@ def test_removed_tools_are_gone_and_replacement_inputs_are_published(mcp):
     for name in ("add_unresolved", "add_prerequisite"):
         handling = tools[name].input_schema["properties"]["handling"]
         assert handling["enum"] == ["active", "user"]
+    # init states the scope_expression syntax that seeds a new workstream.
+    assert "scope_expression: none or a base workstream, then +/-task/group" in (
+        tools["init"].description
+    )
     described = json.dumps([{"name": t.name, "description": t.description} for t in tools.values()])
     # rebind_workstream remains an init action; human_review remains an attempt state.
     for name in REMOVED - {"rebind_workstream", "human_review"}:

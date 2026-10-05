@@ -36,6 +36,12 @@ class ConcernInput(BaseModel):
     text: str
 
 
+class ArtifactInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["artifact", "commit"]
+    reference: str
+
+
 def domain_errors(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
@@ -161,10 +167,10 @@ def create_server(
         include_inactive: bool = False,
         include_archived: bool = False,
     ) -> dict[str, Any]:
-        """Call first: resume or set up the binding for an absolute checkout path and branch
-        (workstream_name if detached). Ready returns the first active cards, notes and
-        runtime; otherwise follow the returned choices with confirmed=true. workstream_id
-        checks the binding; archived bindings need include_archived.
+        """Call first with an absolute checkout path and branch (workstream_name if detached);
+        ready returns cards, notes and runtime, else repeat with a returned choice and
+        confirmed=true. workstream_id checks the binding. A new workstream's scope_expression:
+        none or a base workstream, then +/-task/group.
         """
         result = store.init(
             path,
@@ -500,15 +506,15 @@ def create_server(
         implementer: str,
         summary: str,
         evidence: str,
-        artifacts: list[dict[str, str]],
+        artifacts: list[ArtifactInput],
         verification: str,
         specification_etag: str,
         concerns: list[ConcernInput] | None = None,
     ) -> dict[str, Any]:
-        """Record a finished implementation with actual artifacts, verification, the last
-        revision and specification_etag; it grants no authority. Optional concerns (kind value
-        or design) are worth-doing or approach doubts that cannot be fixed without changing
-        what the task says; they never affect gates.
+        """Record finished work with the last revision, specification_etag, actual verification
+        and artifacts [{kind: artifact|commit, reference}]; it grants no authority. Optional
+        concerns (kind value or design) are worth-doing or approach doubts not fixable without
+        changing the task; they never affect gates.
         """
         return store.compact_call(
             "record_result",
@@ -518,7 +524,7 @@ def create_server(
             implementer,
             summary,
             evidence,
-            artifacts,
+            [a.model_dump() for a in artifacts],
             verification,
             specification_etag,
             [c.model_dump() for c in concerns] if concerns is not None else None,
@@ -535,9 +541,8 @@ def create_server(
         concerns: list[ConcernInput] | None = None,
     ) -> dict[str, Any]:
         """Record an independent reviewer's pass or rework on an attempt. A pass awaits the
-        user's sign-off; it never completes a task. Concerns (worth-doing or approach doubts)
-        cannot be fixed without changing what the task says, never affect gates, and are kept
-        when omitted.
+        user's sign-off; it never completes a task. Concerns are as in record_result and are
+        kept when omitted.
         """
         return store.compact_call(
             "record_review",

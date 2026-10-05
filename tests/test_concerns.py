@@ -424,11 +424,18 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
                     "value",
                     "design",
                 ]
-                assert (
-                    "cannot be" in descriptor.description
-                    and "changing what the task says" in descriptor.description
-                )
                 assert "rare" not in descriptor.description
+            described = {t.name: t.description for t in tools}
+            assert "not fixable without changing the task" in described["record_result"]
+            assert "never affect gates" in described["record_result"]
+            assert "as in record_result" in described["record_review"]
+            # The artifact format is stated in the description and enforced by the schema.
+            assert "[{kind: artifact|commit, reference}]" in described["record_result"]
+            schema = next(t for t in tools if t.name == "record_result").input_schema
+            artifact = schema["$defs"]["ArtifactInput"]
+            assert artifact["properties"]["kind"]["enum"] == ["artifact", "commit"]
+            assert set(artifact["required"]) == {"kind", "reference"}
+            assert artifact["additionalProperties"] is False
 
             async def call(name, **arguments):
                 response = await client.call_tool(name, arguments)
@@ -466,6 +473,16 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
                 "record_result", {**proof, "concerns": [{"kind": "wrong", "text": "Invalid"}]}
             )
             assert invalid.is_error
+            # Guessed artifact shapes fail with errors naming the expected keys and kinds.
+            for artifacts, expected in (
+                ([{"path": "synthetic.txt"}], ("artifacts.0.kind", "artifacts.0.reference")),
+                ([{"type": "commit", "ref": "abc123"}], ("artifacts.0.kind", "reference")),
+                ([{"kind": "file", "reference": "x"}], ("'artifact' or 'commit'",)),
+                ([], ("{kind, reference}", "artifact or commit")),
+            ):
+                guessed = await client.call_tool("record_result", {**proof, "artifacts": artifacts})
+                assert guessed.is_error
+                assert all(text in guessed.content[0].text for text in expected), artifacts
             ack = await call(
                 "record_result",
                 **proof,

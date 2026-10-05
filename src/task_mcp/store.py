@@ -2014,7 +2014,10 @@ class Store:
                 (project_id, first, first),
             ).fetchall()
             if len(ws_rows) != 1:
-                raise TaskError("unknown_scope_base: use none or a workstream ID/name")
+                raise TaskError(
+                    "unknown_scope_base: start with none or a workstream ID/name, "
+                    "then +/-task or group references"
+                )
             ws_id = ws_rows[0]["id"]
             members = {
                 row["task_id"]
@@ -4111,7 +4114,10 @@ class Store:
                     for ref in artifacts
                 )
             ):
-                raise TaskError("durable_artifacts_required: concrete artifact/commit references")
+                raise TaskError(
+                    "durable_artifacts_required: a non-empty list of {kind, reference} where "
+                    "kind is artifact or commit and reference is a non-empty path, URL or hash"
+                )
             recorded_concerns = self._validate_concerns(concerns, "implementer", implementer)
             now = timestamp()
             attempt = dict(

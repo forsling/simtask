@@ -108,7 +108,7 @@ def test_result_contract_requires_current_full_spec_and_concrete_proof_atomicall
         ({"specification_etag": ""}, "full_specification_required"),
         ({"specification_etag": other["specification_etag"]}, "full_specification_required"),
         ({"expected_revision": 0}, "revision_conflict"),
-        ({"artifacts": []}, "durable_artifacts_required"),
+        ({"artifacts": []}, r"durable_artifacts_required: .*\{kind, reference\}.*artifact or"),
         ({"artifacts": [{"kind": [], "reference": "bad"}]}, "durable_artifacts_required"),
         ({"artifacts": [{"kind": "commit", "reference": " "}]}, "durable_artifacts_required"),
         ({"verification": " "}, "result_required"),

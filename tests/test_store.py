@@ -114,7 +114,7 @@ def test_session_init_new_branch_attach_rebind_and_rollback(store, tmp_path):
     assert unknown["state"] == "unregistered_checkout"
     assert {"create_project", "attach_workstream", "rebind_workstream"} == set(unknown["choices"])
     assert unknown["workstream_candidates"]
-    with pytest.raises(TaskError, match="unknown_scope_base"):
+    with pytest.raises(TaskError, match=r"unknown_scope_base: .*none.*\+/-task or group"):
         store.init(
             checkout,
             branch="release",
