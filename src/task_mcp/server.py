@@ -261,12 +261,10 @@ def create_server(
         public_id: str | None = None,
         kind: Literal["task", "group"] = "task",
     ) -> dict[str, Any]:
-        """Create a task, or with kind=group an empty group. workstream_id adds it to that
-        workstream; without one it stays in the inbox. group_id with the group's revision
-        makes it a member. source and user_request record who asked and what they said.
-        Choose a descriptive public_id such as readable-task-ids: globally unique,
-        permanent and accepted everywhere task_id is used. A conflict requires another
-        name. Omission derives a title slug with a numeric suffix when needed.
+        """Create a task or kind=group. workstream_id adds membership; omission leaves it
+        in the inbox. group_id requires group_expected_revision. public_id is a stable,
+        globally unique descriptive ID; conflict needs another name, omission derives
+        a title slug. source/user_request record origin.
         """
         return store.compact_call(
             "create_task",
@@ -477,13 +475,10 @@ def create_server(
     def decompose_task(
         task_id: str, expected_revision: int, members: list[dict[str, str]]
     ) -> dict[str, Any]:
-        """Turn an open task with no attempts, questions or parent group into a group, creating
-        its member tasks in the same workstreams with its prerequisites, in one step.
-
-
-        Members accept title/body/acceptance_criteria and optional public_id. Explicit
-        public IDs are globally unique permanent references; a conflict rolls back all
-        members. Omission derives each name from its title.
+        """Turn an open task without attempts, questions or a parent into a group and
+        create members in its workstreams with its prerequisites atomically. Members
+        take title/body/acceptance_criteria and optional unique public_id; omission
+        derives title slugs, and any conflict rolls back all members.
         """
         return store.compact_call("decompose_task", task_id, expected_revision, members)
 
