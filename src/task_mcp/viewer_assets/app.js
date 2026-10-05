@@ -421,6 +421,7 @@ async function refreshNeeds(project, streams) {
 //   /g/<group>        a group in the view it implies (its project's groups, or shared)
 //   /sg               Shared groups     /sg/<group>
 // A workstream or group implies its project, so only project-wide views name one.
+// Readable public task/group IDs appear in full. Legacy IDs and project/workstream
 // IDs appear as their first 8 hex characters, or in full when that prefix is ambiguous
 // where the address is resolved: tasks within the view's board, projects among all
 // projects, workstreams and groups across the database (through "resolve-prefix").
@@ -430,6 +431,7 @@ const longIds = new Set(); // IDs shown in full because their short prefix is am
 const checkedIds = new Set(); // workstream and group IDs whose short prefix was checked
 const groupHomes = new Map(); // group ID -> "shared", or the project whose groups it implies
 function shortId(id, pool = []) {
+  if (!/^[a-z]+_[0-9a-f]{1,32}$/.test(id)) return id;
   const hex = hexOf(id), short = hex.slice(0, SHORT);
   return longIds.has(id) || pool.some((o) => o !== id && hexOf(o).startsWith(short)) ? hex : short;
 }
@@ -448,25 +450,26 @@ function routePath() {
   const base = state.stream ? "/w/" + shortId(state.stream, ids(state.streams)) : project;
   return state.selected ? base + "/t/" + shortId(state.selected, ids(state.rows)) : base;
 }
-// A parsed location ({view, project, stream, group, task} as hex prefixes), {} for the
+// A parsed location ({view, project, stream, group, task} as public IDs/hex prefixes), {} for the
 // default location, or null for an unrecognized address.
 function parseRoute(path) {
   if (path === "/") return {};
   const [a, b, c, d, ...rest] = path.split("/").slice(1);
   const id = (s) => /^[0-9a-f]{1,32}$/.test(s || "");
+  const taskId = (s) => id(s) || (typeof s === "string" && s.length <= 96 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(s));
   if (rest.length) return null;
   if (a === "p" && id(b)) {
     if (c === undefined) return { view: "all", project: b };
-    if (c === "t" && id(d)) return { view: "all", project: b, task: d };
+    if (c === "t" && taskId(d)) return { view: "all", project: b, task: d };
     if (c === "g" && d === undefined) return { view: "groups", project: b };
-    if (c === "g" && id(d)) return { view: "groups", project: b, group: d };
+    if (c === "g" && taskId(d)) return { view: "groups", project: b, group: d };
   } else if (a === "w" && id(b)) {
     if (c === undefined) return { view: "workstream", stream: b };
-    if (c === "t" && id(d)) return { view: "workstream", stream: b, task: d };
-  } else if (a === "g" && id(b) && c === undefined) return { view: "group", group: b };
+    if (c === "t" && taskId(d)) return { view: "workstream", stream: b, task: d };
+  } else if (a === "g" && taskId(b) && c === undefined) return { view: "group", group: b };
   else if (a === "sg" && c === undefined) {
     if (b === undefined) return { view: "shared-groups" };
-    if (id(b)) return { view: "shared-groups", group: b };
+    if (taskId(b)) return { view: "shared-groups", group: b };
   }
   return null;
 }
@@ -764,7 +767,8 @@ async function reload({ quiet = false, requested = null } = {}) {
     if (requested) {
       // A location's task prefix resolves within this board; a task that has left the
       // view (or a prefix matching several) falls back to the first task.
-      const matches = rows.filter((r) => hexOf(r.id).startsWith(requested));
+      const exact = rows.filter((r) => r.id === requested);
+      const matches = exact.length ? exact : rows.filter((r) => /^tsk_[0-9a-f]{32}$/.test(r.id) && hexOf(r.id).startsWith(requested));
       if (matches.length === 1) state.selected = matches[0].id;
       else {
         const where = stream ? streamName(stream) : "this project";
@@ -797,7 +801,7 @@ async function reload({ quiet = false, requested = null } = {}) {
 
 function filteredRows() {
   const query = $("search").value.trim().toLowerCase();
-  return state.rows.filter((r) => `${r.title} ${r.summary || ""}`.toLowerCase().includes(query));
+  return state.rows.filter((r) => `${r.id} ${r.title} ${r.summary || ""}`.toLowerCase().includes(query));
 }
 function orderedRows() {
   if (state.groups) return filteredRows();
@@ -805,6 +809,39 @@ function orderedRows() {
   return SECTIONS.flatMap((s) =>
     collapsed.has(s.key) && !$("search").value ? [] : rows.filter((r) => s.standings.includes(r.standing)),
   );
+}
+function taskIdLabel(id) {
+  const label = node("code", id, "task-id");
+  label.setAttribute("aria-label", "Task ID: " + id);
+  // Selecting/copying the identifier should not open the card or start a drag.
+  label.onclick = (event) => event.stopPropagation();
+  label.onmousedown = (event) => {
+    event.stopPropagation();
+    const card = label.closest?.(".row");
+    if (card?.draggable) {
+      card.draggable = false;
+      window.addEventListener("mouseup", () => { card.draggable = true; }, { once: true });
+    }
+  };
+  label.draggable = false;
+  return label;
+}
+function taskIdHeader(id) {
+  const label = taskIdLabel(id);
+  const copy = button("Copy ID", async () => {
+    try {
+      await navigator.clipboard.writeText(id);
+      toast("Task ID copied.");
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      toast("Task ID selected. Press Ctrl+C (⌘C on a Mac) to copy it.");
+    }
+  }, "small");
+  return el("div", "task-id-header", label, copy);
 }
 function row(r) {
   const b = button("", () => selectTask(r.id, { open: true, entry: "push" }), "row" + (r.id === state.selected ? " selected" : ""));
@@ -816,7 +853,7 @@ function row(r) {
       done = r.progress?.done || 0;
     b.append(
       node("span", "", "dot tone-" + (r.complete ? "done" : "info")),
-      el("span", "row-main", node("span", r.title, "row-title"), r.summary ? node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted") : null, node("span", `${groupKind(r)} · ${groupProjectCount(r)} project${groupProjectCount(r) === 1 ? "" : "s"}`, "muted"), progressBar(done, total)),
+      el("span", "row-main", node("span", r.title, "row-title"), taskIdLabel(r.id), r.summary ? node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted") : null, node("span", `${groupKind(r)} · ${groupProjectCount(r)} project${groupProjectCount(r) === 1 ? "" : "s"}`, "muted"), progressBar(done, total)),
       node("span", `${done}/${total}`, "row-meta"),
     );
   } else {
@@ -832,7 +869,7 @@ function row(r) {
     } else b.title = v.label;
     const title = node("span", r.title, "row-title");
     if (v.badge) title.append(" ", node("span", v.label, "badge tone-" + v.tone));
-    const main = el("span", "row-main", title);
+    const main = el("span", "row-main", title, taskIdLabel(r.id));
     if (r.summary) main.append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
     b.append(node("span", "", "dot tone-" + v.tone), main);
   }
@@ -1105,6 +1142,7 @@ function renderDetail(t) {
     "header",
     "detail-head",
     node("h2", t.title, "title"),
+    taskIdHeader(t.id),
     el(
       "div",
       "meta",
@@ -1387,6 +1425,7 @@ function renderGroup(t) {
         "header",
         "detail-head",
         node("h2", t.title, "title"),
+        taskIdHeader(t.id),
         el("div", "meta", pill(t.complete ? "done" : "review", t.complete ? "Complete" : "In progress"), node("span", `${p.done} of ${p.total} signed off · ${projects} project${projects === 1 ? "" : "s"}`, "meta-item")),
         progressBar(p.done, p.total),
       ),

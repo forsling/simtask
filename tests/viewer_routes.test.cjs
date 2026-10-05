@@ -81,7 +81,8 @@ function viewer(initial, stored = "") {
     }
     if (action === "resolve-prefix") {
       const pool = data.kind === "workstream" ? allStreams.map(s => [s.id, s.project_id]) : Object.entries(groupInfo).map(([g, i]) => [g, i.origin]);
-      const items = pool.filter(([x]) => hex(x).startsWith(data.prefix)).sort().slice(0, 2).map(([x, p]) => ({id: x, project_id: p}));
+      const exact = pool.filter(([x]) => x === data.prefix);
+      const items = (exact.length ? exact : pool.filter(([x]) => /^[a-z]+_[0-9a-f]{32}$/.test(x) && hex(x).startsWith(data.prefix))).sort().slice(0, 2).map(([x, p]) => ({id: x, project_id: p}));
       return {items};
     }
     if (action === "details") {
@@ -263,6 +264,28 @@ async function main() {
   const o = viewer({path: "/", hash: "#/project/prj_x/all"}, "stored-token");
   assert.equal(o.token(), "stored-token");
   assert.deepEqual(o.entries[0], {path: "/", hash: ""});
+  // New public names stay whole, including when one name is another's prefix.
+  const readable = "restore-readable-task-ids-across-design-and-signoff";
+  tasks[W1].push(readable, readable + "-next");
+  tasks[P1].push(readable, readable + "-next");
+  await v.edit(`/w/${short(W1)}/t/${readable}`);
+  assert.equal(v.at().selected, readable);
+  assert.equal(v.path(), `/w/${short(W1)}/t/${readable}`);
+  await v.run(`selectTask("${readable}-next", {open: true, entry: "push"})`);
+  assert.equal(v.path(), `/w/${short(W1)}/t/${readable}-next`);
+  await v.back();
+  assert.equal(v.at().selected, readable);
+  const reloaded = viewer({path: `/w/${short(W1)}/t/${readable}`, hash: ""}, "stored-token");
+  await reloaded.run("boot()");
+  assert.equal(reloaded.at().selected, readable);
+  const readableGroup = "readable-group-reference";
+  groupInfo[readableGroup] = {origin: P1, by: [P1]};
+  groupLists[P1].push(readableGroup);
+  await v.edit(`/g/${readableGroup}`);
+  assert.equal(v.at().selected, readableGroup);
+  assert.equal(v.path(), `/g/${readableGroup}`);
+  assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/double--dash")'), null);
+  assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/' + 'x'.repeat(97) + '")'), null);
   console.log("viewer route tests passed");
 }
 main().catch(error => {

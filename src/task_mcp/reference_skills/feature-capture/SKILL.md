@@ -94,3 +94,11 @@ time with the user, never unattended. Rewrite each in place with
 workstream only when the user wants it built; split it with `decompose_task`;
 or drop it with `set_disposition` once the user agrees. Then resolve the idea
 item with `resolve_unresolved` and the user's outcome.
+
+
+For new tasks/groups, choose a stable descriptive `public_id`, for example
+`readable-task-ids`; decomposition members accept the same field. Names are globally
+unique and cannot be reused for closed tasks. If creation returns
+`public_id_conflict`, choose a more specific name and retry. Use the returned public
+ID in all references; existing `tsk_…` references remain unchanged. Title/spec edits
+never rename a task.

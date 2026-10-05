@@ -93,3 +93,11 @@ retrying uncertain creation/decomposition. Cards are not specs. Whole body/
 criteria edits need the full-spec etag; valid updates return its successor.
 Fetch chosen proof with `get_tasks` attempt IDs or `get_attempt`; page
 `list_task_attempts`/`list_group_members` deliberately.
+
+
+For new tasks/groups, choose a stable descriptive `public_id`, for example
+`readable-task-ids`; decomposition members accept the same field. Names are globally
+unique and cannot be reused for closed tasks. If creation returns
+`public_id_conflict`, choose a more specific name and retry. Use the returned public
+ID in all references; existing `tsk_…` references remain unchanged. Title/spec edits
+never rename a task.

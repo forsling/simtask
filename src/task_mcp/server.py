@@ -227,10 +227,15 @@ def create_server(
         body: str = "",
         acceptance_criteria: str = "",
         summary: str | None = None,
+        public_id: str | None = None,
     ) -> dict[str, Any]:
-        """Create an empty global group and include it in this workstream's scope."""
+        """Create an empty global group and include it in this workstream's scope.
+
+        Choose a permanent descriptive public_id; conflicts require a different name.
+        Omission derives a title slug with a numeric suffix when needed.
+        """
         return store.compact_call(
-            "create_group", workstream_id, title, body, acceptance_criteria, summary
+            "create_group", workstream_id, title, body, acceptance_criteria, summary, public_id
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -285,11 +290,15 @@ def create_server(
         group_id: str | None = None,
         group_expected_revision: int | None = None,
         summary: str | None = None,
+        public_id: str | None = None,
     ) -> dict[str, Any]:
         """Create with direct membership when workstream_id is supplied.
 
         Include agreed work; open design questions remain blocking gates.
         Group membership follows existing dynamic inclusion and exclusions.
+        Choose a descriptive public_id such as readable-task-ids: globally unique,
+        permanent and accepted everywhere task_id is used. A conflict requires another
+        name. Omission derives a title slug with a numeric suffix when needed.
         """
         return store.compact_call(
             "create_task",
@@ -303,6 +312,7 @@ def create_server(
             group_id,
             group_expected_revision,
             summary,
+            public_id,
         )
 
     @server.tool(annotations=additive, structured_output=True)
@@ -523,7 +533,12 @@ def create_server(
     def decompose_task(
         task_id: str, expected_revision: int, members: list[dict[str, str]]
     ) -> dict[str, Any]:
-        """Convert to a group and create required members in the parent scopes atomically."""
+        """Convert to a group and create required members in the parent scopes atomically.
+
+        Members accept title/body/acceptance_criteria and optional public_id. Explicit
+        public IDs are globally unique permanent references; a conflict rolls back all
+        members. Omission derives each name from its title.
+        """
         return store.compact_call("decompose_task", task_id, expected_revision, members)
 
     @server.tool(annotations=editing, structured_output=True)

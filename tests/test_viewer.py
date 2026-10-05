@@ -309,6 +309,11 @@ def test_narrow_api_and_safe_assets(viewer):
 
 
 LOCATION_PATHS = [
+    "/w/1c4684b6/t/readable-task-ids",
+    "/p/1c4684b6/t/readable-task-ids",
+    "/g/readable-task-group",
+    "/p/1c4684b6/g/readable-task-group",
+    "/sg/readable-task-group",
     "/p/1c4684b6",
     "/p/1c4684b6/t/a5dfba02",
     "/p/1c4684b6/g",
@@ -406,6 +411,12 @@ def test_resolve_matches_workstream_and_group_prefixes_and_reports_ambiguity(tmp
         store_module,
         "_id",
         lambda prefix: prefix + next(planned[prefix]) if prefix in planned else original(prefix),
+    )
+    # Simulate unchanged legacy IDs for the prefix compatibility checks.
+    monkeypatch.setattr(
+        Store,
+        "_public_task_id",
+        staticmethod(lambda db, title, public_id=None: store_module._id("tsk_")),
     )
     store = Store(tmp_path / "tasks.sqlite3", "test-browser")
     one = store.init_project(str(tmp_path / "one"), branch="main", confirmed=True)
@@ -903,5 +914,12 @@ def test_quick_idea_is_a_viewer_operation_not_an_mcp_tool(tmp_path):
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
 def test_frontend_quick_idea_dialog_confirmation_and_hand_off():
     script = Path(__file__).with_name("viewer_idea.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_frontend_public_ids_cards_headers_copy_and_search():
+    script = Path(__file__).with_name("viewer_ids.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr

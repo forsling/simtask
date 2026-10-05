@@ -115,7 +115,7 @@ def test_export_workflow_views_match_scoped_queue(context):
     assert "selected signed-off result" in task_section(text, "Done")
     filtered = store.export_workstream(ws, include_closed=False)["content"]
     assert "Exported tasks: 7 of 9" in filtered
-    assert done["id"] not in filtered
+    assert f"- ID: `{done['id']}`" not in filtered
     assert "### Dropped" not in filtered
     assert "### Deferred" in filtered
     assert "```json" not in text

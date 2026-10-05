@@ -16,6 +16,26 @@ liveness, conversations, host delays or actual model-context tokens; see
 
 ## Identity and scope
 
+Schema 11 adds a private `task_identities` registry with a UUID primary key and a
+unique public task/group ID referencing `tasks.id`. Public IDs are stable global
+references; existing `tsk_…` keys and all foreign keys, proof and audit bytes remain
+unchanged. Migration backfills UUIDs under the existing writer lock and verified
+online backup/transaction rollback mechanism. Keeping the existing public-key
+relationships avoids rewriting immutable history. UUIDs never join public task
+payloads, traces, navigation or exports.
+
+New task/group creation accepts an optional descriptive `public_id` (lowercase ASCII
+letters/digits separated by single hyphens, first character a letter, maximum 96).
+Explicit names fail atomically on collision, including names reserved by closed
+work. Omitted names derive from normalized title text with numeric suffixes, for
+compatibility callers and browser ideas. All allocation occurs under `BEGIN IMMEDIATE`
+and the existing unique public primary key; decomposition rolls back on any member
+collision. A title/specification edit never changes the reference. Protocol 15
+exposes the optional creation input. GUI cards and headers show full selectable
+public references, detail headers support copy, and search includes the reference.
+Readable navigation uses exact public IDs; existing hexadecimal-prefix bookmarks
+continue to resolve legacy rows.
+
 Projects are initialized explicitly at a canonical path. A project may attach
 other checkout paths. Each workstream has a durable ID and a mutable branch or
 explicit name binding. Each session calls `init` with its explicit target path

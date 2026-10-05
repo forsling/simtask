@@ -37,7 +37,7 @@ def test_fresh_client_packaged_skills_match_the_discovered_tool_contract(tmp_pat
             runtime = await call("runtime_info")
             assert runtime["package_path"] == str(root / "src/task_mcp")
             index = await call("get_default_skills")
-            assert index["version"] == "1.16.0"
+            assert index["version"] == "1.17.0"
             checked = set()
             for item in index["items"]:
                 named = await call("get_default_skills", name=item["name"])

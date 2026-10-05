@@ -14,7 +14,7 @@ and returns the link. No browser is launched automatically.
 ## Location URLs
 
 After the launch link connects, the address bar shows a short, token-free path
-for where you are, for example `/w/1c4684b6/t/a5dfba02` (task `a5dfba02` in
+for where you are, for example `/w/1c4684b6/t/readable-task-ids` (task `readable-task-ids` in
 workstream `1c4684b6`). A workstream or group implies its project, so only the
 project-wide views name one:
 
@@ -27,7 +27,13 @@ project-wide views name one:
 | `/p/<project>/g/<group>` | A group shown in a project's **Task groups** other than the one it implies (a shared group, for example) |
 | `/sg` and `/sg/<group>` | **Shared task groups** |
 
-IDs appear as the first 8 hexadecimal characters after their type prefix
+New task/group IDs appear in full, for example `readable-task-ids`; exact public
+names resolve independently of other names with the same prefix. Cards and detail
+headers show the complete selectable ID, with **Copy ID** in details. Long IDs wrap
+on narrow screens. Search includes the public ID. Existing `tsk_…` IDs stay unchanged.
+
+Project/workstream and legacy task/group IDs appear in URLs as the first 8
+hexadecimal characters after their type prefix
 (`wst_1c4684b6…` becomes `1c4684b6`). Only when that prefix is ambiguous is the
 full 32-character ID used: tasks resolve within the view's task list, projects
 among all projects, and workstreams and groups across the database. Any longer
@@ -129,7 +135,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   into a proper brief or task with the user”. The viewer confirms and opens it
   in **All tasks** under Needs input with the **Design/decision** badge. No
   agent picks it up as is. Its next step, **Go through it with an agent**,
-  copies a prompt (`Go through my ideas, starting with tsk_<id> — <title>`);
+  copies a prompt (`Go through my ideas, starting with <public-id> — <title>`);
   the capture skill then goes through your ideas one at a time with you,
   rewriting each into a proper brief or task (added to a workstream when you
   want it built), splitting it, or dropping it with your agreement, and
