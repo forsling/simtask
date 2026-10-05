@@ -10,29 +10,65 @@ const token = launchToken || sessionStorage.getItem("task-token") || "";
 if (token) sessionStorage.setItem("task-token", token);
 history.replaceState(null, "", location.pathname || "/");
 
+// Where a task stands for the user. Cards show only this, never the agents' internal
+// stage; whether work is a first attempt or a rework round belongs in the task history.
+const STANDINGS = {
+  signoff: { label: "Sign-off", tone: "go", badge: true },
+  decision: { label: "Design/decision", tone: "warn", badge: true },
+  progress: { label: "In progress", tone: "info" },
+  open: { label: "Open", tone: "ready" },
+  deferred: { label: "Deferred", tone: "muted" },
+  done: { label: "Done", tone: "done" },
+  dropped: { label: "Dropped", tone: "muted" },
+};
+// Result states, shown in the task's detail and history only.
 const VIEWS = {
-  signoff: { label: "Ready to sign off", short: "Sign off", tone: "go" },
-  inbox: { label: "Inbox", short: "Inbox", tone: "ask" },
-  unresolved_items: { label: "Open question", short: "Question", tone: "warn" },
-  review: { label: "In review", short: "Review", tone: "info" },
-  ready: { label: "Ready", short: "Ready", tone: "ready" },
-  prerequisites: { label: "Blocked", short: "Blocked", tone: "muted" },
-  deferred: { label: "Deferred", short: "Deferred", tone: "muted" },
-  done: { label: "Done", short: "Done", tone: "done" },
-  dropped: { label: "Dropped", short: "Dropped", tone: "muted" },
-  rework: { label: "Rework", short: "Rework", tone: "warn" },
-  passed: { label: "Review passed", short: "Passed", tone: "go" },
-  human_review: { label: "Human reviewed", short: "Reviewed", tone: "go" },
-  rejected: { label: "Rejected", short: "Rejected", tone: "warn" },
-  open: { label: "Open", short: "Open", tone: "ready" },
+  review: { label: "In review", tone: "info" },
+  rework: { label: "Sent back", tone: "warn" },
+  passed: { label: "Review passed", tone: "go" },
+  human_review: { label: "Human reviewed", tone: "go" },
+  done: { label: "Done", tone: "done" },
+  open: { label: "Open", tone: "ready" },
+  ...STANDINGS,
 };
 const SECTIONS = [
-  { key: "you", title: "Needs you", views: ["signoff", "inbox", "unresolved_items"] },
-  { key: "active", title: "In progress", views: ["review", "ready", "open", "prerequisites"] },
-  { key: "later", title: "Later", views: ["deferred"], collapsible: true },
-  { key: "closed", title: "Closed", views: ["done", "dropped"], collapsible: true },
+  { key: "input", title: "Needs input", standings: ["signoff", "decision"] },
+  { key: "progress", title: "In progress", standings: ["progress"] },
+  { key: "open", title: "Open", standings: ["open"] },
+  { key: "later", title: "Later", standings: ["deferred"], collapsible: true },
+  { key: "done", title: "Done", standings: ["done", "dropped"], collapsible: true },
 ];
-const collapsed = new Set(["closed"]);
+const collapsed = new Set(["done"]);
+const CLOSED = ["done", "dropped", "deferred"];
+// A task's standing from its status, design/decision questions and the current-spec
+// result states in view (this workstream's, or every workstream's on project boards).
+//   decision  held by any open design/decision question (briefs, revised at sign-off)
+//   signoff   a result passed review (or was human-reviewed) and awaits the verdict
+//   progress  a result is recorded and still with the agents (in review or being fixed)
+//   open      no result yet, ready or blocked
+function standingOf(r, counts = r.attempt_counts || r.aggregate_attempt_counts || {}) {
+  if (r.object_type === "group") return "group";
+  const closed = [r.status, r.view].find((s) => CLOSED.includes(s));
+  if (closed) return closed;
+  if (r.unresolved_count || r.view === "unresolved_items") return "decision";
+  if (counts.passed || counts.human_review || r.view === "signoff") return "signoff";
+  if (counts.review || counts.rework || r.view === "review") return "progress";
+  return "open";
+}
+// The same standing for a fetched task, from its current-spec results in view.
+function taskStanding(t) {
+  const counts = {};
+  for (const a of t.attempts || [])
+    if (a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))
+      counts[a.state] = (counts[a.state] || 0) + 1;
+  return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0 }, counts);
+}
+// The latest rejection stays in view only while it is current: no newer result exists.
+function currentRejection(t) {
+  const r = t.latest_rejection;
+  if (!r) return null;
+  return (t.attempts || []).some((a) => a.id !== r.attempt_id && (a.created_at || "") > (r.timestamp || "")) ? null : r;
+}
 
 const state = {
   projects: [],
@@ -53,6 +89,8 @@ const state = {
   orderStream: null,
   orderRevision: null,
   orderSaving: false,
+  // The workstream whose board state.rows holds (null for project and group boards).
+  boardStream: null,
 };
 let submitAction = null;
 let submissionPending = false;
@@ -154,8 +192,8 @@ const EVENTS = {
   "attempt.recorded": "Result recorded",
   "attempt.reviewed": "Reviewed",
   "attempt.human_reviewed": "Human review",
-  "gate.unresolved_added": "Question added",
-  "gate.unresolved_resolved": "Question answered",
+  "gate.unresolved_added": "Design/decision question added",
+  "gate.unresolved_resolved": "Design/decision answered",
   "gate.prerequisite_added": "Prerequisite added",
   "gate.prerequisite_proposed": "Gate proposed",
   "gate.proposal_accepted": "Proposal accepted",
@@ -336,9 +374,13 @@ function streamName(id) {
   const s = state.streams.find((s) => s.id === id);
   return s?.branch || s?.name || "another workstream";
 }
+// Tasks waiting for the user's input. The open board counts its own rows, so the
+// sidebar and the Needs input section agree.
 function needsYou(stream) {
+  if (!state.groups && state.boardStream === stream.id)
+    return state.rows.filter((r) => ["signoff", "decision"].includes(r.standing)).length;
   const c = stream.status?.counts || {};
-  return (c.signoff || 0) + (c.inbox || 0) + (c.unresolved_items || 0);
+  return (c.signoff || 0) + (c.unresolved_items || 0);
 }
 
 /* ---------- location URLs ---------- */
@@ -675,7 +717,8 @@ async function reload({ quiet = false, requested = null } = {}) {
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
     const streams = state.groups ? state.streams : await pages("workstreams", { project });
     if (stale()) return;
-    state.rows = rows.map(r => ({ ...r, view: r.view || (r.object_type === "group" ? "group" : ["done", "deferred", "dropped"].includes(r.status) ? r.status : r.gate_diagnostics?.[0] || "open") }));
+    state.rows = rows.map((r) => ({ ...r, standing: standingOf(r) }));
+    state.boardStream = groups ? null : stream;
     state.streams = streams;
     state.loadedAt = Date.now();
     state.orderStream = !groups && state.stream ? state.stream : null;
@@ -737,7 +780,7 @@ function orderedRows() {
   if (state.groups) return filteredRows();
   const rows = filteredRows();
   return SECTIONS.flatMap((s) =>
-    collapsed.has(s.key) && !$("search").value ? [] : rows.filter((r) => s.views.includes(r.view)),
+    collapsed.has(s.key) && !$("search").value ? [] : rows.filter((r) => s.standings.includes(r.standing)),
   );
 }
 function row(r) {
@@ -750,27 +793,25 @@ function row(r) {
       done = r.progress?.done || 0;
     b.append(
       node("span", "", "dot tone-" + (r.complete ? "done" : "info")),
-      el("span", "row-main", node("span", r.title, "row-title"), node("span", `${groupKind(r)} · ${groupProjectCount(r)} project${groupProjectCount(r) === 1 ? "" : "s"}`, "muted"), progressBar(done, total)),
+      el("span", "row-main", node("span", r.title, "row-title"), r.summary ? node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted") : null, node("span", `${groupKind(r)} · ${groupProjectCount(r)} project${groupProjectCount(r) === 1 ? "" : "s"}`, "muted"), progressBar(done, total)),
       node("span", `${done}/${total}`, "row-meta"),
     );
   } else {
-    const v = VIEWS[r.view] || { short: r.view, tone: "muted" };
-    b.classList.toggle("closed", r.view === "done" || r.view === "dropped");
+    // Only the Sign-off and Design/decision badges appear on cards; the badge sits
+    // inline after the title, so it never narrows or truncates it.
+    const v = STANDINGS[r.standing] || { label: r.standing, tone: "muted" };
+    b.classList.toggle("closed", r.standing === "done" || r.standing === "dropped");
     if (orderEditable()) {
       b.draggable = true;
       b.classList.add("draggable");
-      b.title = `Position ${r.workstream_order_key} in ${streamName(state.stream)}. Drag to reorder.`;
-      b.append(node("span", String(r.workstream_order_key ?? ""), "row-order"));
-    }
-    b.append(
-      node("span", "", "dot tone-" + v.tone),
-      node("span", r.title, "row-title"),
-      node("span", v.short, "row-meta tone-" + v.tone),
-    );
-  }
-  if (r.latest_rejection) b.append(node("span", `Rejected · ${r.latest_rejection.source} ${r.latest_rejection.verdict}`, "row-meta tone-warn"));
-  if (r.summary) {
-    b.querySelector(".row-title").append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
+      // Positions are workstream-wide, so a section shows no numbering of its own.
+      b.title = `${v.label} · position ${r.workstream_order_key} in ${streamName(state.stream)}. Drag to reorder.`;
+    } else b.title = v.label;
+    const title = node("span", r.title, "row-title");
+    if (v.badge) title.append(" ", node("span", v.label, "badge tone-" + v.tone));
+    const main = el("span", "row-main", title);
+    if (r.summary) main.append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
+    b.append(node("span", "", "dot tone-" + v.tone), main);
   }
   return b;
 }
@@ -783,7 +824,7 @@ function renderList() {
     list.append(...rows.map(row));
   } else {
     SECTIONS.forEach((s) => {
-      const items = rows.filter((r) => s.views.includes(r.view));
+      const items = rows.filter((r) => s.standings.includes(r.standing));
       if (!items.length) return;
       const isCollapsed = collapsed.has(s.key) && !searching;
       const head = button("", () => {
@@ -792,14 +833,14 @@ function renderList() {
         renderList();
       }, "section-head" + (s.collapsible ? " toggle" : "") + (isCollapsed ? " collapsed" : ""));
       if (s.collapsible) head.append(icon("chevron", 12));
-      head.append(node("span", s.title), node("span", String(items.length), "count" + (s.key === "you" ? " attention" : "")));
+      head.append(node("span", s.title), node("span", String(items.length), "count" + (s.key === "input" ? " attention" : "")));
       head.setAttribute("aria-expanded", String(!isCollapsed));
       list.append(head);
       if (!isCollapsed) list.append(...items.map(row));
     });
-    // Views the list does not know about still deserve a place.
-    const known = SECTIONS.flatMap((s) => s.views);
-    const other = rows.filter((r) => !known.includes(r.view));
+    // Standings the list does not know about still deserve a place.
+    const known = SECTIONS.flatMap((s) => s.standings);
+    const other = rows.filter((r) => !known.includes(r.standing));
     if (other.length) list.append(node("div", "Other", "section-head"), ...other.map(row));
   }
   if (!rows.length && state.rows.length)
@@ -841,7 +882,7 @@ function droppedOrder(ids, movedId, targetId, placement) {
   return next.every((id, i) => id === ids[i]) ? null : next;
 }
 function sectionTitle(r) {
-  return SECTIONS.find((s) => s.views.includes(r.view))?.title || "Other";
+  return SECTIONS.find((s) => s.standings.includes(r.standing))?.title || "Other";
 }
 const drag = { id: null, stream: null, source: null, marked: null };
 function dropHint(text) {
@@ -1025,8 +1066,7 @@ function topBar(crumbs, actions) {
 function renderDetail(t) {
   const d = $("detail");
   if (t.object_type === "group") return renderGroup(t);
-  const row = state.rows.find((r) => r.id === t.id);
-  const view = row?.view || t.status;
+  const standing = taskStanding(t);
   const locked = t.status === "done";
 
   const actions = [button("Edit summary", () => editSummary(t))];
@@ -1044,7 +1084,7 @@ function renderDetail(t) {
     el(
       "div",
       "meta",
-      pill(view),
+      pill(standing),
       t.workstream_ids?.length
         ? el("span", "meta-item", icon("branch", 13), "In " + t.workstream_ids.map(streamName).join(", "))
         : node("span", "Inbox", "meta-item warn"),
@@ -1055,7 +1095,7 @@ function renderDetail(t) {
     ),
   );
   if (t.summary) head.append(node("p", t.summary, "muted"), node("p", t.summary_stale ? "Descriptive summary predates the current specification." : "Descriptive summary; read the specification below for requirements.", "muted"));
-  d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, view), ...body(t)));
+  d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, standing), ...body(t)));
 }
 function currentAttempt(t, requiredStates = null) {
   if (!requiredStates && t.status === "done" && t.selected_attempt_id)
@@ -1068,56 +1108,58 @@ function currentAttempt(t, requiredStates = null) {
     (!requiredStates || requiredStates.includes(a.state))
   ) || null;
 }
-// The one thing the human can do next, stated plainly with its buttons.
-function nextStep(t, view) {
-  const a = currentAttempt(t, view === "signoff" ? ["passed", "human_review"] : ["review"]);
+// The one thing the human can do next, stated plainly with its buttons. The standing
+// is where the task is for the user (see standingOf); prose names no attempt IDs,
+// implementer labels or internal workflow stages.
+function nextStep(t, standing) {
+  const a = currentAttempt(t, standing === "signoff" ? ["passed", "human_review"] : ["review"]);
+  const member = t.workstream_ids?.length && !(state.stream && !t.workstream_ids.includes(state.stream));
+  const blocking = t.prerequisites?.some((p) => p.blocking);
   let title, text, buttons = [];
   if (t.status === "done") {
     title = "Signed off";
     text = "This task is complete. A new requirement becomes a new task.";
-  } else if (view === "deferred" || view === "dropped") {
-    title = view === "deferred" ? "Deferred" : "Dropped";
-    text = t.status === "dropped" ? "History, workstream memberships and proof are kept. Revival needs actual authorization." : "Workstream memberships, context and proof are kept for resumption.";
+  } else if (standing === "deferred" || standing === "dropped") {
+    title = standing === "deferred" ? "Deferred" : "Dropped";
+    text = t.status === "dropped" ? "History, workstream memberships and results are kept. Reviving it needs your actual instruction." : "Workstream memberships, context and results are kept for when it resumes.";
     buttons.push(button("Resume task", () => disposition(t, "open", "Resume"), "btn primary"));
-  } else if (view === "inbox" || !t.workstream_ids?.length || (state.stream && !t.workstream_ids?.includes(state.stream))) {
+  } else if (!member) {
     title = "Add this task to a workstream";
-    text = "Choose the branch where this task should be built. Open questions and prerequisites still apply.";
+    text = "Choose the branch where this task should be built. Design/decision questions and prerequisites still apply.";
     buttons.push(button(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true)), "btn primary"));
     buttons.push(button("Edit first", () => editTask(t)));
   } else if (t.unresolved_items.length) {
     const n = t.unresolved_items.length;
-    title = n === 1 ? "One question needs an answer" : `${n} questions need answers`;
-    text = "Autonomous implementation and review wait until each question is resolved.";
-  } else if (t.prerequisites?.some((p) => p.blocking) || view === "prerequisites") {
+    title = n === 1 ? "A design/decision needs your answer" : `${n} design/decision questions need your answers`;
+    text = "Work on this task waits until each question below is answered.";
+  } else if (blocking) {
     title = "Waiting on prerequisites";
-    text = "Autonomous implementation and review wait for the required milestones below: review by default, or explicit sign-off.";
-  } else if (view === "signoff" && a) {
+    text = "Work on this task waits for the prerequisites below: reviewed by default, or signed off where marked.";
+  } else if (standing === "signoff") {
+    if (!a) return null;
     title = "Ready for your sign-off";
-    text = `${a.implementer}'s result has been reviewed. Judge the task purpose and the result below; one informed decision can cover both.`;
+    text = (a.state === "human_review" ? "You reviewed the delivered work below yourself." : "The delivered work below passed independent review.") +
+      " Judge it on the three sign-off questions: Worth doing? Right approach? Built well? Approve when all three hold.";
     buttons.push(button("Approve & sign off", () => signoff(t, a), "btn primary"));
     buttons.push(button("Request changes", () => requestChanges(t, a)));
-  } else if (view === "review" && a) {
-    title = "Next agent action: review";
-    text = `${a.implementer} recorded a durable result. Send it to a fresh independent reviewer, or review it yourself. Check the actual checkout and proof first.`;
-    buttons.push(button("Record my review", () => humanReview(a)));
-  } else if (view === "unresolved_items") {
-    const n = t.unresolved_items.length;
-    title = n === 1 ? "One question needs an answer" : `${n} questions need answers`;
-    text = "Work is blocked until each is resolved.";
-  } else if (view === "prerequisites") {
-    title = "Waiting on prerequisites";
-    text = "It becomes ready once the required prerequisite milestones below are satisfied.";
-  } else if (view === "ready") {
-    title = "Next agent action: implement";
-    text = "Included and unblocked. An implementer can use the current checkout and relevant existing work.";
-  } else return null;
-  const blocked = !t.workstream_ids?.length || (state.stream && !t.workstream_ids?.includes(state.stream)) || t.unresolved_items.length || t.prerequisites?.some((p) => p.blocking) || ["deferred", "dropped"].includes(t.status);
-  if (blocked && t.attempts.some((a) => a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))) {
-    text += " A factual result is saved below; it changes no workstream memberships, gates or completion.";
-    const pending = currentAttempt(t, ["review"]);
-    if (pending) buttons.push(button("Record my review", () => humanReview(pending)));
+  } else if (standing === "progress") {
+    title = "In progress";
+    if (a) {
+      text = "A result is recorded and is with the agents for independent review. You can also review it yourself.";
+      buttons.push(button("Record my review", () => humanReview(a)));
+    } else text = "A result was sent back for changes and the agents are fixing it.";
+  } else {
+    title = "Open";
+    text = "No result is recorded yet. An agent can pick this up.";
   }
-  const tone = (VIEWS[view] || VIEWS.open).tone;
+  if (!member || t.unresolved_items.length || blocking || ["deferred", "dropped"].includes(t.status)) {
+    if (t.attempts.some((x) => x.spec_revision === t.spec_revision && (!state.stream || x.workstream_id === state.stream))) {
+      text += " A recorded result is kept below; it does not change this.";
+      const pending = currentAttempt(t, ["review"]);
+      if (pending) buttons.push(button("Record my review", () => humanReview(pending)));
+    }
+  }
+  const tone = (STANDINGS[standing] || STANDINGS.open).tone;
   return el(
     "div",
     "next tone-" + (t.status === "done" ? "done" : tone),
@@ -1135,7 +1177,7 @@ function body(t) {
       if (!locked) item.append(el("div", "q-actions", button("Answer", () => resolve(t, q), "btn small")));
       list.append(item);
     });
-    out.push(section("Open questions", list));
+    out.push(section("Design/decision", list));
   }
   if (t.blocked_by.length) {
     const list = el("div", "links");
@@ -1154,8 +1196,9 @@ function body(t) {
     });
     out.push(section("Prerequisites", list));
   }
-  if (t.latest_rejection) {
-    const r = t.latest_rejection;
+  const rejection = currentRejection(t);
+  if (rejection) {
+    const r = rejection;
     out.push(section("Latest rejection", el("div", "",
       node("p", `${r.source} · ${r.verdict} · ${r.timestamp}`),
       node("p", `Attempt ${r.attempt_id} · workstream ${r.workstream_id} · spec ${r.spec_revision}.`, "muted"),
@@ -1178,9 +1221,9 @@ function body(t) {
     }
     out.push(history);
   }
-  const view = state.rows.find((r) => r.id === t.id)?.view;
-  const requiredStates = view === "signoff" ? ["passed", "human_review"] : view === "review" ? ["review"] : null;
-  const a = currentAttempt(t, t.status === "done" ? null : requiredStates);
+  const standing = taskStanding(t);
+  const requiredStates = standing === "signoff" ? ["passed", "human_review"] : standing === "progress" ? ["review"] : null;
+  const a = (t.status !== "done" && requiredStates && currentAttempt(t, requiredStates)) || currentAttempt(t);
   const earlier = t.attempts.filter((x) => x !== a).reverse();
   if (a) out.push(section("Result", attemptCard(a, t)));
   if (earlier.length) {
@@ -1225,12 +1268,18 @@ function attemptCard(a, t) {
   if (concerns) card.append(concerns);
   return card;
 }
-function concernPanel(a) {
+// Concerns on a result. The history keeps their provenance; the sign-off panel
+// (plain) says only who raised them, without attempt IDs or agent labels.
+function concernPanel(a, { plain = false } = {}) {
   if (!a.concerns?.length) return null;
   const panel = el("div", "sub", node("h4", "Value and design concerns"),
-    node("p", `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
+    node("p", plain
+      ? "Raised about this work. Concerns do not block review or sign-off; weigh them in your answers."
+      : `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
   for (const concern of a.concerns) {
-    panel.append(node("h4", `${concern.kind === "value" ? "Value" : "Design"} · ${concern.source === "implementer" ? "Implementer" : "Reviewer"} ${concern.author}`), markdown(concern.text));
+    const kind = concern.kind === "value" ? "Value" : "Design";
+    const source = concern.source === "implementer" ? "Implementer" : "Reviewer";
+    panel.append(node("h4", plain ? `${kind} · raised by the ${source.toLowerCase()}` : `${kind} · ${source} ${concern.author}`), markdown(concern.text));
   }
   return panel;
 }
@@ -1564,7 +1613,7 @@ function placementAction(t, action, extra) {
 function askQuestion(t) {
   decision({
     title: "Ask a question",
-    description: "Open questions block implementation until they're answered.",
+    description: "A design/decision question holds the task until it's answered.",
     action: "question",
     data: { task_id: t.id, expected_revision: t.revision },
     key: "text",
@@ -1612,7 +1661,7 @@ function humanReview(a) {
 function signoff(t, a, initial = "approve") {
   decision({
     title: "Sign off the task",
-    description: `“${t.title}” · spec ${t.spec_revision}. Result ${a.id} · revision ${a.revision}. Approve completes the task and cannot be undone. Rework and revise require reasons.`,
+    description: `“${t.title}”. Answer the three sign-off questions: Worth doing? Right approach? Built well? Approve completes the task and cannot be undone; rework and revise need reasons.`,
     action: "signoff",
     data: { task_id: t.id, expected_revision: t.revision, attempt_id: a.id,
       expected_attempt_revision: a.revision, decision: initial },
@@ -1620,18 +1669,18 @@ function signoff(t, a, initial = "approve") {
     label: "Reasons",
     submit: "Record decision",
     before: () => {
-      $("fields").append(section("Reviewed result", el("div", "", markdown(a.summary || ""),
-          node("p", a.state === "human_review" ? "Actual human review recorded." : `Independent review by ${a.reviewer || "reviewer"}.`),
+      $("fields").append(section("Reviewed work", el("div", "", markdown(a.summary || ""),
+          node("p", a.state === "human_review" ? "You reviewed this work yourself." : "This work passed independent review."),
           markdown(a.review_note || a.human_review_note || ""))));
-      const concerns = concernPanel(a);
+      const concerns = concernPanel(a, { plain: true });
       if (concerns) $("fields").append(concerns);
       const choice = node("select");
       choice.id = "field-decision"; choice.name = "decision";
       for (const [value, label] of [
-        ["approve", "Approve; complete the task"],
-        ["rework", "Rework; repair implementation and review again"],
-        ["revise", "Revise; return to design with an open question"],
-        ["drop", "Drop; close without approval"],
+        ["approve", "Approve: all three hold; complete the task"],
+        ["rework", "Rework: not built well; fix and review again"],
+        ["revise", "Revise: not the right approach; back to design"],
+        ["drop", "Drop: not worth doing; close without approval"],
       ]) {const option = node("option", label); option.value = value; choice.append(option);}
       choice.value = initial;
       $("fields").append(el("div", "field", node("label", "Decision"), choice));

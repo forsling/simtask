@@ -48,7 +48,7 @@ async function testActivity() {
     {action: "task.updated", label: "Edited", request: {
       note: "Legacy decision note", text: "Lower priority text",
     }, note: "Legacy decision note"},
-    {action: "gate.unresolved_added", label: "Question added", request: {
+    {action: "gate.unresolved_added", label: "Design/decision question added", request: {
       text: "Legacy question text",
     }, note: "Legacy question text"},
     {action: "task.signoff", label: "Sign-off decision", outcome: "error", request: {},
@@ -109,8 +109,12 @@ async function test() {
   assert.doesNotMatch(allText, /Approval basis|Supporting approval/);
   assert.match(allText, /Actual result/);
   assert.match(allText, /Actual review proof/);
-  assert.match(allText, /Value · Implementer Builder/); assert.match(allText, /Design · Reviewer Checker/);
-  assert.match(allText, /Result attempt · .* \(main\) · spec 4/);
+  // The sign-off panel names who raised each concern, never attempt IDs or agent labels.
+  assert.match(allText, /Value · raised by the implementer/); assert.match(allText, /Design · raised by the reviewer/);
+  assert.doesNotMatch(allText, /Builder|Checker|Independent reviewer|\battempt\b/);
+  assert.match(get("dialog-description").textContent, /Worth doing\? Right approach\? Built well\?/);
+  assert.doesNotMatch(get("dialog-description").textContent.replace("“Purpose”", ""), /\battempt\b|revision|purpose|result/i);
+  assert.match(allText, /This work passed independent review\./);
   assert.match(allText, /A priority change needs a scope change/);
   assert.match(allText, /<img src=x onerror=alert\(1\)>/);
   assert.match(allText, /Concerns do not block review or sign-off/);

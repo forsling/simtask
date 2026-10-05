@@ -51,7 +51,7 @@ const context = vm.createContext({
 const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = code => vm.runInContext(code, context);
-function descendants(node) {return [node, ...(node.children || []).flatMap(descendants)];}
+function descendants(node) {return [node, ...(node.children || []).filter(c => c && typeof c === "object").flatMap(descendants)];}
 const rowsIn = () => descendants(get("list")).filter(n => n.classList.contains("row"));
 const rowFor = id => rowsIn().find(n => n.dataset.id === id);
 const reorders = () => context.calls.filter(c => c.action === "reorder");
@@ -66,7 +66,7 @@ function event(target, clientY = 110, relatedTarget = null) {
 // Server double: A holds done, alpha, inbox, hidden, beta; B holds the same tasks in its own order.
 run(`
   server = {revision: {a: 7, b: 3}, order: {a: ["done", "alpha", "inbox", "hidden", "beta"], b: ["beta", "alpha", "done"]}};
-  views = {done: "done", alpha: "ready", inbox: "inbox", hidden: "deferred", beta: "ready"};
+  views = {done: "done", alpha: "ready", inbox: "unresolved_items", hidden: "deferred", beta: "ready"};
   calls = []; nextReorder = null;
   api = async (action, payload) => {
     calls.push({action, payload: JSON.parse(JSON.stringify(payload))});
@@ -115,7 +115,10 @@ async function test() {
   await run("reload()");
   assert.equal(run("state.orderRevision"), 7);
   assert.equal(rowFor("alpha").draggable, true);
-  assert.ok(rowFor("done") === undefined, "Closed section starts collapsed");
+  assert.ok(rowFor("done") === undefined, "Done section starts collapsed");
+  // Positions are workstream-wide, so sections show no numbering; the tooltip keeps it.
+  assert.ok(!descendants(get("list")).some(n => /row-order/.test(n.className || "")), "No position numbers on rows");
+  assert.match(rowFor("beta").title, /^Open · position 5 in A\. Drag to reorder\.$/);
 
   // Cancelled drag: start, hover, then dragend without a drop issues no mutation.
   const list = get("list");
@@ -153,7 +156,7 @@ async function test() {
   const drop = event(rowFor("inbox"), 130); // lower half: after
   list.ondragover(drop);
   assert.ok(rowFor("inbox").classList.contains("drop-after"));
-  assert.match(get("drop-hint").textContent, /stays under In progress, because status sets the section/);
+  assert.match(get("drop-hint").textContent, /stays under Open, because status sets the section/);
   list.ondrop(drop);
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));

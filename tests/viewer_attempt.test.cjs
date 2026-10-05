@@ -36,7 +36,7 @@ function click(view, label, id) {
   assert.ok(button, label);
   button.onclick();
   assert.equal(context.captured.data.attempt_id, id);
-  assert.equal(context.captured.data.expected_revision, view === "review" ? 7 : 12);
+  assert.equal(context.captured.data.expected_revision, view === "progress" ? 7 : 12);
 }
 for (const stream of ["main", ""]) {
   run(`state.stream = ${JSON.stringify(stream)};`);
@@ -44,23 +44,23 @@ for (const stream of ["main", ""]) {
   click("signoff", "Request changes", "main-passed");
 }
 run('state.stream = "alt";');
-click("review", "Record my review", "alt-review");
+click("progress", "Record my review", "alt-review");
 assert.equal(run('nextStep(task, "signoff")'), null, "No eligible scoped sign-off candidate");
 run('state.stream = "outside";');
 let outsidePanel = descendants(run('nextStep(task, "signoff")'));
 assert.ok(outsidePanel.some(n => n.textContent === "Add this task to a workstream"));
 assert.ok(!outsidePanel.some(n => n.textContent === "Approve & sign off"));
 run('state.stream = "";');
-click("review", "Record my review", "alt-review");
+click("progress", "Record my review", "alt-review");
 // A human-reviewed result also qualifies, even when followed by a rework result.
 context.task.attempts[0].state = "human_review";
 click("signoff", "Approve & sign off", "main-passed");
 // Factual proof coexists with gates; no autonomous review or sign-off is implied.
 run('state.stream = "alt";');
 context.task.unresolved_items = [{id: "question", text: "Unsettled requirement"}];
-let panel = descendants(run('nextStep(task, "review")'));
-assert.ok(panel.some(n => n.textContent === "One question needs an answer"));
-assert.ok(panel.some(n => /A factual result is saved below/.test(n.textContent)));
+let panel = descendants(run('nextStep(task, "decision")'));
+assert.ok(panel.some(n => n.textContent === "A design/decision needs your answer"));
+assert.ok(panel.some(n => /A recorded result is kept below/.test(n.textContent)));
 assert.ok(!panel.some(n => n.textContent === "Next agent action: review"));
 assert.ok(panel.some(n => n.textContent === "Record my review"), "Explicit human review remains available");
 context.task.unresolved_items = [];
@@ -92,14 +92,16 @@ assert.equal(run('concernPanel({...proof, concerns: []})'), null);
 // Check the actual detail body uses the same action candidate. Isolate unrelated
 // Markdown/activity rendering so the DOM double need not implement a browser.
 run('markdown = (text) => node("p", text); activity = () => null; attemptCard = (a) => node("article", a.id);');
-function shownResult(view, stream) {
-  run(`state.rows = [{id: "task", view: ${JSON.stringify(view)}}]; state.stream = ${JSON.stringify(stream)};`);
+// The detail derives the task's standing from its own current-spec results in view.
+function shownResult(standing, stream) {
+  run(`state.stream = ${JSON.stringify(stream)};`);
+  assert.equal(run("taskStanding(task)"), standing);
   const section = run('body(task)').find(n => n && descendants(n).some(c => c.textContent === "Result"));
   return section?.children[1].textContent;
 }
 assert.equal(shownResult("signoff", "main"), "main-passed");
 assert.equal(shownResult("signoff", ""), "main-passed");
-assert.equal(shownResult("review", "alt"), "alt-review");
+assert.equal(shownResult("progress", "alt"), "alt-review");
 context.task.status = "done";
 context.task.selected_attempt_id = "main-passed";
 for (const stream of ["main", "alt", ""]) {

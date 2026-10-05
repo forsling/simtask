@@ -50,13 +50,22 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   workstreams, each with a count of tasks that need you. “All tasks” includes
   tasks outside any one workstream. Workstream names and counts describe
   recorded state, not a running agent.
-- The list groups tasks by what they need: **Needs you** (sign-off, inbox, open questions), **In progress** (in review, ready, blocked),
-  **Later** (deferred) and **Closed** (done/dropped, collapsed). Search filters
-  titles across every section. Keyboard: `/` search, `j`/`k` move, `n` new
+- The list groups tasks by where they stand for you, not by the agents'
+  internal stage: **Needs input** (badge **Sign-off** when a current-spec result
+  passed review or was human-reviewed; badge **Design/decision** when any open
+  design/decision question holds the task, including design briefs and tasks
+  revised at sign-off), **In progress** (a result is recorded and still with the
+  agents: under review or being fixed after review), **Open** (no result yet,
+  ready or blocked; a blocker shows in the task's details), **Later** (deferred)
+  and **Done** (done/dropped, collapsed). Cards carry no other badges; whether
+  work is a first attempt or a rework round shows in the task's details and
+  history, where the latest rejection appears only until a newer result exists.
+  Search filters titles across every section. Keyboard: `/` search, `j`/`k` move, `n` new
   task, `e` edit, `r` refresh.
 - In a named workstream, drag a task onto the upper or lower half of another
-  task to place it before or after that task. Rows show their position in that
-  workstream; a drop line and hint state the result, including when the task
+  task to place it before or after that task. A row's tooltip gives its position
+  in that workstream (sections mix positions, so rows show no numbers); a drop
+  line and hint state the result, including when the task
   stays in a different status section. Hidden, searched-out and collapsed
   members keep their relative order. Only the selected workstream changes; its
   members keep every membership, specification and proof. Escape, self drops
@@ -65,8 +74,10 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   recorded order has reloaded; clicking a task meanwhile does not cancel that
   reload. All tasks and group views have no order to edit.
 - Each task opens with a single “next step” panel stating what, if anything,
-  you can do now, with its buttons. A review/sign-off state does not remove
-  open questions or prerequisites; Store still validates every decision.
+  you can do now, with its buttons. The sign-off panel asks the three sign-off
+  questions (Worth doing? Right approach? Built well?) in plain language. A
+  passed result does not remove design/decision questions or prerequisites;
+  Store still validates every decision.
 - Prerequisites show compact ID/title, project name/ID, the required review or
   sign-off milestone, satisfaction and canonical blocking/completion
   state, including blockers from any project. Rendering these rows fetches no
