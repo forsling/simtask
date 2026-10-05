@@ -1,4 +1,4 @@
-// Exercise the shipped creation and decision handlers with compact server ACKs.
+// Exercise the shipped membership and dialog handlers with compact server ACKs.
 // This verifies form/payload behavior; it makes no visual layout claim.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -42,18 +42,12 @@ async function test() {
     state.projects = [{id: "project", name: "Project"}];
     state.streams = [{id: "main", project_id: "project", name: "Main", branch: "main"}, {id: "feature", project_id: "project", name: "Feature", branch: "feature"}];
     pages = async () => state.streams;
-    api = async (action, payload) => {captured = {action, payload}; return {id: "created", revision: 1};};
-    createTask();`);
-  assert.equal(get("field-creation_mode").name, undefined);
-  context.values = new Map([["title", "Build"], ["body", "Scope"], ["acceptance_criteria", "Proof"], ["user_request", "Actual request"]]);
-  await run("submitAction(values)");
-  assert.equal(context.captured.payload.workstream_id, "main");
-  assert.equal("approval" in context.captured.payload, false);
-  assert.equal("scope" in context.captured.payload, false);
-  run("state.stream = null; createTask();");
-  await run("submitAction(values)");
-  assert.equal(context.captured.payload.workstream_id, null);
+    api = async (action, payload) => {captured = {action, payload}; return {id: "task", revision: 9};};`);
+  // The browser creates and edits nothing: those handlers and the New control are gone.
+  for (const name of ["createTask", "editTask", "editSummary", "humanReview", "signoff", "resolve", "decision", "placementAction"])
+    assert.equal(run(`typeof ${name}`), "undefined", name);
   context.task = {id: "task", project_id: "project", title: "Task", body: "Scope", acceptance_criteria: "Proof", revision: 8, specification_etag: "token", workstream_ids: ["main"], object_type: "task", status: "open", attempts: [], unresolved_items: []};
+  context.values = new Map();
   await run("state.task = task; removeFromWorkstreamTask(task);");
   context.values.set("workstream_id", "main");
   assert.equal(get("field-workstream_id").children.length, 1);
@@ -68,12 +62,6 @@ async function test() {
   assert.equal(context.captured.action, "add-to-workstream");
   assert.equal(context.captured.payload.workstream_id, "feature");
   assert.equal("note" in context.captured.payload, false);
-  run("editTask(task);");
-  assert.equal(get("field-save_mode").name, undefined);
-  context.values = new Map([["title", "Edited"], ["body", "Complete replacement"], ["acceptance_criteria", "New proof"]]);
-  await run("submitAction(values)");
-  assert.equal(context.captured.payload.specification_etag, "token");
-  assert.equal("approval" in context.captured.payload, false);
   // Placement conflicts preserve the selected branch until explicit current-state review.
   await run("addToWorkstreamTask(task)");
   context.values.set("workstream_id", "feature");
@@ -85,6 +73,7 @@ async function test() {
   assert.equal(context.values.get("workstream_id"), "feature");
   await get("conflict").children[0].onclick();
   const box = get("conflict").children[0];
+  assert.match(descendants(box).map(node => node.textContent).join(" "), /Status: Open/);
   await box.children[box.children.length - 1].onclick();
   run(`api = async (action, payload) => {captured = {action, payload}; return {id: task.id, revision: 10};};`);
   await run("submitAction(values)");
@@ -94,9 +83,9 @@ async function test() {
   // An empty queue picker must not disable the next use of the shared dialog.
   run("pages = async () => []; state.stream = null;");
   for (const [open, title] of [
-    [() => run("createTask()"), "New task"],
-    [() => run("editTask(task)"), "Edit task"],
     [() => run("askQuestion(task)"), "Ask a question"],
+    [() => run("dropTask(task)"), "Drop this task?"],
+    [() => run("task.status = 'dropped'; resumeTask(task); task.status = 'open';"), "Bring back this dropped task?"],
     [() => get("stop").onclick(), "Stop the viewer?"],
   ]) {
     await run("addToWorkstreamTask(task)");
@@ -112,26 +101,26 @@ async function test() {
     get("close").onclick();
   }
 
-  // Fetch failures leave subsequent dialogs usable; save failures preserve the
-  // new draft and release the controls so the real submit handler can retry.
+  // Fetch failures leave subsequent dialogs usable; save failures preserve what the
+  // user typed and release the controls so the real submit handler can retry.
   run('pages = async () => { throw new Error("Synthetic picker failure"); };');
   await assert.rejects(run("addToWorkstreamTask(task)"), /Synthetic picker failure/);
-  run("createTask(); api = async () => { throw new Error('Synthetic save failure'); };");
-  context.values = new Map([["title", "Retryable task"], ["body", "Scope"], ["acceptance_criteria", "Proof"]]);
-  get("field-title").value = "Retryable task";
+  run("reload = async () => {}; askQuestion(task); api = async () => { throw new Error('Synthetic save failure'); };");
+  context.values = new Map([["text", "Which variant?"]]);
+  get("field-text").value = "Which variant?";
   run("FormData = class extends Map { constructor() { super(values); } };");
   assert.equal(get("submit").disabled, false);
   await get("form").onsubmit({preventDefault() {}});
-  assert.equal(get("dialog").open, true, "Failed save keeps the new-task draft open");
-  assert.equal(get("field-title").value, "Retryable task");
+  assert.equal(get("dialog").open, true, "Failed save keeps the question open");
+  assert.equal(get("field-text").value, "Which variant?");
   assert.match(get("form-error").textContent, /Synthetic save failure/);
   assert.equal(get("submit").disabled, false);
   assert.equal(get("cancel").disabled, false);
   assert.equal(get("close").disabled, false);
-  run("api = async (action, payload) => {captured = {action, payload}; return {id: 'recovered', revision: 1, stopped: true};};");
+  run("api = async (action, payload) => {captured = {action, payload}; return {id: 'task', revision: 9, stopped: true};};");
   await get("form").onsubmit({preventDefault() {}});
-  assert.equal(context.captured.action, "create");
-  assert.equal(context.captured.payload.title, "Retryable task");
+  assert.equal(context.captured.action, "question");
+  assert.equal(context.captured.payload.text, "Which variant?");
   assert.equal(get("dialog").open, false, "Retry can save and close the dialog");
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});

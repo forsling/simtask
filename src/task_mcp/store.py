@@ -3074,6 +3074,35 @@ class Store:
 
         return self._run("groups.listed", request, operation)
 
+    def resolve_prefix(self, kind, prefix):
+        """Match a short viewer-URL ID: at most two workstreams or groups whose hex starts so."""
+        request = dict(kind=kind, prefix=prefix)
+
+        def operation(db, scope):
+            sources = {
+                "workstream": ("workstreams", "wst_", ""),
+                "group": ("tasks", "tsk_", "object_type='group' AND "),
+            }
+            if not isinstance(kind, str) or kind not in sources:
+                raise TaskError("invalid_kind: use workstream or group")
+            if (
+                not isinstance(prefix, str)
+                or not 1 <= len(prefix) <= 32
+                or any(c not in "0123456789abcdef" for c in prefix)
+            ):
+                raise TaskError("invalid_prefix: use 1-32 lowercase hexadecimal characters")
+            table, start, condition = sources[kind]
+            # A primary-key range scan: IDs are a type prefix followed by lowercase hex.
+            low = start + prefix
+            rows = db.execute(
+                f"SELECT id, project_id FROM {table} WHERE {condition}id >= ? AND id < ? "
+                "ORDER BY id LIMIT 2",
+                (low, low + "g"),
+            ).fetchall()
+            return {"items": [dict(row) for row in rows]}
+
+        return self._run("prefixes.read", request, operation)
+
     def create_group(
         self,
         workstream_id,

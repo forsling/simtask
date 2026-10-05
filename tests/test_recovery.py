@@ -6,7 +6,6 @@ import sqlite3
 import pytest
 
 from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
-from task_mcp.viewer import dispatch
 
 
 def setup(tmp_path):
@@ -214,7 +213,7 @@ def test_workstream_order_actions_rework_findings_and_human_waiting_are_read_onl
         [later["id"]],
         board["workstream_order_revision"],
     )
-    selected = dispatch(store, "next-action", {"workstream_id": ws})
+    selected = store.get_next_action(ws)
     assert selected["action"] == "review" and selected["attempt"]["id"] == pending["id"]
     store.record_review(pending["id"], 1, "fresh reviewer", "rework", "Fix the actual defect")
     selected = store.get_next_action(ws)

@@ -1,5 +1,5 @@
-// Exercise the shipped creation and decision handlers with compact server ACKs.
-// This verifies form/payload behavior; it makes no visual layout claim.
+// Exercise the shipped sign-off hand-off, status controls and history rendering with
+// compact server ACKs. This verifies form/payload behavior; it makes no layout claim.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const all = [];
 const roots = new Map();
 function element(tag = "div") {
-  const node = {tag, children: [], textContent: "", disabled: false, hidden: false,
+  const node = {tag, children: [], textContent: "", disabled: false, hidden: false, style: {},
     value: "", checked: false, required: false, dataset: {},
     get lastChild() { return this.children.at(-1); },
     set innerHTML(_) { throw new Error("Task text must never be parsed as HTML"); },
@@ -16,7 +16,7 @@ function element(tag = "div") {
       this.children.push(child); if (child && typeof child === "object") child.parentElement = this;
     } },
     replaceChildren(...children) { this.children = []; this.append(...children); },
-    setAttribute() {}, querySelector() { return null; }, showModal() {}, close() {}, remove() {},
+    setAttribute() {}, querySelector() { return null; }, showModal() {}, close() {}, remove() {}, focus() {}, select() {},
   };
   all.push(node);
   return node;
@@ -28,7 +28,7 @@ function get(id) {
   return roots.get(id);
 }
 const context = vm.createContext({
-  document: {getElementById: get, createElement: element, createDocumentFragment: element,
+  document: {getElementById: get, createElement: element, createElementNS: (_, tag) => element(tag), createDocumentFragment: element,
     createTextNode: text => Object.assign(element(), {textContent: text}), addEventListener() {}},
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
   sessionStorage: {getItem: () => ""}, history: {replaceState() {}},
@@ -48,7 +48,7 @@ async function testActivity() {
     {action: "task.updated", label: "Edited", request: {
       note: "Legacy decision note", text: "Lower priority text",
     }, note: "Legacy decision note"},
-    {action: "gate.unresolved_added", label: "Question added", request: {
+    {action: "gate.unresolved_added", label: "Design/decision question added", request: {
       text: "Legacy question text",
     }, note: "Legacy question text"},
     {action: "task.signoff", label: "Sign-off decision", outcome: "error", request: {},
@@ -94,57 +94,132 @@ async function testActivity() {
     assert.equal(row.className, item.outcome === "error" ? "failed" : undefined);
   });
 }
+const plain = value => JSON.parse(JSON.stringify(value));
+const texts = nodes => nodes.flatMap(descendants).map(node => node.textContent).join(" ");
 async function test() {
-  context.task = {id: "task", title: "Purpose", revision: 8, spec_revision: 4,
-    workstream_ids: ["main"], status: "open", attempts: []};
-  context.attempt = {id: "attempt", revision: 2, spec_revision: 4, state: "passed",
-    summary: "Actual result", reviewer: "Independent reviewer", review_note: "Actual review proof", workstream_id: "main",
-    concerns: [{kind: "value", text: "A priority change needs a scope change.", source: "implementer", author: "Builder"},
-      {kind: "design", text: "<img src=x onerror=alert(1)> Another design changes the task.", source: "reviewer", author: "Checker"}]};
-  run(`state.task = task;
-    api = async (action, payload) => {captured = {action, payload}; return {id: "task", revision: 9};};
-    markdown = text => node("p", text);
-    signoff(task, attempt);`);
-  const allText = descendants(get("fields")).map(node => node.textContent).join(" ");
-  assert.doesNotMatch(allText, /Approval basis|Supporting approval/);
-  assert.match(allText, /Actual result/);
-  assert.match(allText, /Actual review proof/);
-  assert.match(allText, /Worth-doing concern · Implementer Builder/); assert.match(allText, /Approach concern · Reviewer Checker/);
-  assert.match(allText, /Result attempt · .* \(main\) · spec 4/);
-  assert.match(allText, /A priority change needs a scope change/);
-  assert.match(allText, /<img src=x onerror=alert\(1\)>/);
-  assert.match(allText, /Concerns do not block review or sign-off/);
-  const choice = get("field-decision"), reasons = get("field-reasons");
-  assert.deepEqual(choice.children.map(node => node.value), ["approve", "rework", "revise", "drop"]);
-  assert.equal(descendants(get("fields")).some(node => ["field-result_judgment", "field-specification_question", "field-result_note", "field-user_note"].includes(node.id)), false);
-  for (const decision of ["approve", "rework", "revise", "drop"]) {
-    choice.value = decision; choice.onchange();
-    assert.equal(reasons.required, ["rework", "revise"].includes(decision));
-    context.values = new Map([["decision", decision], ["reasons", "Actual reasons"]]);
-    await run("submitAction(values)");
-    const payload = context.captured.payload;
-    assert.equal(payload.decision, decision);
-    assert.equal(payload.reasons, "Actual reasons");
-    assert.equal(payload.expected_revision, 8);
-    assert.equal(payload.expected_attempt_revision, 2);
-    for (const key of ["result_judgment", "result_note", "specification_question", "user_note", "note"]) assert.equal(key in payload, false);
-  }
+  context.task = {id: "tsk_0123abcd", title: "Purpose", revision: 8, spec_revision: 4, project_id: "project",
+    workstream_ids: ["main"], status: "open", unresolved_items: [], prerequisites: [], attempts: [
+      {id: "attempt", revision: 2, spec_revision: 4, state: "passed", workstream_id: "main"}]};
+  run(`state.stream = "main"; state.streams = [{id: "main", project_id: "project", branch: "main"}];
+    toasts = []; toast = (text, error = false) => toasts.push({text, error});
+    requests = []; api = async (action, payload) => {requests.push({action, payload}); return {id: "tsk_0123abcd", revision: 9};};
+    reload = async () => { reloaded = (typeof reloaded === "number" ? reloaded : 0) + 1; };`);
+
+  // Sign-off: one button that copies a ready prompt for an agent and says so.
+  const panel = run('nextStep(task, "signoff")');
+  const signoff = descendants(panel).find(node => node.textContent === "Sign off with an agent");
+  assert.ok(signoff);
+  assert.match(texts([panel]), /Sign-off is a walkthrough with an agent/);
+  assert.equal(run("signoffPrompt(task)"), "Sign off tsk_0123abcd — Purpose");
+  context.navigator = {clipboard: {writeText: async text => { context.copied = text; }}};
+  await signoff.onclick({currentTarget: signoff});
+  assert.equal(context.copied, "Sign off tsk_0123abcd — Purpose");
+  assert.deepEqual(plain(context.toasts.at(-1)), {text: "Copied. Paste it into your agent to start the sign-off.", error: false});
+  assert.equal(context.requests.length, 0, "Copying the prompt writes nothing");
+  // Without the Clipboard API (or when it refuses), the prompt is shown selected instead.
+  context.navigator = {clipboard: {writeText: async () => { throw new Error("NotAllowedError"); }}};
+  const host = element(); host.querySelector = () => null;
+  let selected = false;
+  const anchor = {closest: selector => selector === ".next" ? host : null};
+  const created = all.length;
+  await run("copyPrompt")("Sign off tsk_0123abcd — Purpose", anchor);
+  const box = all.slice(created).find(node => node.className === "prompt-copy");
+  assert.ok(box && host.children.includes(box));
+  assert.equal(box.value, "Sign off tsk_0123abcd — Purpose");
+  assert.equal(box.readOnly, true);
+  assert.match(context.toasts.at(-1).text, /Couldn't copy automatically.*selected/);
+  context.navigator = {};
+  host.querySelector = () => Object.assign(box, {select() { selected = true; }, focus() {}});
+  await run("copyPrompt")("Sign off again", anchor);
+  assert.equal(box.value, "Sign off again"); assert.ok(selected);
+
+  // Ask a question: open tasks only, one short input, no checkbox.
+  const menu = status => {
+    run(`task.status = ${JSON.stringify(status)}; actionsMenu({getBoundingClientRect: () => ({bottom: 0, right: 0})}, task);`);
+    const items = get("popover").children.map(node => node.textContent);
+    run("closeMenu()");
+    return items;
+  };
+  assert.deepEqual(plain(menu("open")), ["Ask a question", "Add to workstream", "Remove from workstream", "Defer", "Drop"]);
+  assert.deepEqual(plain(menu("deferred")), ["Add to workstream", "Remove from workstream", "Resume"]);
+  assert.deepEqual(plain(menu("dropped")), ["Add to workstream", "Remove from workstream", "Resume"]);
+  run("task.workstream_ids = []");
+  assert.deepEqual(plain(menu("open")), ["Ask a question", "Add to main", "Defer", "Drop"]);
+  run("task.workstream_ids = ['main']");
+  run("task.status = 'open'; askQuestion(task);");
+  let fields = descendants(get("fields"));
+  assert.equal(fields.filter(node => node.type === "checkbox").length, 0);
+  assert.equal(get("field-text").tag, "input");
+  assert.equal(get("field-text").required, true);
+  context.values = new Map([["text", "Which variant?"]]);
+  await run("submitAction(values)");
+  assert.deepEqual(plain(context.requests.at(-1)), {action: "question", payload: {task_id: "tsk_0123abcd", expected_revision: 8, text: "Which variant?"}});
+
+  // Defer and resume (from Later) take effect at once with a stand-in reason.
+  await run("changeStatus(task, 'deferred')");
+  assert.deepEqual(plain(context.requests.at(-1).payload), {task_id: "tsk_0123abcd", expected_revision: 8, disposition: "deferred", note: "Deferred in the browser."});
+  assert.match(context.toasts.at(-1).text, /Deferred/);
+  run("task.status = 'deferred';");
+  await run("resumeTask(task)");
+  assert.deepEqual(plain(context.requests.at(-1).payload), {task_id: "tsk_0123abcd", expected_revision: 8, disposition: "open", note: "Resumed in the browser."});
+  // A stale revision saves nothing and says so plainly.
+  run(`api = async () => { throw Object.assign(new Error("revision_conflict"), {conflict: true}); };`);
+  await run("changeStatus(task, 'open')");
+  assert.deepEqual(plain(context.toasts.at(-1)), {text: "This task changed elsewhere, so nothing was saved. Showing its latest version; try again if you still want to.", error: true});
+  run(`api = async (action, payload) => {requests.push({action, payload}); return {id: "tsk_0123abcd", revision: 9};};`);
+
+  // Drop asks "are you sure" with an optional reason and no checkbox.
+  run("task.status = 'open'; dropTask(task);");
+  assert.equal(get("dialog-title").textContent, "Drop this task?");
+  assert.match(get("dialog-description").textContent, /Are you sure/);
+  fields = descendants(get("fields"));
+  assert.equal(fields.filter(node => node.type === "checkbox").length, 0);
+  assert.equal(get("field-note").required, false);
+  context.values = new Map([["note", ""]]);
+  await run("submitAction(values)");
+  assert.deepEqual(plain(context.requests.at(-1).payload), {task_id: "tsk_0123abcd", expected_revision: 8, disposition: "dropped", note: "Dropped in the browser."});
+  context.values = new Map([["note", " No longer needed "]]);
+  await run("submitAction(values)");
+  assert.equal(context.requests.at(-1).payload.note, "No longer needed");
+
+  // Bringing back a dropped task asks why, which the Store keeps as its instruction.
+  run("task.status = 'dropped'; resumeTask(task);");
+  assert.equal(get("field-note").required, true);
+  assert.equal(descendants(get("fields")).filter(node => node.type === "checkbox").length, 0);
+  context.values = new Map([["note", "   "]]);
+  const count = context.requests.length;
+  await assert.rejects(run("submitAction(values)"), error => error.local && /coming back/.test(error.message));
+  assert.equal(context.requests.length, count);
+  context.values = new Map([["note", "Needed for the release after all"]]);
+  await run("submitAction(values)");
+  assert.deepEqual(plain(context.requests.at(-1).payload), {task_id: "tsk_0123abcd", expected_revision: 8, disposition: "open",
+    note: "Needed for the release after all", authorization: "Needed for the release after all"});
+
   // Both history generations render without inventing judgments or throwing.
-  run(`task.unresolved_items = []; task.blocked_by = []; task.prerequisites = []; task.gate_proposals = [];
-    task.body = "Spec"; task.acceptance_criteria = "Criteria";
+  run(`task.status = "open"; task.unresolved_items = [{id: "q", text: "Open question"}]; task.blocked_by = []; task.gate_proposals = [];
+    task.body = "Spec"; task.acceptance_criteria = "Criteria"; markdown = text => node("p", text);
     task.signoff_decisions = [
       {decision: "defer", disposition: "deferred", purpose_judgment: "deferred", purpose_source: "user_verdict", result_judgment: "accepted", user_note: "Old defer reasons", result_note: "Old quality note"},
       {decision: "drop", disposition: "dropped", reasons: "New drop reasons"}];
     task.latest_rejection = {source: "review", verdict: "rework", reasons: "Reviewer reasons", attempt_id: "origin-attempt", workstream_id: "origin-branch", spec_revision: 4, timestamp: "then"};
     activity = () => node("div"); rendered = body(task);`);
-  const renderedText = context.rendered.flatMap(descendants).map(node => node.textContent).join(" ");
+  const renderedText = texts(context.rendered);
   assert.match(renderedText, /Old defer reasons/); assert.match(renderedText, /Old quality note/);
   assert.match(renderedText, /New drop reasons/); assert.match(renderedText, /Reviewer reasons/);
   assert.match(renderedText, /origin-branch/);
-  run("task.status = 'dropped'; disposition(task, 'open', 'Resume');");
-  assert.equal(get("field-authorization").required, true);
-  context.values = new Map([["note", "Resume"], ["authorization", "Actual user revival instruction"]]);
-  await run("submitAction(values)");
-  assert.equal(context.captured.payload.authorization, "Actual user revival instruction");
+  assert.match(renderedText, /Open question/);
+  assert.equal(context.rendered.flatMap(descendants).filter(node => node.tag === "button").length, 0, "Questions are read, not answered, here");
+
+  // The detail offers no create, edit, review or verdict controls; a done task offers none at all.
+  run("projectName = () => 'Project'; streamName = () => 'main'; ago = () => 'now';");
+  const buttons = () => descendants(get("detail")).filter(node => node.tag === "button").map(node => node.textContent || node.title);
+  for (const status of ["open", "deferred", "dropped"]) {
+    run(`task.status = ${JSON.stringify(status)}; renderDetail(task);`);
+    const shown = buttons();
+    assert.ok(shown.includes("Actions"), status);
+    assert.ok(!shown.some(label => /Edit|New|Answer|Record my review|Approve|Request changes|Next agent action/.test(label)), status);
+  }
+  run("task.status = 'done'; task.unresolved_items = []; renderDetail(task);");
+  assert.ok(!buttons().includes("Actions"));
 }
 testActivity().then(test).catch(error => {console.error(error); process.exitCode = 1;});

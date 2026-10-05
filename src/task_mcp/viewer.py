@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -18,6 +19,12 @@ from urllib.parse import urlsplit
 from task_mcp.store import Store, TaskError, default_database
 
 ASSETS = Path(__file__).with_name("viewer_assets")
+_ID = "[0-9a-f]{1,32}"
+# Location URLs the app page is served for: /p/<id>[/t/<id> | /g[/<id>]],
+# /w/<id>[/t/<id>], /g/<id> and /sg[/<id>]. IDs are hex prefixes; no query strings.
+APP_PATH = re.compile(
+    rf"/(?:p/{_ID}(?:/t/{_ID}|/g(?:/{_ID})?)?|w/{_ID}(?:/t/{_ID})?|g/{_ID}|sg(?:/{_ID})?)"
+)
 
 
 def dispatch(store, action, data):
@@ -29,24 +36,17 @@ def dispatch(store, action, data):
         "groups": store.list_groups,
         "tasks": store.list_tasks,
         "details": store.get_tasks,
-        "next-action": store.get_next_action,
+        "resolve-prefix": store.resolve_prefix,
         "events": store.list_events,
         "notes": store.read_notes,
-        "create": store.create_task,
-        "edit": store.update_task,
         "reorder": store.reorder_tasks,
         "add-to-workstream": store.add_to_workstream,
         "remove-from-workstream": store.remove_from_workstream,
         "disposition": store.set_disposition,
         "question": store.add_unresolved,
-        "resolve": store.resolve_unresolved,
-        "human-review": store.human_review,
-        "signoff": store.signoff_task,
     }
     if action not in operations:
         raise TaskError("unknown_action")
-    if action == "create":
-        data = {**data, "source": "user"}
     if action == "question":
         data = {**data, "handling": "user"}
     if action == "tasks":
@@ -115,10 +115,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
             "/app.js": ("app.js", "text/javascript; charset=utf-8"),
             "/style.css": ("style.css", "text/css; charset=utf-8"),
         }
-        if self.path not in assets:
+        # Location URLs get the same page as "/" under the same checks; the page's API
+        # calls still need the token header.
+        page = assets["/"] if APP_PATH.fullmatch(self.path) else None
+        if self.path not in assets and not page:
             self.reply(404, {"error": "Not found"})
             return
-        name, kind = assets[self.path]
+        name, kind = assets.get(self.path, page)
         self.reply(200, (ASSETS / name).read_bytes(), kind)
 
     def do_POST(self):

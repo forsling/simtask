@@ -47,7 +47,7 @@ async function test() {
       if (action === "workstreams") return {items: data.include_archived ? streams : streams.filter(s => !s.archive?.archived), next_offset: null};
       if (action === "tasks") return {items: [{id: "t", title: "T", view: "ready"}], next_offset: null, workstream_order_revision: 1};
       if (action === "notes") return {notes: {}};
-      if (action === "next-action") return {action: null, diagnostics: {}};
+      if (action === "resolve-prefix") return {items: data.prefix === "0d" ? [{id: "old", project_id: "p"}] : []};
       throw new Error("unexpected " + action);
     };`);
   context.toasts = [];
@@ -66,24 +66,21 @@ async function test() {
   toggle().onclick();
   assert.deepEqual(navLabels(), ["main1", "back0", "Show 1 archived"]);
   // A linked archived workstream still opens, stays visible while open and shows why.
-  await run("openLocation('#/project/p/workstream/old')");
+  await run("openLocation('/w/0d')");
   assert.equal(run("state.stream"), "old");
   assert.deepEqual(navLabels(), ["old-brancharchived", "main1", "back0", "Show 1 archived"]);
   const tag = get("heading").children.find(c => c.className === "tag-archived");
   assert.equal(tag.textContent, "Archived");
   assert.equal(tag.title, "Archived: Inactive snapshot");
   assert.equal(context.toasts.length, 0, context.toasts.join("; "));
-  // Its next agent action is requested explicitly, as the user opened it.
-  const next = get("subheading").children.find(c => c.tag === "button");
-  context.calls = [];
-  await next.onclick();
-  assert.deepEqual(JSON.parse(JSON.stringify(context.calls.find(([a]) => a === "next-action")[1])), {workstream_id: "old", include_archived: true});
+  // The browser offers no next agent action, archived or not.
+  assert.equal(get("subheading").children.some(c => c.tag === "button"), false);
   get("subheading").children = []; // Setting textContent replaces children in a browser.
+  context.calls = [];
   await run("changeScope('main')");
   assert.doesNotMatch(text(get("heading")), /Archived/);
-  context.calls = [];
-  await get("subheading").children.find(c => c.tag === "button").onclick();
-  assert.equal(context.calls.find(([a]) => a === "next-action")[1].include_archived, false);
+  // Archived workstreams' Needs input is not counted (their sidebar entry shows no count).
+  assert.equal(context.calls.some(([a, d]) => a === "tasks" && d.workstream_id === "old"), false);
 
   // The add picker leaves archived workstreams out; the remove picker keeps memberships.
   run(`openDialog = () => {}; placementAction = () => {}; submissionPending = false;`);

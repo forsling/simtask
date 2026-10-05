@@ -2,36 +2,73 @@
 // Every piece of task text is inserted with textContent or DOM nodes, never parsed as HTML.
 const $ = (id) => document.getElementById(id);
 // The private launch link carries the token as a bare fragment (#<token>). Location
-// URLs are #/... routes and never contain it, so strip a launch token at once.
+// URLs are paths (/w/1c4684b6/t/a5dfba02) and never contain it, so drop any fragment
+// at once; one that is not a token (such as an old #/project/... address) is ignored.
 const launchHash = location.hash.slice(1);
-const launchToken = launchHash && !launchHash.startsWith("/") ? launchHash : "";
+const launchToken = /^[A-Za-z0-9_-]+$/.test(launchHash) ? launchHash : "";
 const token = launchToken || sessionStorage.getItem("task-token") || "";
 if (token) sessionStorage.setItem("task-token", token);
-history.replaceState(null, "", launchToken ? "/" : "/" + location.hash);
+history.replaceState(null, "", location.pathname || "/");
 
+// Where a task stands for the user. Cards show only this, never the agents' internal
+// stage; whether work is a first attempt or a rework round belongs in the task history.
+const STANDINGS = {
+  signoff: { label: "Sign-off", tone: "go", badge: true },
+  decision: { label: "Design/decision", tone: "warn", badge: true },
+  progress: { label: "In progress", tone: "info" },
+  open: { label: "Open", tone: "ready" },
+  deferred: { label: "Deferred", tone: "muted" },
+  done: { label: "Done", tone: "done" },
+  dropped: { label: "Dropped", tone: "muted" },
+};
+// Result states, shown in the task's detail and history only.
 const VIEWS = {
-  signoff: { label: "Ready to sign off", short: "Sign off", tone: "go" },
-  inbox: { label: "Inbox", short: "Inbox", tone: "ask" },
-  unresolved_items: { label: "Open question", short: "Question", tone: "warn" },
-  review: { label: "In review", short: "Review", tone: "info" },
-  ready: { label: "Ready", short: "Ready", tone: "ready" },
-  prerequisites: { label: "Blocked", short: "Blocked", tone: "muted" },
-  deferred: { label: "Deferred", short: "Deferred", tone: "muted" },
-  done: { label: "Done", short: "Done", tone: "done" },
-  dropped: { label: "Dropped", short: "Dropped", tone: "muted" },
-  rework: { label: "Rework", short: "Rework", tone: "warn" },
-  passed: { label: "Review passed", short: "Passed", tone: "go" },
-  human_review: { label: "Human reviewed", short: "Reviewed", tone: "go" },
-  rejected: { label: "Rejected", short: "Rejected", tone: "warn" },
-  open: { label: "Open", short: "Open", tone: "ready" },
+  review: { label: "In review", tone: "info" },
+  rework: { label: "Sent back", tone: "warn" },
+  passed: { label: "Review passed", tone: "go" },
+  human_review: { label: "Human reviewed", tone: "go" },
+  done: { label: "Done", tone: "done" },
+  open: { label: "Open", tone: "ready" },
+  ...STANDINGS,
 };
 const SECTIONS = [
-  { key: "you", title: "Needs you", views: ["signoff", "inbox", "unresolved_items"] },
-  { key: "active", title: "In progress", views: ["review", "ready", "open", "prerequisites"] },
-  { key: "later", title: "Later", views: ["deferred"], collapsible: true },
-  { key: "closed", title: "Closed", views: ["done", "dropped"], collapsible: true },
+  { key: "input", title: "Needs input", standings: ["signoff", "decision"] },
+  { key: "progress", title: "In progress", standings: ["progress"] },
+  { key: "open", title: "Open", standings: ["open"] },
+  { key: "later", title: "Later", standings: ["deferred"], collapsible: true },
+  { key: "done", title: "Done", standings: ["done", "dropped"], collapsible: true },
 ];
-const collapsed = new Set(["closed"]);
+const collapsed = new Set(["done"]);
+const CLOSED = ["done", "dropped", "deferred"];
+// A task's standing from its status, design/decision questions and the current-spec
+// result states in view (this workstream's, or every workstream's on project boards).
+//   decision  held by any open design/decision question (briefs, revised at sign-off)
+//   signoff   a result passed review (or was human-reviewed) and awaits the verdict
+//   progress  a result is recorded and still with the agents (in review or being fixed)
+//   open      no result yet, ready or blocked
+function standingOf(r, counts = r.attempt_counts || r.aggregate_attempt_counts || {}) {
+  if (r.object_type === "group") return "group";
+  const closed = [r.status, r.view].find((s) => CLOSED.includes(s));
+  if (closed) return closed;
+  if (r.unresolved_count || r.view === "unresolved_items") return "decision";
+  if (counts.passed || counts.human_review || r.view === "signoff") return "signoff";
+  if (counts.review || counts.rework || r.view === "review") return "progress";
+  return "open";
+}
+// The same standing for a fetched task, from its current-spec results in view.
+function taskStanding(t) {
+  const counts = {};
+  for (const a of t.attempts || [])
+    if (a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))
+      counts[a.state] = (counts[a.state] || 0) + 1;
+  return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0 }, counts);
+}
+// The latest rejection stays in view only while it is current: no newer result exists.
+function currentRejection(t) {
+  const r = t.latest_rejection;
+  if (!r) return null;
+  return (t.attempts || []).some((a) => a.id !== r.attempt_id && (a.created_at || "") > (r.timestamp || "")) ? null : r;
+}
 
 const state = {
   projects: [],
@@ -54,6 +91,8 @@ const state = {
   orderSaving: false,
   // Archived workstreams stay out of navigation unless shown (remembered per tab).
   showArchived: (() => { try { return sessionStorage.getItem("task-viewer-show-archived") === "1"; } catch { return false; } })(),
+  // The workstream whose board state.rows holds (null for project and group boards).
+  boardStream: null,
 };
 let submitAction = null;
 let submissionPending = false;
@@ -78,11 +117,8 @@ function button(text, fn, cls = "btn") {
   return b;
 }
 const ICONS = {
-  plus: "M12 5v14M5 12h14",
   search: "M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16zM21 21l-4.3-4.3",
   refresh: "M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6",
-  more: "M5 12h.01M12 12h.01M19 12h.01",
-  edit: "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z",
   close: "M18 6 6 18M6 6l12 12",
   back: "M15 18l-6-6 6-6",
   chevron: "M9 6l6 6-6 6",
@@ -101,7 +137,6 @@ function icon(name, size = 16) {
   svg.setAttribute("height", size);
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("class", "i");
-  if (name === "more") svg.setAttribute("class", "i bold");
   const path = document.createElementNS(ns, "path");
   path.setAttribute("d", ICONS[name]);
   svg.append(path);
@@ -155,8 +190,8 @@ const EVENTS = {
   "attempt.recorded": "Result recorded",
   "attempt.reviewed": "Reviewed",
   "attempt.human_reviewed": "Human review",
-  "gate.unresolved_added": "Question added",
-  "gate.unresolved_resolved": "Question answered",
+  "gate.unresolved_added": "Design/decision question added",
+  "gate.unresolved_resolved": "Design/decision answered",
   "gate.prerequisite_added": "Prerequisite added",
   "gate.prerequisite_proposed": "Gate proposed",
   "gate.proposal_accepted": "Proposal accepted",
@@ -352,120 +387,242 @@ function currentArchived() {
 function defaultStream(streams) {
   return streams.find((s) => !isArchived(s))?.id || null;
 }
+// Tasks waiting for the user's input. Every workstream's count comes from its own
+// cards through standingOf, exactly as its Needs input section would sort them: the
+// open board counts its loaded rows, and each other workstream's count is read from
+// its card list (no specifications) once per board refresh. The server's status
+// counts rank review ahead of open questions, so they cannot stand in for it.
+const INPUT = SECTIONS.find((s) => s.key === "input").standings;
+const needsInput = (rows) => rows.filter((r) => INPUT.includes(r.standing ?? standingOf(r))).length;
+const needsCounts = new Map(); // workstream ID -> count from its latest card list
+const needsTokens = new Map(); // workstream ID -> token of the latest read that may set it
+let needsToken = 0;
 function needsYou(stream) {
-  const c = stream.status?.counts || {};
-  return (c.signoff || 0) + (c.inbox || 0) + (c.unresolved_items || 0);
+  if (!state.groups && state.boardStream === stream.id) return needsInput(state.rows);
+  return needsCounts.get(stream.id) ?? null;
+}
+function noteNeeds(id, rows) {
+  needsTokens.set(id, ++needsToken);
+  needsCounts.set(id, needsInput(rows));
+}
+// Reads the given workstreams' cards in parallel and redraws the sidebar if a count
+// changed. A newer read of a workstream (or its board loading) supersedes an older one.
+async function refreshNeeds(project, streams) {
+  const reads = streams.map((s) => {
+    const token = ++needsToken;
+    needsTokens.set(s.id, token);
+    return pages("tasks", { project, workstream_id: s.id }).then((rows) => {
+      if (needsTokens.get(s.id) !== token) return false;
+      const n = needsInput(rows), changed = needsCounts.get(s.id) !== n;
+      needsCounts.set(s.id, n);
+      return changed;
+    });
+  });
+  const changed = (await Promise.allSettled(reads)).some((r) => r.status === "fulfilled" && r.value);
+  if (changed && project === state.project) renderNav();
 }
 
 /* ---------- location URLs ---------- */
 
-// #/project/<id>/(all | workstream/<id> | groups | shared-groups)[/(task|group)/<id>]
-// names the selected project, view and task or group. The token is never part of it.
-function routeHash() {
-  if (!state.project) return "";
-  const e = encodeURIComponent;
-  let hash = "#/project/" + e(state.project);
-  hash += state.groups === "shared" ? "/shared-groups" : state.groups ? "/groups" : state.stream ? "/workstream/" + e(state.stream) : "/all";
-  if (state.selected) hash += (state.groups ? "/group/" : "/task/") + e(state.selected);
-  return hash;
+// Short, token-free paths name the selected project, view and task or group:
+//   /p/<project>      All tasks         /p/<project>/t/<task>
+//   /p/<project>/g    Task groups       /p/<project>/g/<group>
+//   /w/<workstream>   a workstream      /w/<workstream>/t/<task>
+//   /g/<group>        a group in the view it implies (its project's groups, or shared)
+//   /sg               Shared groups     /sg/<group>
+// A workstream or group implies its project, so only project-wide views name one.
+// IDs appear as their first 8 hex characters, or in full when that prefix is ambiguous
+// where the address is resolved: tasks within the view's board, projects among all
+// projects, workstreams and groups across the database (through "resolve-prefix").
+const SHORT = 8;
+const hexOf = (id) => String(id).replace(/^[a-z]+_/, "");
+const longIds = new Set(); // IDs shown in full because their short prefix is ambiguous
+const checkedIds = new Set(); // workstream and group IDs whose short prefix was checked
+const groupHomes = new Map(); // group ID -> "shared", or the project whose groups it implies
+function shortId(id, pool = []) {
+  const hex = hexOf(id), short = hex.slice(0, SHORT);
+  return longIds.has(id) || pool.some((o) => o !== id && hexOf(o).startsWith(short)) ? hex : short;
 }
-// A parsed location, {} for the default location, or null for an unrecognized address.
-function parseRoute(hash) {
-  const path = hash.replace(/^#/, "").replace(/\/+$/, "");
-  if (!path) return {};
-  let parts;
-  try {
-    parts = path.replace(/^\//, "").split("/").map(decodeURIComponent);
-  } catch {
-    return null;
+function routePath() {
+  if (!state.project) return "";
+  const ids = (list) => list.map((x) => x.id);
+  const project = "/p/" + shortId(state.project, ids(state.projects));
+  if (state.groups) {
+    const group = state.selected;
+    if (!group) return state.groups === "shared" ? "/sg" : project + "/g";
+    const id = shortId(group, ids(state.rows));
+    const home = groupHomes.get(group);
+    if (home && home === (state.groups === "shared" ? "shared" : state.project)) return "/g/" + id;
+    return (state.groups === "shared" ? "/sg/" : project + "/g/") + id;
   }
-  if (parts[0] !== "project" || !parts[1]) return null;
-  const route = { project: parts[1] };
-  let rest = parts.slice(2);
-  if (rest[0] === "all" || rest[0] === "groups" || rest[0] === "shared-groups") {
-    route.view = rest[0];
-    rest = rest.slice(1);
-  } else if (rest[0] === "workstream" && rest[1]) {
-    route.view = "workstream";
-    route.stream = rest[1];
-    rest = rest.slice(2);
-  } else if (rest.length) return null;
-  const itemKind = route.view === "groups" || route.view === "shared-groups" ? "group" : "task";
-  if (rest.length === 2 && rest[0] === itemKind && rest[1] && route.view) route.item = rest[1];
-  else if (rest.length) return null;
-  return route;
+  const base = state.stream ? "/w/" + shortId(state.stream, ids(state.streams)) : project;
+  return state.selected ? base + "/t/" + shortId(state.selected, ids(state.rows)) : base;
+}
+// A parsed location ({view, project, stream, group, task} as hex prefixes), {} for the
+// default location, or null for an unrecognized address.
+function parseRoute(path) {
+  if (path === "/") return {};
+  const [a, b, c, d, ...rest] = path.split("/").slice(1);
+  const id = (s) => /^[0-9a-f]{1,32}$/.test(s || "");
+  if (rest.length) return null;
+  if (a === "p" && id(b)) {
+    if (c === undefined) return { view: "all", project: b };
+    if (c === "t" && id(d)) return { view: "all", project: b, task: d };
+    if (c === "g" && d === undefined) return { view: "groups", project: b };
+    if (c === "g" && id(d)) return { view: "groups", project: b, group: d };
+  } else if (a === "w" && id(b)) {
+    if (c === undefined) return { view: "workstream", stream: b };
+    if (c === "t" && id(d)) return { view: "workstream", stream: b, task: d };
+  } else if (a === "g" && id(b) && c === undefined) return { view: "group", group: b };
+  else if (a === "sg" && c === undefined) {
+    if (b === undefined) return { view: "shared-groups" };
+    if (id(b)) return { view: "shared-groups", group: b };
+  }
+  return null;
+}
+// Resolve a workstream or group prefix: the match, or {ambiguous} when there is not exactly one.
+async function resolvePrefix(kind, prefix) {
+  const { items } = await api("resolve-prefix", { kind, prefix });
+  if (items.length !== 1) return { ambiguous: items.length > 1 };
+  const found = items[0];
+  // A short prefix that matched once proves the 8-character one unique; keep a longer
+  // spelling until checkPrefix confirms that the short one would do.
+  if (prefix.length <= SHORT) {
+    checkedIds.add(found.id);
+    longIds.delete(found.id);
+  } else if (!checkedIds.has(found.id)) longIds.add(found.id);
+  return found;
+}
+// Spell a written workstream or group ID in full only if its short prefix is ambiguous
+// across the database. Checked once per ID, after the address is written; the
+// current address is respelled in place if it still names that ID.
+function checkPrefix(kind, id) {
+  if (checkedIds.has(id) || !/^[a-z]+_[0-9a-f]{32}$/.test(id)) return;
+  checkedIds.add(id);
+  const hex = hexOf(id), short = hex.slice(0, SHORT);
+  api("resolve-prefix", { kind, prefix: short }).then(({ items }) => {
+    const ambiguous = items.length > 1;
+    if (ambiguous === longIds.has(id)) return;
+    if (ambiguous) longIds.add(id);
+    else longIds.delete(id);
+    const parts = (location.pathname || "/").split("/");
+    // The workstream is /w/<id>...; the group ends /g/<id>, /sg/<id> or /p/<project>/g/<id>.
+    const at = kind === "workstream" ? (parts[1] === "w" ? 2 : 0) : ["g", "sg"].includes(parts[1]) || parts[3] === "g" ? parts.length - 1 : 0;
+    if (!at || parts[at] !== (ambiguous ? short : hex)) return;
+    parts[at] = ambiguous ? hex : short;
+    shownPath = parts.join("/");
+    history.replaceState(null, "", shownPath);
+  }, () => checkedIds.delete(id));
+}
+// Learn which view a group's /g/ address implies, from its details.
+function learnGroupHome(t) {
+  const projects = Object.keys(t.progress?.by_project || {});
+  const home = projects.length > 1 ? "shared" : projects[0] || t.origin_project_id;
+  if (home) groupHomes.set(t.id, home);
+  return home;
 }
 // The location this tab last wrote or opened; back/forward to anything else opens it.
-let shownHash = null;
+let shownPath = null;
 // Record the current location: "push" for a deliberate navigation, "replace" for
 // automatic selection, fallbacks and loads.
 function syncRoute(mode = "replace") {
-  const hash = routeHash();
-  if (!hash) return;
-  if (hash !== location.hash) history[mode === "push" ? "pushState" : "replaceState"](null, "", hash);
-  shownHash = hash;
+  const path = routePath();
+  if (!path) return;
+  if (path !== (location.pathname || "/")) history[mode === "push" ? "pushState" : "replaceState"](null, "", path);
+  shownPath = path;
+  if (state.groups && state.selected) checkPrefix("group", state.selected);
+  else if (!state.groups && state.stream) checkPrefix("workstream", state.stream);
 }
 // Open a location URL (on load, back/forward or an edited address). Anything that no
-// longer exists falls back to the nearest valid view with a short notice.
-async function openLocation(hash, { initial = false } = {}) {
+// longer exists, or a prefix matching several items, falls back to the nearest valid
+// view with a short notice.
+async function openLocation(path, { initial = false } = {}) {
   const generation = ++state.generation;
-  const route = parseRoute(hash);
+  const stale = () => generation !== state.generation;
+  const route = parseRoute(path);
   const notices = [];
   if (!route) notices.push("That address is not a viewer location.");
-  let project = state.projects.find((p) => p.id === route?.project);
-  if (route?.project && !project) {
-    state.projects = await pages("projects");
-    if (generation !== state.generation) return;
-    project = state.projects.find((p) => p.id === route.project);
-  }
-  if (route?.project && !project) notices.push("That project no longer exists.");
-  const located = !!project;
-  project ||= state.projects[0];
-  if (!project) return void notices.forEach((n) => toast(n));
-  const streams = await workstreams(project.id);
-  if (generation !== state.generation) return;
-  const view = located ? route.view : route?.view === "shared-groups" ? "shared-groups" : null;
-  let item = located || view === "shared-groups" ? route.item || null : null, stream = null, groups = false;
-  if (view === "workstream") {
-    if (streams.some((s) => s.id === route.stream)) stream = route.stream;
-    else notices.push("That workstream no longer exists.");
-  } else if (view === "groups") groups = "project";
-  else if (view === "shared-groups") groups = "shared";
-  else if (!view) stream = defaultStream(streams);
-  if (item && groups) {
-    // A linked group may be outside the list (as when opened from a task), so check it exists.
-    const found = await api("details", { ids: [item] }).then((r) => r.items[0], () => null);
-    if (generation !== state.generation) return;
-    if (found?.object_type !== "group") {
-      notices.push("That task group no longer exists.");
-      item = null;
+  let view = route?.view || null, projectId = null, stream = null, group = null, task = route?.task || null;
+  if (route?.project) {
+    const match = (list) => list.filter((p) => hexOf(p.id).startsWith(route.project));
+    let found = match(state.projects);
+    if (!found.length) {
+      state.projects = await pages("projects");
+      if (stale()) return;
+      found = match(state.projects);
+    }
+    if (found.length === 1) projectId = found[0].id;
+    else {
+      notices.push(found.length ? "That address matches more than one project." : "That project no longer exists.");
+      view = task = null;
     }
   }
+  if (route?.stream) {
+    const found = await resolvePrefix("workstream", route.stream);
+    if (stale()) return;
+    if (found.id) [stream, projectId] = [found.id, found.project_id];
+    else {
+      notices.push(found.ambiguous ? "That address matches more than one workstream." : "That workstream no longer exists.");
+      view = "all";
+    }
+  }
+  if (route?.group && view) {
+    const found = await resolvePrefix("group", route.group);
+    if (stale()) return;
+    if (found.id) group = found.id;
+    else notices.push(found.ambiguous ? "That address matches more than one task group." : "That task group no longer exists.");
+  }
+  let origin = null;
+  if (view === "group") {
+    view = "groups";
+    if (group) {
+      // A group implies its view: shared across projects, else its project's groups.
+      const t = (await api("details", { ids: [group] })).items[0];
+      if (stale()) return;
+      const home = learnGroupHome(t);
+      origin = t.origin_project_id;
+      if (home === "shared") view = "shared-groups";
+      else projectId = home;
+    }
+  }
+  if (projectId && !state.projects.some((p) => p.id === projectId)) {
+    state.projects = await pages("projects");
+    if (stale()) return;
+  }
+  // Views that name no project keep the open one (or the group's), else the first.
+  const project = [projectId, state.project, origin].map((id) => state.projects.find((p) => p.id === id)).find(Boolean) || state.projects[0];
+  if (!project) return void notices.forEach((n) => toast(n));
+  const streams = await workstreams(project.id);
+  if (stale()) return;
+  const groups = view === "groups" ? "project" : view === "shared-groups" ? "shared" : false;
+  if (!view) stream = defaultStream(streams);
+  if (!groups) group = null;
   closeDrawer();
   // On a narrow screen a reloaded task reopens its detail; back/forward shows the list.
-  if (initial && item) $("shell").classList.add("detail-open");
+  if (initial && (task || group)) $("shell").classList.add("detail-open");
   state.project = project.id;
   state.streams = streams;
   state.stream = stream;
   state.groups = groups;
-  state.linkedGroup = groups ? item : null;
-  state.selected = item;
+  state.linkedGroup = group;
+  state.selected = group;
   state.task = null;
-  const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : stream ? `${project.name} · ${streamName(stream)}` : `${project.name} · All tasks`;
+  const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : state.stream ? `${project.name} · ${streamName(state.stream)}` : `${project.name} · All tasks`;
   notices.forEach((n) => toast(`${n} Showing ${name}.`));
-  syncRoute();
+  // A requested task keeps the address until the loaded board resolves its prefix.
+  if (!task) syncRoute();
   renderNav();
-  await reload({ requested: groups ? null : item });
+  await reload({ requested: groups ? null : task });
 }
 function onLocationChange() {
-  if (location.hash === shownHash) return;
-  const hash = location.hash.slice(1);
-  shownHash = location.hash;
   // A launch link pasted into this tab: reload so startup adopts and strips its token.
-  if (hash && !hash.startsWith("/")) return location.reload();
+  if (location.hash.length > 1) return location.reload();
+  const path = location.pathname || "/";
+  if (path === shownPath) return;
+  shownPath = path;
   if (!state.projects.length || $("shell").classList.contains("stopped")) return;
   closeMenu();
-  openLocation(location.hash).catch((e) => toast(e.message, true));
+  openLocation(path).catch((e) => toast(e.message, true));
 }
 window.addEventListener("popstate", onLocationChange);
 window.addEventListener("hashchange", onLocationChange);
@@ -477,20 +634,18 @@ async function boot() {
   $("refresh").append(icon("refresh"));
   $("close").append(icon("close"));
   $("search-icon").append(icon("search", 15));
-  $("new").prepend(icon("plus", 15));
   try {
     state.projects = await pages("projects");
     if (!state.projects.length) {
       renderNav();
-      $("new").disabled = true;
       $("list").replaceChildren(
         emptyState("No projects yet", "Initialize a project through Task MCP to get started."),
       );
       $("detail").replaceChildren();
       return;
     }
-    shownHash = location.hash;
-    await openLocation(location.hash, { initial: true });
+    shownPath = location.pathname || "/";
+    await openLocation(shownPath, { initial: true });
   } catch (e) {
     toast(e.message, true);
   }
@@ -604,7 +759,6 @@ async function reload({ quiet = false, requested = null } = {}) {
   $("heading").replaceChildren(
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
   );
-  $("new").hidden = state.groups;
   // Notes are context, not the board: a failed notes read hides them instead of the list.
   const notesLoad = groups ? Promise.resolve(null) : api("notes", { project, workstream_id: stream }).catch(() => null);
   try {
@@ -617,8 +771,14 @@ async function reload({ quiet = false, requested = null } = {}) {
     const notes = (await notesLoad)?.notes || null;
     if (stale()) return;
     renderNotes(notes);
-    state.rows = rows.map(r => ({ ...r, view: r.view || (r.object_type === "group" ? "group" : ["done", "deferred", "dropped"].includes(r.status) ? r.status : r.gate_diagnostics?.[0] || "open") }));
+    state.rows = rows.map((r) => ({ ...r, standing: standingOf(r) }));
+    state.boardStream = groups ? null : stream;
     state.streams = streams;
+    // The open board's count comes from its rows; every other workstream's is read
+    // again (group boards read only those not counted yet), without holding the board.
+    if (state.boardStream) noteNeeds(state.boardStream, state.rows);
+    const recount = streams.filter((s) => s.id !== state.boardStream && !isArchived(s) && (!groups || !needsTokens.has(s.id)));
+    if (recount.length) refreshNeeds(project, recount).catch(() => {});
     state.loadedAt = Date.now();
     state.orderStream = !groups && state.stream ? state.stream : null;
     state.orderRevision = state.orderStream ? board.workstream_order_revision : null;
@@ -633,36 +793,31 @@ async function reload({ quiet = false, requested = null } = {}) {
       tag.title = "Archived: " + shownStream.archive.reason;
       $("heading").append(tag);
     }
-    if (!groups && state.stream) $("subheading").append(" · ", button("Next agent action", async () => {
-      try {
-        // An archived workstream the user opened is an explicit request to include it.
-        const selected = await api("next-action", {workstream_id: state.stream, include_archived: currentArchived()});
-        if (selected.action) {
-          await selectTask(selected.task.id, { entry: "push" });
-          toast(selected.action === "review" ? "Next: fresh independent reviewer. Verify the actual checkout and saved proof." : "Next: implementer. Use the current checkout and relevant existing work.");
-        } else toast(`No autonomous action. ${selected.diagnostics.signoff || 0} task(s) await human sign-off; other gates remain on the board.`);
-      } catch (e) { toast(e.message, true); }
-    }, "btn small"));
     renderNav();
     renderList();
     if (detailGeneration !== state.generation) return;
+    if (requested) {
+      // A location's task prefix resolves within this board; a task that has left the
+      // view (or a prefix matching several) falls back to the first task.
+      const matches = rows.filter((r) => hexOf(r.id).startsWith(requested));
+      if (matches.length === 1) state.selected = matches[0].id;
+      else {
+        const where = stream ? streamName(stream) : "this project";
+        toast((matches.length ? `That address matches more than one task in ${where}.` : `That task is not in ${where}.`) + (rows.length ? " Showing the first task." : ""));
+      }
+    }
     if (state.selected && (rows.some((r) => r.id === state.selected) || (groups && state.linkedGroup === state.selected))) await selectTask(state.selected, { quiet });
     else if (rows.length) {
-      // A location whose task has left this view falls back to the first task.
-      if (requested && requested === state.selected)
-        toast(`That task is not in ${stream ? streamName(stream) : "this project"}. Showing the first task.`);
       const first = orderedRows()[0] || rows[0];
       await selectTask(first.id);
     } else {
-      if (requested && requested === state.selected)
-        toast(`That task is not in ${stream ? streamName(stream) : "this project"}.`);
       state.selected = null;
       syncRoute();
       $("detail").classList.remove("loading");
       $("detail").replaceChildren(
         state.groups
           ? emptyState(groups === "shared" ? "No shared task groups" : "No task groups", groups === "shared" ? "Task groups with members in more than one project appear here." : "Task groups belonging to or included in this project appear here.")
-          : emptyState("Nothing here yet", "Create a task, or pick another workstream.", button("New task", createTask, "btn primary")),
+          : emptyState("Nothing here yet", "Tasks appear here when an agent adds them. You can also pick another workstream."),
       );
     }
   } catch (e) {
@@ -709,7 +864,7 @@ function orderedRows() {
   if (state.groups) return filteredRows();
   const rows = filteredRows();
   return SECTIONS.flatMap((s) =>
-    collapsed.has(s.key) && !$("search").value ? [] : rows.filter((r) => s.views.includes(r.view)),
+    collapsed.has(s.key) && !$("search").value ? [] : rows.filter((r) => s.standings.includes(r.standing)),
   );
 }
 function row(r) {
@@ -722,27 +877,25 @@ function row(r) {
       done = r.progress?.done || 0;
     b.append(
       node("span", "", "dot tone-" + (r.complete ? "done" : "info")),
-      el("span", "row-main", node("span", r.title, "row-title"), node("span", `${groupKind(r)} · ${groupProjectCount(r)} project${groupProjectCount(r) === 1 ? "" : "s"}`, "muted"), progressBar(done, total)),
+      el("span", "row-main", node("span", r.title, "row-title"), r.summary ? node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted") : null, node("span", `${groupKind(r)} · ${groupProjectCount(r)} project${groupProjectCount(r) === 1 ? "" : "s"}`, "muted"), progressBar(done, total)),
       node("span", `${done}/${total}`, "row-meta"),
     );
   } else {
-    const v = VIEWS[r.view] || { short: r.view, tone: "muted" };
-    b.classList.toggle("closed", r.view === "done" || r.view === "dropped");
+    // Only the Sign-off and Design/decision badges appear on cards; the badge sits
+    // inline after the title, so it never narrows or truncates it.
+    const v = STANDINGS[r.standing] || { label: r.standing, tone: "muted" };
+    b.classList.toggle("closed", r.standing === "done" || r.standing === "dropped");
     if (orderEditable()) {
       b.draggable = true;
       b.classList.add("draggable");
-      b.title = `Position ${r.workstream_order_key} in ${streamName(state.stream)}. Drag to reorder.`;
-      b.append(node("span", String(r.workstream_order_key ?? ""), "row-order"));
-    }
-    b.append(
-      node("span", "", "dot tone-" + v.tone),
-      node("span", r.title, "row-title"),
-      node("span", v.short, "row-meta tone-" + v.tone),
-    );
-  }
-  if (r.latest_rejection) b.append(node("span", `Rejected · ${r.latest_rejection.source} ${r.latest_rejection.verdict}`, "row-meta tone-warn"));
-  if (r.summary) {
-    b.querySelector(".row-title").append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
+      // Positions are workstream-wide, so a section shows no numbering of its own.
+      b.title = `${v.label} · position ${r.workstream_order_key} in ${streamName(state.stream)}. Drag to reorder.`;
+    } else b.title = v.label;
+    const title = node("span", r.title, "row-title");
+    if (v.badge) title.append(" ", node("span", v.label, "badge tone-" + v.tone));
+    const main = el("span", "row-main", title);
+    if (r.summary) main.append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
+    b.append(node("span", "", "dot tone-" + v.tone), main);
   }
   return b;
 }
@@ -755,7 +908,7 @@ function renderList() {
     list.append(...rows.map(row));
   } else {
     SECTIONS.forEach((s) => {
-      const items = rows.filter((r) => s.views.includes(r.view));
+      const items = rows.filter((r) => s.standings.includes(r.standing));
       if (!items.length) return;
       const isCollapsed = collapsed.has(s.key) && !searching;
       const head = button("", () => {
@@ -764,14 +917,14 @@ function renderList() {
         renderList();
       }, "section-head" + (s.collapsible ? " toggle" : "") + (isCollapsed ? " collapsed" : ""));
       if (s.collapsible) head.append(icon("chevron", 12));
-      head.append(node("span", s.title), node("span", String(items.length), "count" + (s.key === "you" ? " attention" : "")));
+      head.append(node("span", s.title), node("span", String(items.length), "count" + (s.key === "input" ? " attention" : "")));
       head.setAttribute("aria-expanded", String(!isCollapsed));
       list.append(head);
       if (!isCollapsed) list.append(...items.map(row));
     });
-    // Views the list does not know about still deserve a place.
-    const known = SECTIONS.flatMap((s) => s.views);
-    const other = rows.filter((r) => !known.includes(r.view));
+    // Standings the list does not know about still deserve a place.
+    const known = SECTIONS.flatMap((s) => s.standings);
+    const other = rows.filter((r) => !known.includes(r.standing));
     if (other.length) list.append(node("div", "Other", "section-head"), ...other.map(row));
   }
   if (!rows.length && state.rows.length)
@@ -793,8 +946,8 @@ function skeleton() {
   for (let i = 0; i < 6; i++) wrap.append(node("div"));
   return wrap;
 }
-function emptyState(title, text, action) {
-  return el("div", "empty", node("h3", title), node("p", text), action);
+function emptyState(title, text) {
+  return el("div", "empty", node("h3", title), node("p", text));
 }
 
 /* ---------- drag-and-drop ordering ---------- */
@@ -813,7 +966,7 @@ function droppedOrder(ids, movedId, targetId, placement) {
   return next.every((id, i) => id === ids[i]) ? null : next;
 }
 function sectionTitle(r) {
-  return SECTIONS.find((s) => s.views.includes(r.view))?.title || "Other";
+  return SECTIONS.find((s) => s.standings.includes(r.standing))?.title || "Other";
 }
 const drag = { id: null, stream: null, source: null, marked: null };
 function dropHint(text) {
@@ -969,6 +1122,11 @@ async function selectTask(id, { open = false, quiet = false, entry = "replace" }
     const t = (await api("details", { ids: [id] })).items[0];
     if (state.selected !== id || generation !== state.generation) return;
     if (t.object_type === "group") {
+      // Now that the group's projects are known, its address may shorten to /g/<group>.
+      if (state.groups && !groupHomes.has(id)) {
+        learnGroupHome(t);
+        syncRoute();
+      }
       t.included_workstreams = await includedWorkstreams(t.id);
       if (state.selected !== id || generation !== state.generation) return;
     }
@@ -992,14 +1150,14 @@ function topBar(crumbs, actions) {
 function renderDetail(t) {
   const d = $("detail");
   if (t.object_type === "group") return renderGroup(t);
-  const row = state.rows.find((r) => r.id === t.id);
-  const view = row?.view || t.status;
-  const locked = t.status === "done";
-
-  const actions = [button("Edit summary", () => editSummary(t))];
-  if (!locked) {
-    actions.push(iconButton("edit", "Edit (e)", () => editTask(t)));
-    actions.push(iconButton("more", "More actions", (e) => moreMenu(e.currentTarget, t)));
+  const standing = taskStanding(t);
+  // A completed task cannot change, so it offers no actions.
+  const actions = [];
+  if (t.status !== "done") {
+    const menu = button("Actions", (e) => actionsMenu(e.currentTarget, t));
+    menu.setAttribute("aria-haspopup", "menu");
+    menu.title = "Ask a question, change workstreams, or defer, resume or drop this task";
+    actions.push(menu);
   }
   const crumbs = [node("span", projectName(t.project_id))];
   if (state.stream) crumbs.push(node("span", "/", "sep"), branchLabel(streamName(state.stream)));
@@ -1011,7 +1169,7 @@ function renderDetail(t) {
     el(
       "div",
       "meta",
-      pill(view),
+      pill(standing),
       t.workstream_ids?.length
         ? el("span", "meta-item", icon("branch", 13), "In " + t.workstream_ids.map(streamName).join(", "))
         : node("span", "Inbox", "meta-item warn"),
@@ -1022,7 +1180,7 @@ function renderDetail(t) {
     ),
   );
   if (t.summary) head.append(node("p", t.summary, "muted"), node("p", t.summary_stale ? "Descriptive summary predates the current specification." : "Descriptive summary; read the specification below for requirements.", "muted"));
-  d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, view), ...body(t)));
+  d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, standing), ...body(t)));
 }
 function currentAttempt(t, requiredStates = null) {
   if (!requiredStates && t.status === "done" && t.selected_attempt_id)
@@ -1035,74 +1193,111 @@ function currentAttempt(t, requiredStates = null) {
     (!requiredStates || requiredStates.includes(a.state))
   ) || null;
 }
-// The one thing the human can do next, stated plainly with its buttons.
-function nextStep(t, view) {
-  const a = currentAttempt(t, view === "signoff" ? ["passed", "human_review"] : ["review"]);
-  let title, text, buttons = [];
+// What, if anything, the user can do next, stated plainly. The standing is where the
+// task is for the user (see standingOf); prose names no attempt IDs, agent labels or
+// internal workflow stages. The browser shows and steers: agents write and decide with
+// the user, so sign-off hands a ready prompt to an agent instead of recording a verdict.
+function nextStep(t, standing) {
+  const member = t.workstream_ids?.length && !(state.stream && !t.workstream_ids.includes(state.stream));
+  const blockers = (t.prerequisites || []).filter((p) => p.blocking);
+  const blocking = blockers.length > 0;
+  // A result that passed review stays with the user for sign-off even while a
+  // prerequisite is open; the walkthrough weighs the blocker.
+  const passed = standing === "signoff" ? currentAttempt(t, ["passed", "human_review"]) : null;
+  let title, text, buttons = [], extra = null, signoff = false;
   if (t.status === "done") {
     title = "Signed off";
     text = "This task is complete. A new requirement becomes a new task.";
-  } else if (view === "deferred" || view === "dropped") {
-    title = view === "deferred" ? "Deferred" : "Dropped";
-    text = t.status === "dropped" ? "History, workstream memberships and proof are kept. Revival needs actual authorization." : "Workstream memberships, context and proof are kept for resumption.";
-    buttons.push(button("Resume task", () => disposition(t, "open", "Resume"), "btn primary"));
-  } else if (view === "inbox" || !t.workstream_ids?.length || (state.stream && !t.workstream_ids?.includes(state.stream))) {
+  } else if (standing === "deferred" || standing === "dropped") {
+    title = standing === "deferred" ? "Deferred" : "Dropped";
+    text = standing === "deferred"
+      ? "Its workstreams, details and results are kept for when it resumes."
+      : "Its workstreams, details and results are kept. Resume brings it back.";
+    buttons.push(button("Resume", () => resumeTask(t), "btn primary"));
+  } else if (!member) {
     title = "Add this task to a workstream";
-    text = "Choose the branch where this task should be built. Open questions and prerequisites still apply.";
+    text = "Choose the branch where this task should be built. Its questions and prerequisites still apply.";
     buttons.push(button(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true)), "btn primary"));
-    buttons.push(button("Edit first", () => editTask(t)));
   } else if (t.unresolved_items.length) {
     const n = t.unresolved_items.length;
-    title = n === 1 ? "One question needs an answer" : `${n} questions need answers`;
-    text = "Autonomous implementation and review wait until each question is resolved.";
-  } else if (t.prerequisites?.some((p) => p.blocking) || view === "prerequisites") {
-    title = "Waiting on prerequisites";
-    text = "Autonomous implementation and review wait for the required milestones below: review by default, or explicit sign-off.";
-  } else if (view === "signoff" && a) {
+    title = n === 1 ? "A design/decision needs your answer" : `${n} design/decision questions need your answers`;
+    text = "Work on this task waits until each question below is settled. Talk it through with an agent, who records the answer.";
+  } else if (passed) {
+    signoff = true;
     title = "Ready for your sign-off";
-    text = `${a.implementer}'s result has been reviewed. Judge the task purpose and the result below; one informed decision can cover both.`;
-    buttons.push(button("Approve & sign off", () => signoff(t, a), "btn primary"));
-    buttons.push(button("Request changes", () => requestChanges(t, a)));
-  } else if (view === "review" && a) {
-    title = "Next agent action: review";
-    text = `${a.implementer} recorded a durable result. Send it to a fresh independent reviewer, or review it yourself. Check the actual checkout and proof first.`;
-    buttons.push(button("Record my review", () => humanReview(a)));
-  } else if (view === "unresolved_items") {
-    const n = t.unresolved_items.length;
-    title = n === 1 ? "One question needs an answer" : `${n} questions need answers`;
-    text = "Work is blocked until each is resolved.";
-  } else if (view === "prerequisites") {
+    text = passed.state === "human_review" ? "You reviewed the delivered work below yourself." : "The delivered work below passed independent review.";
+    if (blocking) {
+      const names = blockers.map((p) => `“${p.title}”`).join(", ");
+      text += blockers.length === 1
+        ? ` A prerequisite is still open: ${names}. Weigh it in the walkthrough.`
+        : ` ${blockers.length} prerequisites are still open: ${names}. Weigh them in the walkthrough.`;
+    }
+    extra = node("p", "Sign-off is a walkthrough with an agent: copy the prompt, paste it into your agent, and decide together.", "muted");
+    const prompt = signoffPrompt(t);
+    buttons.push(button("Sign off with an agent", (e) => copyPrompt(prompt, e.currentTarget), "btn primary"));
+  } else if (blocking) {
     title = "Waiting on prerequisites";
-    text = "It becomes ready once the required prerequisite milestones below are satisfied.";
-  } else if (view === "ready") {
-    title = "Next agent action: implement";
-    text = "Included and unblocked. An implementer can use the current checkout and relevant existing work.";
-  } else return null;
-  const blocked = !t.workstream_ids?.length || (state.stream && !t.workstream_ids?.includes(state.stream)) || t.unresolved_items.length || t.prerequisites?.some((p) => p.blocking) || ["deferred", "dropped"].includes(t.status);
-  if (blocked && t.attempts.some((a) => a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))) {
-    text += " A factual result is saved below; it changes no workstream memberships, gates or completion.";
-    const pending = currentAttempt(t, ["review"]);
-    if (pending) buttons.push(button("Record my review", () => humanReview(pending)));
+    text = "Work on this task waits for the prerequisites below: reviewed by default, or signed off where marked.";
+  } else if (standing === "signoff") {
+    return null;
+  } else if (standing === "progress") {
+    title = "In progress";
+    text = currentAttempt(t, ["review"])
+      ? "A result is recorded and is with the agents for independent review."
+      : "A result was sent back for changes and the agents are fixing it.";
+  } else {
+    title = "Open";
+    text = "No result is recorded yet. An agent can pick this up.";
   }
-  const tone = (VIEWS[view] || VIEWS.open).tone;
+  if (!signoff && (!member || t.unresolved_items.length || blocking || ["deferred", "dropped"].includes(t.status))) {
+    if (t.attempts.some((x) => x.spec_revision === t.spec_revision && (!state.stream || x.workstream_id === state.stream)))
+      text += " A recorded result is kept below; it does not change this.";
+  }
+  const tone = (STANDINGS[standing] || STANDINGS.open).tone;
   return el(
     "div",
     "next tone-" + (t.status === "done" ? "done" : tone),
-    el("div", "next-text", node("strong", title), node("p", text)),
+    el("div", "next-text", node("strong", title), node("p", text), extra),
     buttons.length ? el("div", "next-actions", ...buttons) : null,
   );
 }
+// Plain text an agent understands: the full task ID and its title.
+function signoffPrompt(t) {
+  return `Sign off ${t.id} — ${t.title}`;
+}
+// Copy a prompt for the user to paste into an agent. The browser launches no agent.
+// The Clipboard API needs a secure context (127.0.0.1 is one); when it is missing or
+// refused, the prompt is shown selected beside the button so the user can copy it.
+async function copyPrompt(text, anchor) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+    toast("Copied. Paste it into your agent to start the sign-off.");
+  } catch {
+    const host = anchor?.closest?.(".next");
+    let box = host?.querySelector(".prompt-copy");
+    if (host && !box) {
+      box = node("input", undefined, "prompt-copy");
+      box.readOnly = true;
+      box.setAttribute("aria-label", "Sign-off prompt to copy");
+      host.append(box);
+    }
+    if (box) {
+      box.value = text;
+      box.focus();
+      box.select();
+    }
+    toast("Couldn't copy automatically. The prompt is selected: press Ctrl+C (⌘C on a Mac) to copy it.", true);
+  }
+}
 function body(t) {
   const out = [];
-  const locked = t.status === "done";
   if (t.unresolved_items.length) {
     const list = el("div", "questions");
     t.unresolved_items.forEach((q) => {
-      const item = el("div", "question", markdown(q.text));
-      if (!locked) item.append(el("div", "q-actions", button("Answer", () => resolve(t, q), "btn small")));
-      list.append(item);
+      list.append(el("div", "question", markdown(q.text)));
     });
-    out.push(section("Open questions", list));
+    out.push(section("Design/decision", list));
   }
   if (t.blocked_by.length) {
     const list = el("div", "links");
@@ -1121,8 +1316,9 @@ function body(t) {
     });
     out.push(section("Prerequisites", list));
   }
-  if (t.latest_rejection) {
-    const r = t.latest_rejection;
+  const rejection = currentRejection(t);
+  if (rejection) {
+    const r = rejection;
     out.push(section("Latest rejection", el("div", "",
       node("p", `${r.source} · ${r.verdict} · ${r.timestamp}`),
       node("p", `Attempt ${r.attempt_id} · workstream ${r.workstream_id} · spec ${r.spec_revision}.`, "muted"),
@@ -1145,9 +1341,9 @@ function body(t) {
     }
     out.push(history);
   }
-  const view = state.rows.find((r) => r.id === t.id)?.view;
-  const requiredStates = view === "signoff" ? ["passed", "human_review"] : view === "review" ? ["review"] : null;
-  const a = currentAttempt(t, t.status === "done" ? null : requiredStates);
+  const standing = taskStanding(t);
+  const requiredStates = standing === "signoff" ? ["passed", "human_review"] : standing === "progress" ? ["review"] : null;
+  const a = (t.status !== "done" && requiredStates && currentAttempt(t, requiredStates)) || currentAttempt(t);
   const earlier = t.attempts.filter((x) => x !== a).reverse();
   if (a) out.push(section("Result", attemptCard(a, t)));
   if (earlier.length) {
@@ -1192,12 +1388,15 @@ function attemptCard(a, t) {
   if (concerns) card.append(concerns);
   return card;
 }
+// Concerns on a result, with their provenance.
 function concernPanel(a) {
   if (!a.concerns?.length) return null;
   const panel = el("div", "sub", node("h4", "Worth-doing and approach concerns"),
     node("p", `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
   for (const concern of a.concerns) {
-    panel.append(node("h4", `${concern.kind === "value" ? "Worth-doing concern" : "Approach concern"} · ${concern.source === "implementer" ? "Implementer" : "Reviewer"} ${concern.author}`), markdown(concern.text));
+    const kind = concern.kind === "value" ? "Worth-doing concern" : "Approach concern";
+    const source = concern.source === "implementer" ? "Implementer" : "Reviewer";
+    panel.append(node("h4", `${kind} · ${source} ${concern.author}`), markdown(concern.text));
   }
   return panel;
 }
@@ -1233,7 +1432,7 @@ function renderGroup(t) {
   if (!t.included_workstreams.length)
     workstreams.append(node("p", "Not included as a group in any workstream. Member tasks may be scoped individually.", "empty-text"));
   d.replaceChildren(
-    topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], [button("Edit summary", () => editSummary(t))]),
+    topBar([node("span", groupKind(t)), state.groups === "project" && !state.rows.some((r) => r.id === t.id) ? node("span", "Opened from a task link", "muted") : null], []),
     el(
       "div",
       "content",
@@ -1278,6 +1477,7 @@ async function openGroup(id) {
   const generation = ++state.generation;
   const t = (await api("details", { ids: [id] })).items[0];
   if (generation !== state.generation) return;
+  learnGroupHome(t);
   const projects = Object.keys(t.progress.by_project);
   if (projects.length === 1 && projects[0] !== state.project) {
     const streams = await workstreams(projects[0]);
@@ -1355,7 +1555,7 @@ function activity(t) {
 
 /* ---------- menus ---------- */
 
-function moreMenu(anchor, t) {
+function actionsMenu(anchor, t) {
   const pop = $("popover");
   if (!pop.hidden && pop.dataset.for === t.id) return closeMenu();
   const item = (label, fn, cls = "") =>
@@ -1363,11 +1563,13 @@ function moreMenu(anchor, t) {
       closeMenu();
       fn();
     }, "menu-item " + cls);
-  const items = [item("Ask a question", () => askQuestion(t))];
+  const items = [];
+  // Questions belong to open work; a closed task gets none.
+  if (t.status === "open") items.push(item("Ask a question", () => askQuestion(t)));
   items.push(item(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true))));
   if (t.workstream_ids?.length) items.push(item("Remove from workstream", () => removeFromWorkstreamTask(t).catch(e => toast(e.message, true))));
-  if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => disposition(t, "open", "Resume")));
-  else items.push(item("Defer", () => disposition(t, "deferred", "Defer")), item("Drop", () => disposition(t, "dropped", "Drop"), "danger"));
+  if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => resumeTask(t)));
+  else items.push(item("Defer", () => changeStatus(t, "deferred")), item("Drop", () => dropTask(t), "danger"));
   items.forEach((b) => b.setAttribute("role", "menuitem"));
   pop.replaceChildren(...items);
   pop.dataset.for = t.id;
@@ -1390,19 +1592,18 @@ function closeDrawer() {
 
 /* ---------- dialogs ---------- */
 
-function field(name, label, value = "", kind = "textarea", required = true, hint) {
+// A short, single-line text input.
+function field(name, label, { required = true, maxLength = 500 } = {}) {
   const wrap = el("div", "field");
   const l = node("label", label);
   l.htmlFor = "field-" + name;
-  const i = node(kind === "input" ? "input" : "textarea");
+  const i = node("input");
   i.id = "field-" + name;
   i.name = name;
-  i.value = value;
   i.required = required;
-  if (kind === "tall") i.rows = 9;
-  else if (kind !== "input") i.rows = 4;
+  i.maxLength = maxLength;
+  i.autocomplete = "off";
   wrap.append(l, i);
-  if (hint) wrap.append(node("small", hint, "field-hint"));
   $("fields").append(wrap);
   return i;
 }
@@ -1419,9 +1620,9 @@ function openDialog(title, description, saveLabel, danger = false) {
   $("submit").textContent = saveLabel;
   $("submit").className = "btn " + (danger ? "danger" : "primary");
   $("dialog").showModal();
-  setTimeout(() => $("fields").querySelector("input,textarea")?.focus(), 0);
+  setTimeout(() => $("fields").querySelector("input,select")?.focus(), 0);
 }
-function confirmation(text = "This is my decision. Record it in the task history.") {
+function confirmation(text) {
   const l = node("label", undefined, "check");
   const i = node("input");
   i.type = "checkbox";
@@ -1429,60 +1630,35 @@ function confirmation(text = "This is my decision. Record it in the task history
   l.append(i, node("span", text));
   $("fields").append(l);
 }
-function decision({ title, description, action, data, key, label, submit, danger, before }) {
-  openDialog(title, description, submit || "Confirm", danger);
-  before?.();
-  const input = field(key, label || (key === "text" ? "Question" : "Note"), "", "textarea", action !== "signoff");
-  if (action === "signoff") {
-    const choice = $("field-decision");
-    const sync = () => { input.required = ["rework", "revise"].includes(choice.value); };
-    choice.onchange = sync; sync();
-  }
-  confirmation();
-  const taskId = state.task.id;
-  submitAction = async (values) => {
-    const payload = { ...data, [key]: values.get(key) };
-    if (action === "signoff") {
-      payload.decision = values.get("decision") || data.decision;
-    }
-    if (values.has("authorization")) payload.authorization = values.get("authorization");
+// Submit a change to one task with the revision this dialog read. If the task changed
+// meanwhile, the Store refuses it; the dialog keeps the user's input and shows the
+// current task before they choose to submit against it.
+function taskAction(t, action, extra) {
+  let revision = t.revision;
+  submitAction = async values => {
     try {
-      return await api(action, payload);
-    } catch (e) {
-      if (e.conflict) {
-        $("conflict").replaceChildren(
-          button("Show me what changed", async () => {
-            const latest = (await api("details", { ids: [taskId] })).items[0];
-            const n = el(
-              "div",
-              "conflict-box",
-              node("strong", "Current version"),
-              node("p", latest.title, "c-title"),
-              markdown(latest.body),
-              markdown(latest.acceptance_criteria),
-            );
-            latest.unresolved_items.forEach((q) => n.append(node("p", "Question: " + q.text)));
-            const a = data.attempt_id ? latest.attempts.find((a) => a.id === data.attempt_id) : null;
-            if (a) n.append(node("p", `${VIEWS[a.state]?.label || a.state}: ${a.summary}`), node("p", a.evidence, "muted"));
-            n.append(
-              button("I've reviewed it — use this version", () => {
-                data.expected_revision = action === "human-review" ? a.revision : latest.revision;
-                $("fields").querySelector("[type=checkbox]").checked = false;
-                $("form-error").textContent = "Check your note, confirm again, then submit.";
-                n.remove();
-              }, "btn small"),
-            );
-            $("conflict").replaceChildren(n);
-          }, "btn small"),
-        );
-      }
-      throw e;
+      return await api(action, { task_id: t.id, expected_revision: revision, ...extra(values) });
+    } catch (error) {
+      if (error.conflict) $("conflict").replaceChildren(button("Show the current task", async () => {
+        const latest = (await api("details", { ids: [t.id] })).items[0];
+        $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
+          node("p", "Status: " + (STANDINGS[taskStanding(latest)]?.label || latest.status)),
+          markdown(latest.body), markdown(latest.acceptance_criteria),
+          node("p", latest.workstream_ids?.length ? "Currently in " + latest.workstream_ids.map(streamName).join(", ") : "Currently in the inbox"),
+          button("I've checked it — use this version", () => {
+            revision = latest.revision;
+            $("form-error").textContent = "Check your choice, then submit again.";
+            $("conflict").replaceChildren();
+          }, "btn small")));
+      }, "btn small"));
+      throw error;
     }
   };
 }
+// Names the open workstream only when the task is not in it yet.
 function membershipLabel(t) {
   const target = state.streams.find((w) => w.id === state.stream && w.project_id === t.project_id);
-  return target ? `Add to ${target.branch || target.name}` : "Add to workstream";
+  return target && !t.workstream_ids?.includes(target.id) ? `Add to ${target.branch || target.name}` : "Add to workstream";
 }
 async function membershipDialog(t, adding) {
   if (submissionPending) return;
@@ -1504,192 +1680,53 @@ async function membershipDialog(t, adding) {
   $("fields").append(el("div", "field", label, picker));
   $("submit").disabled = !streams.length;
   if (!streams.length) $("fields").append(node("p", adding ? "Initialize a branch workstream before adding this task." : "This task has no workstream memberships.", "warn-text"));
-  placementAction(t, adding ? "add-to-workstream" : "remove-from-workstream", values => ({ workstream_id: values.get("workstream_id") }));
+  taskAction(t, adding ? "add-to-workstream" : "remove-from-workstream", values => ({ workstream_id: values.get("workstream_id") }));
 }
 async function addToWorkstreamTask(t) { return membershipDialog(t, true); }
 async function removeFromWorkstreamTask(t) { return membershipDialog(t, false); }
-function placementAction(t, action, extra) {
-  let revision = t.revision;
-  submitAction = async values => {
-    try {
-      return await api(action, { task_id: t.id, expected_revision: revision, ...extra(values) });
-    } catch (error) {
-      if (error.conflict) $("conflict").replaceChildren(button("Show the current task", async () => {
-        const latest = (await api("details", { ids: [t.id] })).items[0];
-        $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
-          markdown(latest.body), markdown(latest.acceptance_criteria),
-          node("p", latest.workstream_ids?.length ? "Currently in " + latest.workstream_ids.map(streamName).join(", ") : "Currently in the inbox"),
-          button("I've reviewed it — use this version", () => {
-            revision = latest.revision;
-            $("form-error").textContent = "Check the chosen membership, then submit again.";
-            $("conflict").replaceChildren();
-          }, "btn small")));
-      }, "btn small"));
-      throw error;
-    }
-  };
-}
 function askQuestion(t) {
-  decision({
-    title: "Ask a question",
-    description: "Open questions block implementation until they're answered.",
-    action: "question",
-    data: { task_id: t.id, expected_revision: t.revision },
-    key: "text",
-    label: "Question",
-    submit: "Add question",
+  openDialog("Ask a question", "Your question holds this task until it's settled. An agent talks it through with you and records the answer.", "Add question");
+  field("text", "Question");
+  taskAction(t, "question", values => ({ text: values.get("text") }));
+}
+// The Store keeps a reason with every status change; these stand in when the user
+// gives none.
+const STATUS_NOTES = {
+  deferred: "Deferred in the browser.",
+  open: "Resumed in the browser.",
+  dropped: "Dropped in the browser.",
+};
+// Defer and resume (from Later) take effect at once: nothing is lost and either can be
+// undone from the same menu.
+async function changeStatus(t, value) {
+  if (submissionPending) return;
+  submissionPending = true;
+  try {
+    await api("disposition", { task_id: t.id, expected_revision: t.revision, disposition: value, note: STATUS_NOTES[value] });
+    toast(value === "deferred" ? "Deferred. It waits under Later until you resume it." : "Resumed.");
+  } catch (e) {
+    toast(e.conflict ? "This task changed elsewhere, so nothing was saved. Showing its latest version; try again if you still want to." : e.message, true);
+  } finally {
+    submissionPending = false;
+  }
+  await reload({ quiet: true });
+}
+function dropTask(t) {
+  openDialog("Drop this task?", `Are you sure you want to drop “${t.title}”? It moves to Done as dropped. Its workstreams, details and results are kept, and Resume can bring it back.`, "Drop task", true);
+  field("note", "Reason (optional)", { required: false, maxLength: 200 });
+  taskAction(t, "disposition", values => ({ disposition: "dropped", note: values.get("note")?.trim() || STATUS_NOTES.dropped }));
+}
+// Bringing back a dropped task needs a reason, which the Store keeps as the instruction
+// that revived it.
+function resumeTask(t) {
+  if (t.status !== "dropped") return changeStatus(t, "open");
+  openDialog("Bring back this dropped task?", `“${t.title}” returns with its workstreams, details and results. Say why it's coming back; this is kept in its history.`, "Resume");
+  field("note", "Why bring it back?", { maxLength: 200 });
+  taskAction(t, "disposition", values => {
+    const reason = (values.get("note") || "").trim();
+    if (!reason) throw Object.assign(new Error("Say why it's coming back."), { local: true });
+    return { disposition: "open", note: reason, authorization: reason };
   });
-}
-function resolve(t, q) {
-  decision({
-    title: "Answer question",
-    description: q.text,
-    action: "resolve",
-    data: { task_id: t.id, expected_revision: t.revision, item_id: q.id },
-    key: "user_note",
-    label: "Your answer",
-    submit: "Resolve",
-  });
-}
-function disposition(t, value, label) {
-  decision({
-    title: `${label} this task?`,
-    description: value === "dropped" ? "Dropping preserves workstream memberships, history and proof. Revival will need actual authorization." : "Workstream memberships, context and proof are kept.",
-    action: "disposition",
-    data: { task_id: t.id, expected_revision: t.revision, disposition: value },
-    key: "note",
-    label: "Reason",
-    submit: label,
-    danger: value === "dropped",
-    before: () => {
-      if (t.status === "dropped" && value !== "dropped") field("authorization", "Actual instruction authorizing revival");
-    },
-  });
-}
-function humanReview(a) {
-  decision({
-    title: "Record your review",
-    description: "Confirm you reviewed this result and its evidence yourself, or that more independent review isn't needed. This doesn't sign off the task.",
-    action: "human-review",
-    data: { attempt_id: a.id, expected_revision: a.revision },
-    key: "user_note",
-    label: "Review note",
-    submit: "Record review",
-  });
-}
-function signoff(t, a, initial = "approve") {
-  decision({
-    title: "Sign off the task",
-    description: `“${t.title}” · spec ${t.spec_revision}. Result ${a.id} · revision ${a.revision}. Approve completes the task and cannot be undone. Rework and revise require reasons.`,
-    action: "signoff",
-    data: { task_id: t.id, expected_revision: t.revision, attempt_id: a.id,
-      expected_attempt_revision: a.revision, decision: initial },
-    key: "reasons",
-    label: "Reasons",
-    submit: "Record decision",
-    before: () => {
-      $("fields").append(section("Reviewed result", el("div", "", markdown(a.summary || ""),
-          node("p", a.state === "human_review" ? "Actual human review recorded." : `Independent review by ${a.reviewer || "reviewer"}.`),
-          markdown(a.review_note || a.human_review_note || ""))));
-      const concerns = concernPanel(a);
-      if (concerns) $("fields").append(concerns);
-      const choice = node("select");
-      choice.id = "field-decision"; choice.name = "decision";
-      for (const [value, label] of [
-        ["approve", "Approve; complete the task"],
-        ["rework", "Rework; repair implementation and review again"],
-        ["revise", "Revise; return to design with an open question"],
-        ["drop", "Drop; close without approval"],
-      ]) {const option = node("option", label); option.value = value; choice.append(option);}
-      choice.value = initial;
-      $("fields").append(el("div", "field", node("label", "Decision"), choice));
-    },
-  });
-}
-function requestChanges(t, a) { signoff(t, a, "rework"); }
-function editSummary(t) {
-  openDialog("Edit descriptive summary", "Intent or settled constraints, up to 240 characters on one line. Requirements and acceptance criteria stay in the specification.", "Save summary");
-  const summary = field("summary", "Summary (optional)", t.summary || "", "input", false);
-  summary.maxLength = 240;
-  submitAction = async values => api("edit", {
-    task_id: t.id, expected_revision: t.revision,
-    changes: { summary: values.get("summary") || null },
-  });
-}
-function editTask(t) {
-  if (!t || t.object_type !== "task" || t.status === "done") return;
-  let revision = t.revision;
-  let etag = t.specification_etag;
-  openDialog("Edit task", "Save the specification. Workstream memberships stay unchanged; other gates still apply.", "Save task");
-  $("dialog").classList.add("wide");
-  field("title", "Title", t.title, "input");
-  const summary = field("summary", "Summary (optional descriptive intent)", t.summary || "", "input", false);
-  summary.maxLength = 240;
-  field("body", "Specification", t.body, "tall", false, "Markdown is supported.");
-  field("acceptance_criteria", "Acceptance criteria", t.acceptance_criteria, "textarea", false);
-  submitAction = async (values) => {
-    const payload = {
-      task_id: t.id, expected_revision: revision, specification_etag: etag,
-      changes: { ...Object.fromEntries(["title", "body", "acceptance_criteria"].map(key => [key, values.get(key)])), summary: values.get("summary") || null },
-    };
-    try {
-      return await api("edit", payload);
-    } catch (e) {
-      if (e.conflict) {
-        $("conflict").replaceChildren(
-          button("Show the current version next to my draft", async () => {
-            const latest = (await api("details", { ids: [t.id] })).items[0];
-            const n = el(
-              "div",
-              "conflict-box",
-              node("strong", "Current version"),
-              node("p", latest.title, "c-title"),
-              markdown(latest.body),
-              markdown(latest.acceptance_criteria),
-              button("I've merged my draft — save over this version", () => {
-                revision = latest.revision;
-                etag = latest.specification_etag;
-                $("form-error").textContent = "Check your merged draft, then save again.";
-                n.remove();
-              }, "btn small"),
-            );
-            $("conflict").replaceChildren(n);
-          }, "btn small"),
-        );
-      }
-      throw e;
-    }
-  };
-}
-function createTask() {
-  if (state.groups || !state.project || $("new").disabled || submissionPending) return;
-  const projectId = state.project, workstreamId = state.stream;
-  openDialog(
-    "New task",
-    state.stream
-      ? `Adds a task to ${streamName(state.stream)}. It will be included in this workstream.`
-      : `Adds a task to the ${projectName(state.project)} inbox.`,
-    "Create task",
-  );
-  $("dialog").classList.add("wide");
-  field("title", "Title", "", "input");
-  const summary = field("summary", "Summary (optional descriptive intent)", "", "input", false);
-  summary.maxLength = 240;
-  field("body", "What needs to happen?", "", "tall", false, "Markdown is supported.");
-  field("acceptance_criteria", "How will you know it's done?", "", "textarea", false);
-  field("user_request", "Your original request", "", "textarea", false, "Preserved as descriptive context.");
-  submitAction = async (values) => {
-    const payload = {
-      title: values.get("title"), body: values.get("body"), summary: values.get("summary") || null,
-      acceptance_criteria: values.get("acceptance_criteria"),
-      user_request: values.get("user_request"), source: "user",
-      project: projectId,
-      workstream_id: workstreamId,
-    };
-    const r = await api("create", payload);
-    state.selected = r.id;
-    return r;
-  };
 }
 $("form").onsubmit = async (e) => {
   e.preventDefault();
@@ -1707,8 +1744,8 @@ $("form").onsubmit = async (e) => {
   } catch (e) {
     $("form-error").textContent =
       e.message +
-      (e.conflict
-        ? " Recorded state changed. Your draft is kept; review the current version before retrying."
+      (e.local ? "" : e.conflict
+        ? " This task changed elsewhere. What you entered is kept; check the current task before trying again."
         : " If you're unsure whether it saved, check the task before retrying.");
   } finally {
     submissionPending = false;
@@ -1722,12 +1759,10 @@ $("dialog").oncancel = (e) => {
   // Escape must not abandon a write whose eventual outcome still owns this dialog.
   if (submissionPending) e.preventDefault();
 };
-$("dialog").onclose = () => $("dialog").classList.remove("wide");
 
 /* ---------- global controls ---------- */
 
 $("search").oninput = renderList;
-$("new").onclick = createTask;
 $("refresh").onclick = () => reload({ quiet: true }).then(() => toast("Up to date"));
 $("menu").onclick = () => $("shell").classList.add("drawer-open");
 $("scrim").onclick = closeDrawer;
@@ -1745,7 +1780,6 @@ $("stop").onclick = () => {
     $("shell").classList.add("stopped");
     $("detail").replaceChildren(emptyState("Viewer stopped", "You can close this tab."));
     $("list").replaceChildren();
-    $("new").disabled = true;
     submitAction = null;
     return result;
   };
@@ -1781,12 +1815,6 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "k" || e.key === "ArrowUp") {
     e.preventDefault();
     moveSelection(-1);
-  } else if (e.key === "n") {
-    e.preventDefault();
-    createTask();
-  } else if (e.key === "e" && state.task) {
-    e.preventDefault();
-    editTask(state.task);
   } else if (e.key === "r") {
     reload({ quiet: true });
   }
