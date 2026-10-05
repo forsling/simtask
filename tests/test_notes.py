@@ -222,7 +222,7 @@ def test_existing_database_gains_the_table_after_a_verified_backup(ready):
         assert db.execute("SELECT * FROM tasks").fetchall() == before
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='notes'").fetchone()
     with closing(sqlite3.connect(store.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_REVISION == 10
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_REVISION == 11
         assert db.execute("SELECT * FROM tasks").fetchall() == before
     assert Store(store.path).migration_backup_path is None
     assert migrated.set_note("project", project, 0, "after migration")["revision"] == 1
@@ -255,17 +255,20 @@ PREVIOUS_SERVER = textwrap.dedent(
     status = store.workstream_status(ws)
     events = store.list_events(project=project, include_details=True, limit=100)
     resumed = asyncio.run(server.call_tool("init", {"path": path, "branch": "main"}))
-    # A previous-code server started after the migration opens the database too.
-    restarted = Store(database)
-    after_restart = restarted.init(path, "main")
+    # UUID identity migration requires newer code on restart.
+    try:
+        Store(database)
+    except RuntimeError as error:
+        restart_error = str(error)
+    else:
+        raise AssertionError("old server accepted schema11")
     print(json.dumps({
         "state": ready["state"],
         "titles": sorted(card["title"] for card in listed["items"]),
         "status": bool(status),
         "note_events": [e["action"] for e in events["items"] if e["action"] == "note.set"],
         "mcp_error": resumed.is_error,
-        "restart_state": after_restart["state"],
-        "restart_backup": str(restarted.migration_backup_path),
+        "restart_error": restart_error,
     }))
     """
 )
@@ -307,7 +310,7 @@ def test_previous_code_keeps_working_against_the_migrated_database(tmp_path, lab
         assert running.stdout.readline().strip() == "started"
         # The newer server migrates (with a backup) and writes notes meanwhile.
         current = Store(database, actor="simon")
-        assert current.migration_backup_path.name.startswith("tasks.sqlite3.pre-notes-")
+        assert current.migration_backup_path.name.startswith("tasks.sqlite3.pre-schema-11.")
         current.set_note("project", ids["project"], 0, "Project rules")
         current.set_note("workstream", ids["ws"], 0, "Live state")
         output, _ = running.communicate("go\n", timeout=60)
@@ -321,8 +324,7 @@ def test_previous_code_keeps_working_against_the_migrated_database(tmp_path, lab
         "status": True,
         "note_events": ["note.set", "note.set"],
         "mcp_error": False,
-        "restart_state": "ready",
-        "restart_backup": "None",
+        "restart_error": "task database schema is newer than this server supports",
     }
     # The newer server sees both the previous code's writes and its unchanged notes.
     resumed = current.init(str(checkout), "main")
@@ -332,6 +334,6 @@ def test_previous_code_keeps_working_against_the_migrated_database(tmp_path, lab
         "workstream": "Live state",
     }
     with closing(sqlite3.connect(database)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not db.execute("PRAGMA foreign_key_check").fetchone()

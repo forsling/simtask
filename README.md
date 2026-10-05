@@ -300,16 +300,15 @@ live state it describes changes (for example on deploy or rollback) and when the
 user asks; keep it within the limit by replacing outdated content, not appending.
 The browser viewer shows both notes above the task list.
 
-Notes live in their own `notes` table, created on startup without a schema
-revision bump (the database stays at schema 10), so a server running the
-previous code keeps working against the upgraded database, including after a
-restart. When an existing database lacks the table, startup first takes and
-verifies a private online backup named after the missing tables, such as
-`*.pre-notes.*.sqlite3` (or `*.pre-notes-workstream_archive-task_picks.*.sqlite3`
-when the archive and picked-marker tables are missing too), next to the database. For the live rollout, also take a manual backup first, for example
-`sqlite3 ~/.local/share/task-mcp/tasks.sqlite3 ".backup /safe/place/tasks.pre-notes.sqlite3"`,
-then start the new server. Rolling back needs no restore: previous code ignores
-the table.
+Notes live in their own `notes` table. The original schema10-only notes rollout
+was additive and compatible with older servers. This combined development
+version also migrates task identity to schema11: startup takes a verified
+`*.pre-schema-11.*.sqlite3` backup, and all processes must use the newer code
+before reopening that database. A schema10 server already running can continue
+its existing operations, but cannot restart on schema11. Rollback to schema10
+requires restoring the pre-migration backup; writes made after it are not included.
+At schema11, a missing notes table alone still gets a verified backup named after
+the missing tables, such as `*.pre-notes.*.sqlite3`.
 
 ## Archived workstreams
 
@@ -355,10 +354,10 @@ Its `archive` block (`archived`, `reason`, `revision`, `updated_at`,
 `updated_by`) appears wherever the workstream does once it was ever archived.
 The viewer hides archived workstreams from navigation until **Show archived**.
 
-Archive state lives in its own `workstream_archive` table, added like `notes`
-without a schema revision bump: previous servers keep working against, and
-restarting on, the upgraded database, and simply keep listing archived
-workstreams. An existing database lacking the table gets a verified
+Archive state lives in its own `workstream_archive` table. Its original
+schema10-only rollout was additive; the combined schema11 rollout follows the
+migration and restart requirements described under notes. An existing schema11
+database lacking only this table gets a verified
 `*.pre-workstream_archive.*.sqlite3` backup first.
 
 ## Picked tasks
@@ -377,11 +376,13 @@ an unfinished task is **Open** again. Side effect: a coordinator that only asks
 for the next action, without working on it, marks that task picked for up to 4
 hours.
 
-Markers live in their own `task_picks` table, added like `notes` without a schema
-revision bump: previous servers ignore it and keep selecting and recording as
-before (a result they record still ends the marker). An existing database lacking
-the table gets a verified `*.pre-task_picks.*.sqlite3` backup first; expired
-markers are pruned when the next action is picked.
+Markers live in their own `task_picks` table. Older already-running servers
+ignore it and keep selecting and recording; a result they record still ends the
+marker. Restart compatibility follows the schema11 requirements under notes.
+An existing schema11 database lacking only this table gets a verified
+`*.pre-task_picks.*.sqlite3` backup first; expired markers are pruned when the
+next action is picked.
+
 ## Task identity
 
 New tasks and groups have permanent descriptive public IDs, for example

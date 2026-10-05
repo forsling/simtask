@@ -12,6 +12,8 @@ description: Research and design captured features with the user. Use in project
    unless asked. If the idea was never captured, follow task-capture first.
 
 2. Fetch the full specification, questions, blockers and latest rejection.
+   Use the stable public task ID in discussion and signoff; existing tsk_ IDs
+   remain unchanged. New tasks have descriptive public IDs.
    Refresh your understanding of the current code and documentation rather
    than trusting the capture.
 

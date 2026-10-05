@@ -953,7 +953,7 @@ def test_quick_idea_is_one_audited_inbox_task_held_until_processed(viewer):
     # All tasks lists it as held (Design); no agent picks it up,
     # even if someone later adds it to a workstream before processing it.
     row = next(r for r in store.list_tasks(project)["items"] if r["id"] == task["id"])
-    assert row["unresolved_count"] == 1
+    assert row["question_count"] == 1
     store.add_to_workstream(task["id"], ws, 1)
     next_action = store.get_next_action(ws)
     assert next_action["task"] is None and next_action["diagnostics"]["unresolved_items"] == 1

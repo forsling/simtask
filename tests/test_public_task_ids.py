@@ -204,7 +204,7 @@ def test_derived_names_ideas_and_decomposition(context):
         ],
     )
     assert result["id"] == group["id"] and result["object_type"] == "group"
-    members = store.list_group_members(group["id"])["items"]
+    members = store.list_tasks(group_id=group["id"], include=["ids"])["items"]
     assert {member["id"] for member in members} == {"reference-storage", "reference-viewer"}
     assert all(member["parent_group_id"] == group["id"] for member in members)
     before = create(context, "collision-parent")
@@ -312,7 +312,20 @@ async def check_mcp(context):
     server = create_server(context[0], tracing=False)
     tools = {tool.name: tool for tool in await server.list_tools()}
     assert "public_id" in tools["create_task"].input_schema["properties"]
-    assert "public_id" in tools["create_group"].input_schema["properties"]
+    assert "create_group" not in tools
+    group_response = await server.call_tool(
+        "create_task",
+        {
+            "project": context[1],
+            "workstream_id": context[2],
+            "kind": "group",
+            "title": "Readable group",
+            "public_id": "mcp-readable-group",
+        },
+    )
+    assert "mcp-readable-group" in str(group_response)
+    assert "internal_uuid" not in str(group_response)
+    assert context[0].get_tasks(["mcp-readable-group"])["items"][0]["object_type"] == "group"
     response = await server.call_tool(
         "create_task",
         {"project": context[1], "title": "Readable IDs", "public_id": "mcp-readable-reference"},

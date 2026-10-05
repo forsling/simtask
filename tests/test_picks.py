@@ -174,13 +174,17 @@ PREVIOUS_SERVER = textwrap.dedent(
                         [{"kind": "artifact", "reference": "previous"}], "Checked",
                         task["specification_etag"])
     listed = store.list_tasks(ready["project"]["id"], ws)
-    restarted = Store(database)
+    try:
+        Store(database)
+    except RuntimeError as error:
+        restart_error = str(error)
+    else:
+        raise AssertionError("old server accepted schema11")
     print(json.dumps({
         "state": ready["state"],
         "action": action["action"],
         "titles": [card["title"] for card in listed["items"]],
-        "restart_state": restarted.init(path, "main")["state"],
-        "restart_backup": str(restarted.migration_backup_path),
+        "restart_error": restart_error,
     }))
     """
 )
@@ -226,9 +230,8 @@ def test_previous_code_keeps_working_against_a_database_with_picks(tmp_path, lab
     try:
         assert running.stdout.readline().strip() == "started"
         current = Store(database, actor="simon")
-        missing = "notes-workstream_archive-task_picks" if label == "main" else "task_picks"
         backup = current.migration_backup_path
-        assert backup.name.startswith(f"tasks.sqlite3.pre-{missing}.")
+        assert backup.name.startswith("tasks.sqlite3.pre-schema-11.")
         with closing(sqlite3.connect(backup)) as db:
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='task_picks'").fetchone()
@@ -244,13 +247,12 @@ def test_previous_code_keeps_working_against_a_database_with_picks(tmp_path, lab
         "state": "ready",
         "action": "implement",
         "titles": ["Seeded"],
-        "restart_state": "ready",
-        "restart_backup": "None",
+        "restart_error": "task database schema is newer than this server supports",
     }
     # Its result, recorded without knowing of picks, still clears the marker here.
     card = viewer_card(current, ids["project"], ids["task"], ids["workstream"])
     assert "picked" not in card and card["attempt_counts"]["review"] == 1
     with closing(sqlite3.connect(database)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not db.execute("PRAGMA foreign_key_check").fetchone()

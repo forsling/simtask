@@ -491,3 +491,10 @@ with `membership_migration_conflict`, leaving the database unchanged and its
 verified backup available. Resolve the intended scope on a disposable copy and
 rerun; the migration never guesses or erases an original exclusion. Archives
 recover recorded references, not candidate-only intent that was never persisted.
+
+Combined development migration: descriptive task identity advances the database
+to schema11 with a verified pre-migration backup. The notes, archive and picked
+marker tables remain additive, but their original schema10 restart compatibility
+does not extend across this identity migration. Already-running schema10 servers
+can continue existing operations; reopening requires newer code. Rollback to
+schema10 requires restoring the backup and accounting for subsequent writes.

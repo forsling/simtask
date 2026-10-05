@@ -22,6 +22,9 @@ description: Save a task, bug or researched feature brief with its open design q
 5. For a bug, write a reproduction requirement into the task: the work must
    demonstrate the bug before changing code.
 
+   New tasks use stable descriptive public IDs; choose a different public_id if
+   creation reports a conflict. Existing tsk_ IDs stay unchanged.
+
 6. Decide placement. Tasks the user requested go to the current workstream.
    Ideas you suggested are saved only after the user confirms them, and they
    stay in the inbox with the rest of the backlog. Explicit placement

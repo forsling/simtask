@@ -101,8 +101,8 @@ async function test() {
     assert.equal(get("form-error").textContent, "");
     assert.equal(run("state.stream"), null);
     const id = run("state.selected");
-    assert.match(id, /^tsk_[a-f0-9]{32}$/);
-    assert.equal(context.pushed, `/p/${project.slice(4, 12)}/t/${id.slice(4, 12)}`);
+    assert.equal(id, "colour-code-stale-workstreams");
+    assert.equal(context.pushed, `/p/${project.slice(4, 12)}/t/id/${id}`);
     assert.equal(context.reloads, 1);
     console.log(JSON.stringify({id}));
     return;
