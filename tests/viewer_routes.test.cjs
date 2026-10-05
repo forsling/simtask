@@ -176,14 +176,14 @@ async function main() {
   assert.equal(v.count(), visited);
   assert.deepEqual(v.notices, []);
 
-  // Opening a task location reads the workstream prefix and that workstream's board only;
+  // Opening a task location reads the workstream prefix, its notes and that workstream's board only;
   // the sidebar's counts read each other workstream's cards once, beside the board.
   v.calls.length = 0;
   await v.edit(`/w/a1a1a1a1/t/${short(T2)}`);
   assert.deepEqual(v.at(), {project: P1, stream: W1, groups: false, selected: T2});
   const counted = v.calls.filter(([a, d]) => a === "tasks" && d.workstream_id !== W1);
   assert.deepEqual(v.calls.filter((c) => !counted.includes(c)).map(([a]) => a),
-    ["resolve-prefix", "workstreams", "tasks", "workstreams", "details"]);
+    ["resolve-prefix", "workstreams", "notes", "tasks", "workstreams", "details"]);
   assert.deepEqual(counted.map(([, d]) => d.workstream_id), [W2, W5]);
 
   // A workstream whose short prefix another project's workstream shares is respelled in

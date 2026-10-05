@@ -171,6 +171,15 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                     decision.get("reasons", decision.get("user_note")) or "",
                     level=5,
                 )
+                for dependency in decision.get("open_prerequisites") or ():
+                    lines.extend(
+                        [
+                            f"- Approved while prerequisite open: "
+                            f"{_inline(dependency['title'])} (`{dependency['id']}`; "
+                            f"{_inline(dependency['state'])}; {dependency['milestone']} required)",
+                            "",
+                        ]
+                    )
                 for key in ("purpose_judgment", "purpose_source", "result_judgment"):
                     if key in decision:
                         lines.extend([f"- Historical {key}: {_inline(decision[key])}", ""])
@@ -261,9 +270,10 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
             if attempt["human_review_note"]:
                 _section(lines, "Human review note", attempt["human_review_note"], level=6)
             for concern in attempt.get("concerns", []):
+                label = "Worth-doing" if concern["kind"] == "value" else "Approach"
                 _section(
                     lines,
-                    f"{concern['kind'].title()} concern — {concern['source']} "
+                    f"{label} concern — {concern['source']} "
                     f"{_inline(concern['author'])} (nonblocking)",
                     concern["text"],
                     level=6,

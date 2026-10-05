@@ -45,15 +45,17 @@ const CLOSED = ["done", "dropped", "deferred"];
 // result states in view (this workstream's, or every workstream's on project boards).
 //   decision  held by any unresolved item (briefs, revised at sign-off)
 //   signoff   a result passed review (or was human-reviewed) and awaits the verdict
-//   progress  a result is recorded and still with the agents (in review or being fixed)
-//   open      no result yet, ready or blocked
+//   progress  a result is recorded and still with the agents (in review or being fixed),
+//             or an agent picked the task up recently (r.picked)
+//   open      no result yet and no recent pick, ready or blocked
 function standingOf(r, counts = r.attempt_counts || r.aggregate_attempt_counts || {}) {
   if (r.object_type === "group") return "group";
   const closed = [r.status, r.view].find((s) => CLOSED.includes(s));
   if (closed) return closed;
   if (r.unresolved_count || r.view === "unresolved_items") return "decision";
   if (counts.passed || counts.human_review || r.view === "signoff") return "signoff";
-  if (counts.review || counts.rework || r.view === "review") return "progress";
+  // The server reports a pick only while it counts: a few hours, until a newer result.
+  if (counts.review || counts.rework || r.view === "review" || r.picked) return "progress";
   return "open";
 }
 // The same standing for a fetched task, from its current-spec results in view.
@@ -62,7 +64,12 @@ function taskStanding(t) {
   for (const a of t.attempts || [])
     if (a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))
       counts[a.state] = (counts[a.state] || 0) + 1;
-  return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0 }, counts);
+  return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0, picked: currentPick(t) }, counts);
+}
+// The most recent live pick of a fetched task in view (this workstream's, or any on
+// project boards); the server lists only picks that still count.
+function currentPick(t) {
+  return (t.picks || []).find((p) => !state.stream || p.workstream_id === state.stream) || null;
 }
 // A quick idea saved from the browser: held by the Store's "Idea to process" item until
 // an agent goes through it with the user.
@@ -96,6 +103,8 @@ const state = {
   orderStream: null,
   orderRevision: null,
   orderSaving: false,
+  // Archived workstreams stay out of navigation unless shown (remembered per tab).
+  showArchived: (() => { try { return sessionStorage.getItem("task-viewer-show-archived") === "1"; } catch { return false; } })(),
   // The workstream whose board state.rows holds (null for project and group boards).
   boardStream: null,
 };
@@ -172,6 +181,14 @@ function ago(iso) {
   if (s < 86400) return Math.floor(s / 3600) + "h ago";
   if (s < 86400 * 14) return Math.floor(s / 86400) + "d ago";
   return new Date(iso).toLocaleDateString();
+}
+// "12 minutes ago" in plain words, for when an agent picked a task up.
+function pickedAgo(iso) {
+  const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
+  const h = Math.floor(m / 60);
+  return `${h} hour${h === 1 ? "" : "s"} ago`;
 }
 // Long branch names read better with the prefix dimmed: codex/ + session-resilience.
 function branchLabel(name) {
@@ -378,6 +395,21 @@ function streamName(id) {
   const s = state.streams.find((s) => s.id === id);
   return s?.branch || s?.name || "another workstream";
 }
+// Every workstream of a project (or all), archived ones included: names, links and
+// memberships still resolve; navigation decides what to show.
+function workstreams(project) {
+  return pages("workstreams", { ...(project ? { project } : {}), include_archived: true });
+}
+function isArchived(stream) {
+  return !!stream?.archive?.archived;
+}
+function currentArchived() {
+  return isArchived(state.streams.find((s) => s.id === state.stream));
+}
+// The default workstream of a project: its first one that is not archived.
+function defaultStream(streams) {
+  return streams.find((s) => !isArchived(s))?.id || null;
+}
 // Tasks waiting for the user's input. Every workstream's count comes from its own
 // cards through standingOf, exactly as its Signoff and Design sections would sort them: the
 // open board counts its loaded rows, and each other workstream's count is read from
@@ -583,10 +615,10 @@ async function openLocation(path, { initial = false } = {}) {
   // Views that name no project keep the open one (or the group's), else the first.
   const project = [projectId, state.project, origin].map((id) => state.projects.find((p) => p.id === id)).find(Boolean) || state.projects[0];
   if (!project) return void notices.forEach((n) => toast(n));
-  const streams = await pages("workstreams", { project: project.id });
+  const streams = await workstreams(project.id);
   if (stale()) return;
   const groups = view === "groups" ? "project" : view === "shared-groups" ? "shared" : false;
-  if (!view) stream = streams[0]?.id || null;
+  if (!view) stream = defaultStream(streams);
   if (!groups) group = null;
   closeDrawer();
   // On a narrow screen a reloaded task reopens its detail; back/forward shows the list.
@@ -650,10 +682,10 @@ async function chooseProject(id, { keepSelection = false } = {}) {
     state.selected = null;
     state.task = null;
   }
-  const streams = await pages("workstreams", { project: id });
+  const streams = await workstreams(id);
   if (generation !== state.generation) return;
   state.streams = streams;
-  state.stream = keepSelection ? null : streams[0]?.id || null;
+  state.stream = keepSelection ? null : defaultStream(streams);
   syncRoute("push");
   renderNav();
   await reload();
@@ -678,15 +710,29 @@ function renderNav() {
     const groups = button("", () => chooseGroups("project"), "nav-item" + (state.groups === "project" ? " active" : ""));
     groups.append(icon("layers", 14), node("span", "Task groups", "grow"));
     sub.append(groups);
+    // Archived workstreams are hidden unless shown; an opened one stays visible.
+    const archived = state.streams.filter(isArchived);
     state.streams.forEach((s) => {
-      const b = button("", () => changeScope(s.id), "nav-item" + (active && state.stream === s.id ? " active" : ""));
+      const old = isArchived(s);
+      if (old && !state.showArchived && !(active && state.stream === s.id)) return;
+      const b = button("", () => changeScope(s.id), "nav-item" + (active && state.stream === s.id ? " active" : "") + (old ? " archived" : ""));
       b.append(icon("branch", 14), branchLabel(s.branch || s.name));
-      const n = needsYou(s);
-      if (n) b.append(node("span", String(n), "count attention"));
+      const n = old ? 0 : needsYou(s);
+      if (old) b.append(node("span", "archived", "tag-archived"));
+      else if (n) b.append(node("span", String(n), "count attention"));
       else b.append(node("span", String(s.status?.scoped_count ?? ""), "count"));
-      b.title = `${s.branch || s.name} · ${s.status?.scoped_count || 0} tasks` + (n ? ` · ${n} need you` : "");
+      b.title = `${s.branch || s.name} · ${s.status?.scoped_count || 0} tasks` + (n ? ` · ${n} need you` : "") + (old ? ` · archived: ${s.archive.reason}` : "");
       sub.append(b);
     });
+    if (archived.length) {
+      const toggle = button(state.showArchived ? "Hide archived" : `Show ${archived.length} archived`, () => {
+        state.showArchived = !state.showArchived;
+        try { sessionStorage.setItem("task-viewer-show-archived", state.showArchived ? "1" : "0"); } catch {}
+        renderNav();
+      }, "nav-item nav-toggle");
+      toggle.setAttribute("aria-pressed", String(state.showArchived));
+      sub.append(toggle);
+    }
     nav.append(sub);
   });
   nav.append(node("div", "Across projects", "nav-label"));
@@ -737,21 +783,25 @@ async function reload({ quiet = false, requested = null } = {}) {
   $("heading").replaceChildren(
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
   );
+  // Notes are context, not the board: a failed notes read hides them instead of the list.
+  const notesLoad = groups ? Promise.resolve(null) : api("notes", { project, workstream_id: stream }).catch(() => null);
   try {
     const board = groups ? null : await taskBoard({ project, workstream_id: state.stream });
     const loaded = groups
       ? await pages("groups", groups === "project" ? { project } : {})
       : board.items;
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
-    const streams = state.groups ? state.streams : await pages("workstreams", { project });
+    const streams = state.groups ? state.streams : await workstreams(project);
+    const notes = (await notesLoad)?.notes || null;
     if (stale()) return;
+    renderNotes(notes);
     state.rows = rows.map((r) => ({ ...r, standing: standingOf(r) }));
     state.boardStream = groups ? null : stream;
     state.streams = streams;
     // The open board's count comes from its rows; every other workstream's is read
     // again (group boards read only those not counted yet), without holding the board.
     if (state.boardStream) noteNeeds(state.boardStream, state.rows);
-    const recount = streams.filter((s) => s.id !== state.boardStream && (!groups || !needsTokens.has(s.id)));
+    const recount = streams.filter((s) => s.id !== state.boardStream && !isArchived(s) && (!groups || !needsTokens.has(s.id)));
     if (recount.length) refreshNeeds(project, recount).catch(() => {});
     state.loadedAt = Date.now();
     state.orderStream = !groups && state.stream ? state.stream : null;
@@ -759,6 +809,14 @@ async function reload({ quiet = false, requested = null } = {}) {
     $("subheading").textContent = groups
       ? `${groups === "project" ? projectName(project) : "Across projects"} · ${rows.length} group${rows.length === 1 ? "" : "s"}`
       : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}`;
+    const shownStream = !groups && state.stream ? streams.find((s) => s.id === state.stream) : null;
+    if (isArchived(shownStream)) {
+      // A short tag beside the name keeps the subheading's actions visible; the reason
+      // is its tooltip.
+      const tag = node("span", "Archived", "tag-archived");
+      tag.title = "Archived: " + shownStream.archive.reason;
+      $("heading").append(tag);
+    }
     renderNav();
     renderList();
     if (detailGeneration !== state.generation) return;
@@ -788,10 +846,36 @@ async function reload({ quiet = false, requested = null } = {}) {
     }
   } catch (e) {
     if (stale()) return;
+    renderNotes(null);
     if (detailGeneration === state.generation) $("detail").classList.remove("loading");
     toast(e.message, true);
     $("list").replaceChildren(emptyState("Couldn't load tasks", "Refresh to try again."));
   }
+}
+
+/* ---------- notes ---------- */
+
+// Personal project/workstream notes, shown read-only; agents keep them with set_note.
+const NOTE_LABELS = { project: "Project note", workstream: "Workstream note" };
+const closedNotes = new Set();
+function renderNotes(notes) {
+  const box = $("notes");
+  const kinds = ["project", "workstream"].filter((k) => notes?.[k]?.text);
+  box.replaceChildren(
+    ...kinds.map((kind) => {
+      const n = notes[kind];
+      const d = el("details", "note");
+      d.dataset.kind = kind;
+      d.open = !closedNotes.has(kind);
+      d.addEventListener("toggle", () => (d.open ? closedNotes.delete(kind) : closedNotes.add(kind)));
+      const summary = el("summary", "note-head", icon("chevron", 12), node("span", NOTE_LABELS[kind], "note-label"),
+        node("span", `${ago(n.updated_at)} · ${n.updated_by}`, "note-meta"));
+      summary.title = `Updated ${new Date(n.updated_at).toLocaleString()} by ${n.updated_by} · revision ${n.revision}`;
+      d.append(summary, node("div", n.text, "note-text"));
+      return d;
+    }),
+  );
+  box.hidden = !kinds.length;
 }
 
 /* ---------- list ---------- */
@@ -1029,13 +1113,13 @@ $("list").ondragend = endDrag;
 
 async function includedWorkstreams(groupId) {
   const included = [];
-  for (const w of await pages("workstreams")) {
+  for (const w of await workstreams()) {
     let found = w.groups.includes(groupId);
     if (!found && w.groups_has_more) {
       let offset = 0;
       do {
         const p = await api("workstream-status", {
-          workstream_id: w.id, include_scope: true, limit: 100, offset,
+          workstream_id: w.id, include_scope: true, include_archived: true, limit: 100, offset,
         });
         found = p.scope.groups.ids.includes(groupId);
         offset = p.scope.groups.next_offset;
@@ -1188,9 +1272,12 @@ function nextStep(t, standing) {
     return null;
   } else if (standing === "progress") {
     title = "In progress";
-    text = currentAttempt(t, ["review"])
-      ? "A result is recorded and is with the agents for independent review."
-      : "A result was sent back for changes and the agents are fixing it.";
+    const pick = currentPick(t), when = pick && pickedAgo(pick.picked_at);
+    if (currentAttempt(t, ["review"]))
+      text = "A result is recorded and is with the agents for independent review." + (pick?.action === "review" ? ` A reviewer picked it up ${when}.` : "");
+    else if (currentAttempt(t, ["rework"]))
+      text = "A result was sent back for changes and the agents are fixing it." + (pick ? ` An agent picked it up ${when}.` : "");
+    else text = `An agent picked this up ${when || "recently"}. No result is recorded yet.`;
   } else {
     title = "Open";
     text = "No result is recorded yet. An agent can pick this up.";
@@ -1340,10 +1427,10 @@ function attemptCard(a, t) {
 // Concerns on a result, with their provenance.
 function concernPanel(a) {
   if (!a.concerns?.length) return null;
-  const panel = el("div", "sub", node("h4", "Value and design concerns"),
+  const panel = el("div", "sub", node("h4", "Worth-doing and approach concerns"),
     node("p", `Result ${a.id} · ${streamName(a.workstream_id)} (${a.workstream_id}) · spec ${a.spec_revision}. Concerns do not block review or sign-off.`, "muted"));
   for (const concern of a.concerns) {
-    const kind = concern.kind === "value" ? "Value" : "Design";
+    const kind = concern.kind === "value" ? "Worth-doing concern" : "Approach concern";
     const source = concern.source === "implementer" ? "Implementer" : "Reviewer";
     panel.append(node("h4", `${kind} · ${source} ${concern.author}`), markdown(concern.text));
   }
@@ -1372,9 +1459,10 @@ function renderGroup(t) {
       icon("branch", 14),
       node("span", w.project_name, "muted"),
       branchLabel(w.branch || w.name),
+      ...(isArchived(w) ? [node("span", "archived", "tag-archived")] : []),
       icon("link", 14),
     );
-    b.title = `${w.project_name} · ${w.branch || w.name} · ${w.checkout_path}`;
+    b.title = `${w.project_name} · ${w.branch || w.name} · ${w.checkout_path}` + (isArchived(w) ? ` · archived: ${w.archive.reason}` : "");
     workstreams.append(b);
   });
   if (!t.included_workstreams.length)
@@ -1404,7 +1492,7 @@ function renderGroup(t) {
 async function navigateWorkstream(w) {
   closeDrawer();
   const generation = ++state.generation;
-  const streams = await pages("workstreams", { project: w.project_id });
+  const streams = await workstreams(w.project_id);
   if (generation !== state.generation) return;
   state.project = w.project_id;
   state.streams = streams;
@@ -1428,7 +1516,7 @@ async function openGroup(id) {
   learnGroupHome(t);
   const projects = Object.keys(t.progress.by_project);
   if (projects.length === 1 && projects[0] !== state.project) {
-    const streams = await pages("workstreams", { project: projects[0] });
+    const streams = await workstreams(projects[0]);
     if (generation !== state.generation) return;
     state.project = projects[0];
     state.streams = streams;
@@ -1612,8 +1700,9 @@ function membershipLabel(t) {
 }
 async function membershipDialog(t, adding) {
   if (submissionPending) return;
-  const streams = (await pages("workstreams", { project: t.project_id }))
-    .filter(w => adding || t.workstream_ids?.includes(w.id));
+  // Archived workstreams take no new tasks here; their memberships can still be removed.
+  const streams = (await workstreams(t.project_id))
+    .filter(w => adding ? !isArchived(w) || t.workstream_ids?.includes(w.id) : t.workstream_ids?.includes(w.id));
   if (submissionPending) return;
   const title = adding ? "Add to workstream" : "Remove from workstream";
   openDialog(title, adding
@@ -1621,7 +1710,7 @@ async function membershipDialog(t, adding) {
     : `Remove “${t.title}” only from the chosen workstream. Other memberships, results and reviews are kept. The inbox contains tasks with no memberships.`, title);
   const picker = node("select"); picker.id = "field-workstream_id"; picker.name = "workstream_id"; picker.required = true;
   for (const w of streams) {
-    const option = node("option", (w.branch || w.name) + (adding && t.workstream_ids?.includes(w.id) ? " (already included)" : ""));
+    const option = node("option", (w.branch || w.name) + (adding && t.workstream_ids?.includes(w.id) ? " (already included)" : "") + (isArchived(w) ? " (archived)" : ""));
     option.value = w.id; picker.append(option);
   }
   picker.value = streams.some(w => w.id === state.stream) ? state.stream : streams[0]?.id || "";

@@ -1,23 +1,20 @@
 # Runtime identity and stale capabilities
 
-The coordinated main rollout is complete: the deployed protocol revision is
-`14` and database schema revision is `10`. Reconnect existing MCP clients to
+The coordinated main rollout deployed protocol revision `14` and database schema
+revision `10`. Protocol `15` trims the catalog to 26 tools, then adds `set_note` (27 tools) and `archive_workstream` (28 tools) on the same schema `10`; notes, archive state and `get_next_action` picked markers use additive tables that schema 10 servers ignore. Reconnect existing MCP clients to
 refresh their tool catalogs, and inspect each connection's runtime identity.
 Future changes that could break active clients must remain isolated until a
 coordinated rollout.
 
-Call `runtime_info` on the client connection being diagnosed. Successful `init`
-responses carry the same fields under `runtime`, so an existing client that
-already knows `init` can inspect the process even if its tool catalog omits the
-new diagnostic. Neither surface selects a new executable or refreshes the
-client's catalog. `init` retains its usual setup and audit behavior;
-`runtime_info` writes no database state or audit event.
+Call `init` on the client connection being diagnosed; every successful response
+carries these fields under `runtime`. It does not select a new executable or
+refresh the client's catalog, and retains its usual setup and audit behavior.
 
 | Field | Meaning |
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`14` in the deployed interface), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Protocol 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Protocol 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`15` in this interface), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Protocol 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Protocol 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. Protocol 15 trims the catalog from 42 to 26 tools: setup actions, the checkout/branch match check and runtime identity live in `init`; group creation, membership and listing use `create_task`, `update_task`, `list_tasks` and the workstream membership tools; observer gate proposals are retired; export is CLI-only; and an explicit user approve may accept a result awaiting independent review. It then adds `set_note` and ready `init` notes (27 tools), and `archive_workstream` with `include_archived` discovery filters and init state `archived` (28 tools). |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
@@ -90,9 +87,9 @@ revision `3`.
 
 ## Minimum reliable reconnect procedure
 
-1. Record `runtime_info` (or `init.runtime`) from the affected client, including
-   PID, startup time, source identifier and paths. If neither response includes
-   identity, that connection is serving code from before this diagnostic.
+1. Record `init.runtime` from the affected client, including PID, startup
+   time, source identifier and paths. If the response has no `runtime`, that
+   connection is serving code from before this diagnostic.
 2. Disconnect the Task MCP connection and stop the specific stdio server
    process owned by it. Verify that its PID has exited using the host's process
    manager. If toggling the connector leaves it alive, shut down the owning

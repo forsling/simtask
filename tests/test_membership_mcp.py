@@ -42,10 +42,10 @@ def test_fresh_sdk_shared_membership_and_local_attempt_selection(tmp_path):
             )
             project, a = ctx["project"]["id"], ctx["workstream"]["id"]
             ctx_b = await call(
-                "init_workstream",
-                project=project,
+                "init",
                 path=str(tmp_path / "repo"),
                 branch="b",
+                action="new_workstream",
                 confirmed=True,
             )
             b = ctx_b["workstream"]["id"]

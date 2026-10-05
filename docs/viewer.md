@@ -56,12 +56,25 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   on each board refresh. “All tasks” includes
   tasks outside any one workstream. Workstream names and counts describe
   recorded state, not a running agent.
+- Above the list, the project's note and, in a named workstream, that
+  workstream's note show as read-only plain text with when and by whom each was
+  last updated; empty notes are not shown. Collapse either one with its header.
+  Agents keep notes with the `set_note` MCP tool.
+- Archived workstreams are hidden from the sidebar and never opened by default.
+  **Show N archived** under a project's workstreams lists them, marked
+  *archived*, until **Hide archived** (remembered for the tab). A link to an
+  archived workstream still opens it, keeps it in the sidebar while open and
+  shows its archive reason next to the task count. The add-to-workstream picker
+  leaves archived workstreams out; removing a task from one still works.
+  Archiving and unarchiving are agent operations (`archive_workstream`).
 - The list groups tasks by where they stand for you, not by the agents'
   internal stage: **Signoff** (badge **Sign-off** when a current-spec result
   passed review or was human-reviewed), then **Design** (orange dot when any
   unresolved item holds the task, including design briefs and tasks revised
   at sign-off), **In progress** (a result is recorded and still with the
-  agents: under review or being fixed after review), **Open** (no result yet,
+  agents: under review or being fixed after review; or an agent picked the task
+  up through `get_next_action` in the last 4 hours, in this workstream or on All
+  tasks in any, and has recorded nothing since, shown as "An agent picked this up 12 minutes ago"), **Open** (no result yet and no recent pick,
   ready or blocked; a blocker shows in the task's details), **Later** (deferred)
   and **Done** (done/dropped, collapsed). Cards carry no other badges; whether
   work is a first attempt or a rework round shows in the task's details and
@@ -216,8 +229,9 @@ the allowed membership, question, quick idea and status changes, rejection of re
 actions, stale revisions, Store gate enforcement, local/global scope
 distinctions and cross-process launch/stop/restart.
 
-Result details show value/design concerns with the
-implementer or reviewer name and original attempt/workstream/specification.
+Result details show worth-doing and approach concerns (stored kinds
+`value`/`design`) with the implementer or reviewer name and original
+attempt/workstream/specification.
 These concerns are nonblocking; recorded gates and the user's actual verdict
 retain their existing meaning. Other/superseded results keep their own concerns
 in the existing labelled history.

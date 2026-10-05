@@ -44,9 +44,6 @@ def legacy_database(database, version):
     )
     accepted = store.add_unresolved(accepted["id"], 1, "Question")
     store.add_prerequisite(accepted["id"], accepted["revision"], pending["id"])
-    store.add_prerequisite(
-        pending["id"], 1, accepted["id"], handling="observer", milestone="signoff"
-    )
     done = store.create_task(
         project,
         "Done",
@@ -70,6 +67,13 @@ def legacy_database(database, version):
     # Keep a connection open: the migration must back up committed WAL content,
     # rather than assuming a copy of just the main file is sufficient.
     db = sqlite3.connect(database)
+    # Observer gate proposals are no longer created; keep a legacy row to migrate.
+    db.execute(
+        "INSERT INTO gate_proposals (id,task_id,gate_type,detail,proposer,created_at,milestone) "
+        "VALUES ('gat_legacy',?,'prerequisite',?,'legacy-observer',?,'signoff')",
+        (pending["id"], accepted["id"], "2026-01-01T00:00:00+00:00"),
+    )
+    db.commit()
     db.execute("PRAGMA foreign_keys=OFF")
     db.execute("ALTER TABLE attempts DROP COLUMN concerns_json")
     db.execute("DROP TABLE workstream_task_order")
@@ -648,7 +652,7 @@ def test_schema9_order_migration_seeds_effective_lists_and_preserves_history(
         upgraded = Store(database)
         assert snapshot(database, columns)[1] == before
         for ws, expected in ((a, list(reversed(tasks))), (b, [tasks[2], tasks[0]])):
-            board = upgraded.list_tasks(project, ws)
+            board = upgraded.list_tasks(project, ws, include_inactive=True)
             assert board["workstream_order_revision"] == 0
             assert [task["id"] for task in board["items"]] == [task["id"] for task in expected]
         assert (

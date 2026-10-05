@@ -38,6 +38,7 @@ def dispatch(store, action, data):
         "details": store.get_tasks,
         "resolve-prefix": store.resolve_prefix,
         "events": store.list_events,
+        "notes": store.read_notes,
         "reorder": store.reorder_tasks,
         "add-to-workstream": store.add_to_workstream,
         "remove-from-workstream": store.remove_from_workstream,
@@ -50,6 +51,9 @@ def dispatch(store, action, data):
         raise TaskError("unknown_action")
     if action == "question":
         data = {**data, "handling": "user"}
+    if action == "tasks":
+        # The board shows every section, closed ones included, from unabridged cards.
+        data = {**data, "include_inactive": True, "full_cards": True}
     return operations[action](**data)
 
 

@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from task_mcp.store import Store, TaskError
+from task_mcp.store import STATE_WORDS, Store, TaskError
 
 
 def detail(store, task_id):
@@ -62,18 +62,23 @@ def repository(path):
 def assert_view(store, context, task_id, view):
     ws = context["workstream"]["id"]
     project = context["project"]["id"]
+    states = {"ready", "rework"} if view == "ready" else {STATE_WORDS.get(view, view)}
     if view == "out_of_scope":
         assert all(r["id"] != task_id for r in store.list_tasks(project, ws)["items"])
-        assert store.read_tasks([task_id], workstream_id=ws)["items"][0]["view"] == view
+        card = store.read_tasks([task_id], workstream_id=ws, include=["ids"])["items"][0]
+        assert card["view"] == view and card["state"] in states
         return
-    row = next(r for r in store.list_tasks(project, ws)["items"] if r["id"] == task_id)
-    assert row["view"] == view
-    status = store.workstream_status(ws)
-    assert next(r for r in status["items"] if r["id"] == task_id)["view"] == view
+    board = store.list_tasks(project, ws, include=["ids"], include_inactive=True)["items"]
+    row = next(r for r in board if r["id"] == task_id)
+    assert row["view"] == view and row["state"] in states
+    status = store.workstream_status(ws, include_inactive=True)
+    assert next(r for r in status["items"] if r["id"] == task_id)["state"] in states
     resumed = store.init(
-        context["workstream"]["checkout_path"], branch=context["workstream"]["branch"]
+        context["workstream"]["checkout_path"],
+        branch=context["workstream"]["branch"],
+        include_inactive=True,
     )
-    assert next(r for r in resumed["queue"] if r["id"] == task_id)["view"] == view
+    assert next(r for r in resumed["queue"] if r["id"] == task_id)["state"] in states
 
 
 def record(store, work, context, implementer, evidence, artifacts=None, verification=None):
@@ -166,7 +171,7 @@ def test_resume_and_rebind_keep_scope_and_history_but_do_not_prove_checkout(tmp_
     )
     store.record_review(attempt["id"], 1, "source reviewer", "pass", "Synthetic source review")
     history = detail(store, work["id"])["attempts"]
-    before = store.preflight(original["project"]["id"], str(source_path), "origin")
+    before = store.init(str(source_path), "origin")
     with sqlite3.connect(store.path) as db:
         exclusions = db.execute("SELECT * FROM scope_exclusions").fetchall()
 
@@ -183,8 +188,8 @@ def test_resume_and_rebind_keep_scope_and_history_but_do_not_prove_checkout(tmp_
         expected_revision=resumed["workstream"]["revision"],
         confirmed=True,
     )
-    after = store.preflight(original["project"]["id"], str(moved_path), "origin")
-    assert after["scope"] == before["scope"] == [work["id"]]
+    after = store.init(str(moved_path), "origin")
+    assert [c["id"] for c in after["queue"]] == [c["id"] for c in before["queue"]] == [work["id"]]
     assert after["groups"] == before["groups"] == [group["id"]]
     with sqlite3.connect(store.path) as db:
         assert db.execute("SELECT * FROM scope_exclusions").fetchall() == exclusions
@@ -285,9 +290,10 @@ def test_deliberate_cherry_pick_records_target_provenance_and_requires_fresh_rev
     assert integrated["reviewer"] is integrated["review_note"] is None
     assert detail(store, work["id"])["attempts"][0] == reviewed_source
     assert_view(store, target, work["id"], "review")
+    # Only the user's explicit approve may skip review; other verdicts need fresh review.
     with pytest.raises(TaskError, match="review_required"):
         store.signoff_task(
-            work["id"], current["revision"] + 1, "approve", "Synthetic verdict", integrated["id"], 1
+            work["id"], current["revision"] + 1, "rework", "Synthetic verdict", integrated["id"], 1
         )
     store.record_review(
         integrated["id"],

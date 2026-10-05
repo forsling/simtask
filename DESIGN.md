@@ -22,8 +22,9 @@ explicit name binding. Each session calls `init` with its explicit target path
 and branch/name; an exact binding returns its scoped queue idempotently.
 Discovery returns `new_branch`, `unregistered_checkout`, or `mismatch` when
 setup needs a choice. Confirmed create, attach and rebind actions are atomic;
-rebind checks the workstream revision and preserves its scope and history. The
-old preflight and setup primitives remain available to existing clients. A new
+rebind checks the workstream revision and preserves its scope and history.
+Passing a known workstream ID checks that it is bound to the given checkout and
+branch and reports any mismatch; there are no separate setup tools. A new
 workstream chooses its scope explicitly; branch names and Git history do not
 imply scope. There is no cwd fallback to the sole project.
 
@@ -75,7 +76,7 @@ ordering or a membership snapshot. Canonical `tasks.order_key` remains a stable
 project-wide baseline; old project order revisions remain private historical
 storage. There is no project-level reorder surface or shared execution order.
 Boards, action/init/status reads and exports expose `workstream_order_revision`;
-scoped cards also expose `workstream_order_key`. The viewer reorders by drag and
+scoped cards also expose their `position` in that order. The viewer reorders by drag and
 drop within the selected workstream's list, sending the prefix through the moved
 task with the loaded order revision; conflicts reload rather than overwrite.
 No automatic priority rules, normalization or consumer reporting calls exist.
@@ -83,6 +84,55 @@ Every explicit scope change increments the workstream revision atomically.
 Local queues, status counts and exports include only concrete tasks from the
 workstream's project. Group references and whole-group progress are separate;
 an empty local slice does not imply global completion.
+
+Each project and each workstream has at most one note: personal, uncommitted
+plain text of at most 2,000 characters. The project note holds the user's rules
+for that repository; the workstream note holds that branch's current situation
+(for example what is deployed and how to roll back) and its rules. They carry
+what a handover would otherwise carry, so a fresh session reads them from the
+ready `init` response, which includes each nonempty note with its text, revision,
+update time and configured actor, and omits empty ones. Other knowledge lives
+elsewhere: rules about the code in committed repository files, personal rules
+for every repository in user-level files, and Task MCP workflow rules in skills.
+The bound keeps notes a current summary rather than an unbounded, stale log:
+saves over the limit are rejected with the limit and the submitted length, and
+agents replace outdated content instead of appending. Group notes are not
+supported.
+
+`set_note(kind, target_id, expected_revision, text)` replaces either kind; empty
+or whitespace-only text clears. The note's own revision guards saves: an absent
+or empty note accepts 0, and a cleared note keeps its row so a revision is never
+reused for different text. Identical text is a no-op. Every save is audited
+(`note.set`) with before/after text, like task mutations; it changes no task,
+scope or workstream revision. The viewer shows both notes read-only above the
+task list. Notes live in a separate `notes` table. Because schema 10 servers
+never read it, it is added without a schema revision bump, so a previous server
+keeps running against, and restarting on, the upgraded database. An existing
+database without the table gets a verified `*.pre-notes.*.sqlite3` online backup
+before the table is created.
+
+A workstream can be archived when its binding is stale, such as a snapshot
+folder that would otherwise be found by path, branch or name and mislead a new
+session. `archive_workstream(workstream_id, expected_revision, reason, archived)`
+archives or unarchives with a required short reason (at most 200 characters),
+checked against the workstream's own archive revision (0 before any archive)
+and audited as `workstream.archived`/`workstream.unarchived`. It is a discovery
+flag, not a disposition: tasks, memberships, other workstreams' lists, order,
+attempts, history and the workstream revision are unchanged, so unarchiving
+restores everything as it was. Archived workstreams are skipped by
+`list_workstreams` (counted in `archived_hidden`), init candidates,
+`workstream_status` listings (header and counts only) and `get_next_action`,
+and `include_archived=true` includes them. `init` at an archived workstream's
+own checkout returns `state=archived` rather than resuming it, and a rebind of
+one needs the flag too. Init's mismatch invariants hold: a requested workstream
+is never swapped, and every offered choice works when followed, so a choice that
+resumes or moves an archived workstream carries `include_archived=true`. The
+archived workstream keeps its branch and name, which therefore stay unavailable
+to new workstreams in that project. The viewer hides archived workstreams from
+navigation unless the user shows them. Archive state lives in a separate
+`workstream_archive` table, added without a schema revision bump like `notes`
+(and after a verified `*.pre-workstream_archive.*` backup when missing); a
+previous server ignores it and keeps listing archived workstreams.
 
 ## Tasks and groups
 
@@ -129,12 +179,16 @@ exposes `workstream_ids` and derived `adopted` in compact/full payloads.
 
 Groups store overarching context and aggregate completion. They are never
 implementable and carry no unresolved items, disposition, attempts, or execution
-gates. `create_group` creates an empty globally identified group in the caller's
-workstream scope; it does not require a home project. `add_group_member` or
+gates. `create_task(kind="group")` creates an empty globally identified group in
+the caller's workstream scope; it does not require a home project.
+`update_task(group_id=..., group_expected_revision=...)` or
 `create_task(group_id=..., group_expected_revision=...)` attaches a concrete
-task from any project with revision checks. `list_groups` discovers one group
-globally or through member/scoped projects. Existing decomposition converts a
-concrete task in place after resolving its unresolved items and proposals;
+task from any project with revision checks. `list_tasks(state="group")` discovers
+groups globally or through member/scoped projects, and `list_tasks(group_id=...)`
+lists members. Group IDs in `add_to_workstream`/`remove_from_workstream` include
+or remove a group in a workstream's scope; a member ID excludes just that member.
+Existing decomposition converts a
+concrete task in place after resolving its unresolved items;
 existing prerequisites move to the new concrete members. Legacy group IDs and
 their stored project origins survive migration, but origin is metadata rather
 than task ownership. Public group details expose `project_id=null` and optional
@@ -160,8 +214,8 @@ attempts, reviews or code integration. Compact prerequisite references expose
 ID, title, project identity, required milestone, satisfaction and canonical
 blocking/completion facts in full
 details and queues, without fetching remote proof/history. Cycle checks include
-prerequisite links and implicit group-to-member completion edges for additions,
-observer acceptance and membership/decomposition changes. SQLite write
+prerequisite links and implicit group-to-member completion edges for additions
+and membership/decomposition changes. SQLite write
 serialization and revision checks protect a race between membership changes and
 last-member sign-off. Protocol 8/schema 5 persist link milestones, including
 observer proposals, and migrate every existing link/proposal to `review`. A
@@ -185,23 +239,26 @@ only when recording a durable result. Parallel workstreams may produce
 alternative attempts on one canonical task. An independent declared reviewer
 or an explicit human review must pass an attempt before human sign-off. Sign-off
 selects a reviewed attempt. Rejection chooses rework on the current specification or opens an unresolved
-specification question. Queue membership stays unchanged. The service cannot authenticate the reviewer or the user's verdict;
+specification question. Workstream membership stays unchanged. The service cannot authenticate the reviewer or the user's verdict;
 workflow clients must obtain and accurately record those decisions.
 "Sign off" requests asked/built/verified presentation and then a verdict;
-explicit approval needs no walkthrough. Judge Value, Design and Build
-independently in that order, addressing every concern. Only the user approves.
-Build failures map to rework, substantially wrong Design to revise, and Value
-failures/obsolete work to drop; queue removal work when dropped code must go.
-Confirm the matching verdict for a generic rejection with reasons.
+explicit approval needs no walkthrough, though a still-open prerequisite is shown
+and the user asked whether it affects the verdict. The walkthrough answers three questions
+independently, in order: "Worth doing?", "Right approach?" and "Built well?",
+addressing every concern. Only the user approves. A failed "Built well?" maps to
+rework, "Right approach?" to revise, and "Worth doing?" (or obsolete work) to
+drop; a removal task is added when dropped code must go. Confirm the matching
+verdict for a generic rejection with reasons.
 
-Implementers follow the spec and record value/design concerns instead of
-substituting a different design. Unexpected blockers/questions are saved before
-moving on. Independent review assumes the agreed design is substantially right:
-an unattended fix within goal/scope/decided design/criteria is Build rework,
-including poor choices left open to the implementer. A real problem caused by
-faithful specification is a concern, so sound Build passes with it. Value/design
-doubts never fail review; optional additions are new ideas. Explicit user
-instructions override this reference workflow guidance.
+Implementers follow the spec and record worth-doing or approach concerns
+(stored kinds `value`/`design`) instead of substituting a different design.
+Unexpected blockers/questions are saved before moving on. Independent review
+assumes the agreed approach is substantially right: an unattended fix within
+goal/scope/decided approach/criteria is rework, including poor choices left open
+to the implementer. A real problem caused by faithful specification is a
+concern, so well-built work passes with it. Concerns never fail review; optional
+additions are new ideas. Explicit user instructions override this reference
+workflow guidance.
 
 Continuation keeps the durable workstream ID, scope and history through
 `init`/rebind. Recorded state does not prove checkout applicability: callers
@@ -232,10 +289,16 @@ requiring queue membership, active disposition and clear unresolved/prerequisite
 gates. Within a task, pending current-spec local review precedes implementation;
 newest first then ID ascending is deterministic. Passed/human_review waits for
 human sign-off; rework implementation carries its attempt/findings. One selected
-full spec includes the read token, pending proposals and local gates; review
+full spec includes the read token and local gates; review
 includes exactly one complete local proof and review provenance, without history.
-Null selection gives bounded counts/waiting reasons. Reads keep existing audit
-semantics and do not claim, reorder or write progress. Explicit manual reviews
+Null selection gives bounded counts/waiting reasons. Selecting an action records
+an information-only picked marker (task, workstream, action, time) in the
+additive `task_picks` table, replacing that task's earlier pick there; it never
+claims, locks, skips, reorders or writes progress. A marker counts for 4 hours
+and ends early once a result or review for that task in that workstream is newer
+(so results recorded by older servers end it too). Full reads and the `attempt`
+include group show live markers and the viewer shows such tasks as In progress;
+a coordinator that only peeks at the next action therefore marks it picked. Explicit manual reviews
 retain their existing authority and cannot clear remaining gates. Workflow clients
 check the actual checkout/artifacts and send reviews to fresh independent reviewers.
 No working/start/lease/checkpoint lifecycle or routine extra repository scan exists.
@@ -245,7 +308,7 @@ A concern is a doubt that cannot be fixed without changing what the task says.
 Concern entries preserve implementer/reviewer source and author on the attempt;
 reviewer additions do not erase implementer contributions, and omission leaves
 stored evidence unchanged. They are a nonblocking channel to the user: gates,
-review outcomes, prerequisite satisfaction and observer proposals are unaffected.
+review outcomes and prerequisite satisfaction are unaffected.
 Complete attempt reads and viewer/sign-off show the prose. Explicit full task
 reads show a bounded applicable attempt window with concern totals/references;
 selected review proof carries its concerns in the same call. Current workstream
@@ -258,20 +321,33 @@ including historical JSON that resembles concern metadata. Reviewer additions
 never rewrite proof. The established durable-result proof decoder is unchanged;
 concerns come only from the explicit column, exposed as decoded entries.
 
-An active handler may add a task gate directly. An observer proposes a gate for
-review; the proposal is nonblocking until accepted. A coordinator may dismiss
-an unwanted or stale proposal with an audited reason, including when its target
-was later dropped. The default is agent autonomy. Unresolved items are for
+An active handler may add a task gate directly. Nonblocking observer gate
+proposals are retired; rows written by older servers stay readable and inert.
+The default is agent autonomy. Unresolved items are for
 questions that materially risk wasted work,
 expand authorization, require user-only information, or exhaust normal recovery.
 Cheap research and reversible choices proceed without ceremony.
 
 ## Surface and boundary
 
+Agent boards are for choosing active work. `list_tasks`, `workstream_status` and
+the `init` queue list open and rework tasks (including those awaiting review or
+sign-off) and count done, deferred and dropped tasks per status instead of listing
+them; `include_inactive=true` or an explicit closed `state` filter lists them.
+Cards are slim: identity, title, summary, one state word, revision, workstream
+position, unsatisfied blocker IDs, question and concern counts and a waiting-
+rejection flag, omitting empty defaults. Named include groups (`blockers`,
+`attempt`, `concerns`, `workstreams`, `ids`) on `list_tasks` and `get_tasks`
+restore the remaining card detail without a specification read, so nothing an
+agent could read before costs more than it did. Full specification reads,
+`get_next_action` and write acknowledgements are unchanged. Hiding is a
+projection only: positions, order revisions, gate semantics, status counts and
+exports still cover every member.
+
 The optional local browser companion invokes a narrow allowlist of the same
 Store operations as MCP. It adds no task state model, business transition
-logic, synchronization or agent dependency. Project/workstream queues retain
-their derived views; stored disposition and global group progress are labelled
+logic, synchronization or agent dependency. Its board reads unabridged cards,
+closed tasks included, so project/workstream queues retain their derived views; stored disposition and global group progress are labelled
 separately. The browser shows and steers: it asks questions, changes
 membership, order and disposition, and hands sign-off to an agent as a copied
 prompt; it creates, edits, answers, reviews and signs off nothing. Text is
@@ -289,28 +365,31 @@ listener capability under the MCP server's existing trust boundary, not an
 approval-policy change. Read requests keep the Store's existing audited-write
 semantics. The service does not authenticate the human behind a token.
 
-The initial recommended path is `init -> proposal/unresolved review ->
-superdevloop -> sign-off`. Features with unsettled design use `feature-capture`
-then `feature-design` before implementation. Capture does bounded research and
-saves a feature brief with an active unresolved design gate. Create in the
-inbox, add the gate, then queue user-requested briefs on the current branch;
-confirmed agent ideas stay in the inbox. Explicit membership instructions override
-these defaults. This avoids a queued, ungated intermediate task. The readable
-`Feature design required (feature-design):` prefix
-identifies the workflow by convention; no schema, task type or parser is added.
+The initial recommended path is `init -> proposal-review -> superdevloop ->
+task-signoff`. Features with unsettled design use `task-capture` then
+`task-design` before implementation. Capture does bounded research and saves a
+feature brief with an active unresolved design gate. Create in the inbox, add
+the gate, then add user-requested briefs to the current workstream; confirmed
+agent ideas stay in the inbox. Explicit membership instructions override these
+defaults. This avoids an ungated intermediate workstream member. The readable
+`Feature design required (task-design):` prefix (older briefs say
+`(feature-design)`) identifies the workflow by convention; no schema, task type
+or parser is added.
 Design first asks whether the work is worth doing, then researches behavior,
 compares approaches and records the user's decisions. Selection includes
-inbox tasks alongside queued tasks with unresolved gates.
+inbox tasks alongside workstream members with unresolved gates.
 Unrelated unresolved items do not automatically imply feature design.
 
 Design saves the agreed specification before resolving settled gates, keeping
 unfinished decisions blocked. Keep unsettled decisions blocking until decomposition; member tasks inherit all
 original parent scopes. Add member gates and adopt the resulting user-requested
 specifications where the user is working. Prior decisions remain usable;
-queueing and design discussion start no implementation. Finishing design creates
+membership and design discussion start no implementation. Finishing design creates
 no implementation attempt or review.
-MCP instructions route familiar design-task language to the two packaged skills
-through `get_default_skills`, making them discoverable without client installation.
+MCP instructions name the packaged skills, and each skill's description routes
+familiar request language to it through `get_default_skills`, making them
+discoverable without client installation. Tool descriptions hold tool mechanics;
+skills hold workflow and judgment, so each fact is stated once.
 The database enforces the gates; interpreting language, researching choices and
 obtaining real user decisions remain agent workflow responsibilities.
 
@@ -344,13 +423,19 @@ change. Signoff records only the actual verdict and reasons with provenance;
 there are no separate purpose/technical judgments. Revise uses the reasons as
 the open question without fabricating a specification revision. Queue membership,
 context and factual proof survive; revival from dropped needs actual authority.
-Current-spec reviewed proof and clear completion gates govern approval.
+Current-spec reviewed proof and answered questions govern approval. An
+unsatisfied prerequisite does not refuse it: a reviewed result stays awaiting
+sign-off and the user, as the authority, judges whether the open blocker affects
+the verdict. The approval records which prerequisites were still open
+(`open_prerequisites`) in its decision and response, so history shows them;
+dependents of the approved task follow the ordinary prerequisite rules.
 Historical signoff records, including old defer and judgment fields, stay intact.
 
 A task's latest rejection is the newest successful reviewer rework or signoff
 rework/revise event, with source, verdict, reasons, originating attempt/workstream/
 specification, timestamp and decision reference. Full reads and get_next_action
-carry this handoff; compact cards carry its provenance without prose. Each new
+carry this handoff; slim cards flag `rejected` until a newer result is recorded,
+and the `attempt` include group carries its provenance without prose. Each new
 rejection replaces the projection while prior rounds remain in immutable history.
 It is canonical task context, never evidence that an originating branch's proof
 is current locally. Schema 7 adds a partial rejection-history index so bounded

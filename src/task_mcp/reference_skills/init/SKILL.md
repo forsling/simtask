@@ -1,66 +1,26 @@
 ---
-name: task-mcp-init
-description: Discover or resume an explicit Task MCP checkout and workstream.
+name: init
+description: Set up or resume the Task MCP binding for a checkout and branch. Use in projects using Task MCP when init reports an unregistered checkout, a new branch, a mismatch or an archived workstream.
 ---
 
 # Init
 
-Follow explicit user instructions over this guidance. Call `init` with the
-absolute target checkout and branch, or `workstream_name` for detached/non-Git
-work. Cwd suggests a path but does not select it. Keep returned IDs for each
-context. `list_projects` does not select a current project.
+1. Call `init` with the absolute checkout path and branch, or a
+   `workstream_name` for detached or non-Git work. The current directory
+   suggests a path but does not choose it.
 
-An exact binding returns `ready` and a compact task list. Resume without
-confirmation/preflight. `new_branch` lists workstreams; `unregistered_checkout`
-offers create/attach/rebind; `mismatch` identifies a conflicting binding. Choose
-setup and show path, branch/name, project/workstream and scope, then call
-`init(action=..., confirmed=true)`. Rebind needs `workstream_id` and its last
-`expected_revision`; exact retries return ready. Names/history do not imply scope.
-Rebind retains scope/history, not files. Check the full current spec, actual
-checkout/diff and relevant commits before relying on proof, especially after rebind.
+2. When the result is ready, keep the returned project and workstream IDs,
+   read the notes and continue with the user's request.
 
-## Membership and order
+3. Otherwise, pick the fitting returned choice and show the user the path,
+   branch, project, workstream and scope it would set up. Names and history do
+   not imply scope; ask. Repeat the call with the confirmed choice.
 
-Workstreams have independent ordered lists of shared tasks. A task can be in
-A and B; unfinished attempts/reviews remain workstream-local. Inbox means zero
-effective memberships. **Add to workstream** uses `add_to_workstream(task_id,
-workstream_id, expected_revision)` and retains all other memberships. **Remove
-from workstream** uses `remove_from_workstream` with the same arguments and
-affects only the named workstream. Edits retain memberships; inclusion starts
-no implementation.
+4. Resume, archive or restore an archived workstream (`archive_workstream`)
+   only when the user directs.
 
-User-requested work belongs in the current workstream, including actively gated
-design briefs; confirmed agent ideas may stay in the inbox. Respect explicit
-placement and reuse concrete authorization. Create settled work with
-`create_task(workstream_id=...)` or add an existing task.
+5. After a rebind, the workstream's scope and history move but its files do
+   not. Check the actual checkout and commits against the specification before
+   relying on recorded results.
 
-`set_scope(workstream_id, expected_revision, expression)` uses the destination's
-revision and retains dynamic groups/exclusions. `none` starts empty; a workstream
-base copies scope, not order. Initializing from it needs the source's
-`expected_revision`. `+task-id`/`-task-id` adjust local membership; `+group-id`
-includes present/future local members unless excluded. Other workstreams remain
-intact. `list_workstreams` discovers bindings; `workstream_status` reads counts/
-scope without rebinding. State tracks no agent liveness.
-
-Use prerequisites for dependencies and local order for scheduling intent.
-**Reorder tasks** is `reorder_tasks(workstream_id, task_ids,
-expected_order_revision)`: one exact prefix; unlisted members keep relative order.
-Reuse `workstream_order_revision` from ordinary reads/explicit-target write ACKs
-without routine preflight or reshuffling. New inclusions append deterministically;
-project order is only a baseline.
-
-## Route and continue
-
-Fetch `get_default_skills(name=...)`: `feature-capture` for "add a design task";
-`feature-design` for "let's design X"/"review design tasks"/`designrev`;
-`proposal-review` for ordinary proposals/questions; `superdevloop` for autonomous
-implementation/independent review; `signoff` for reviewed-result walkthroughs
-and user verdicts. "Sign off X" requests a walkthrough; "approve X" supplies
-a verdict without requiring another walkthrough.
-
-Reuse last revisions after writes/pauses; reconcile conflicts and inspect
-the board before retrying uncertain creation. No confirming read is needed.
-Cards are not specs. Whole body/criteria replacements need the full-spec etag;
-valid updates return its successor. Fetch relevant specs/chosen proof together
-with `get_tasks(specification=true, attempt_ids=[...])`, or one `get_attempt`;
-page `list_task_attempts`/`list_group_members` deliberately.
+6. Fetch the skill that fits the request from `get_default_skills`.

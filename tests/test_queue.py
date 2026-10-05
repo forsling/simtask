@@ -128,8 +128,8 @@ def test_parallel_attempt_selection_review_and_removal_stay_local(context):
     assert store.get_next_action(other)["action"] == "implement"
     b = result(store, task, other)
     store.record_review(a["id"], 1, "reviewer", "pass", "A checked")
-    assert full(store, task, workstream_id=ws)["view"] == "signoff"
-    assert full(store, task, workstream_id=other)["view"] == "review"
+    assert full(store, task, workstream_id=ws)["state"] == "signoff"
+    assert full(store, task, workstream_id=other)["state"] == "review"
     assert store.get_next_action(other)["attempt"]["id"] == b["id"]
     before = full(store, task)
     removed = store.remove_from_workstream(task["id"], ws, before["revision"])
@@ -186,7 +186,10 @@ def test_membership_keeps_questions_prerequisites_and_local_scope_gate(context):
     task = store.add_prerequisite(task["id"], task["revision"], blocker["id"])
     task = store.add_to_workstream(task["id"], ws, task["revision"])
     assert task["gate_diagnostics"] == ["unresolved_items", "prerequisites"]
-    assert "task_out_of_scope" in full(store, task, workstream_id=other)["gate_diagnostics"]
+    scoped = full(store, task, workstream_id=other, include=["blockers"])
+    assert "task_out_of_scope" in scoped["gate_diagnostics"]
+    assert scoped["state"] == "out_of_scope" and scoped["question_count"] == 1
+    assert scoped["blockers"] == [blocker["id"]]
     assert store.get_next_action(ws)["task"] is None
 
 
@@ -268,8 +271,9 @@ def test_cross_project_and_group_membership_fail(context, tmp_path):
     group = store.create_group(ws, "Context")
     with pytest.raises(TaskError, match="unknown_workstream"):
         store.add_to_workstream(task["id"], remote, 1)
-    with pytest.raises(TaskError, match="group_not_executable"):
-        store.add_to_workstream(group["id"], ws, group["revision"])
+    # A group ID is scope inclusion, never execution; remote workstreams may include it.
+    included = store.add_to_workstream(group["id"], remote, group["revision"])
+    assert included["changed"] and included["included"]
     with sqlite3.connect(store.path) as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='queue_members'").fetchone()
 
