@@ -135,6 +135,75 @@ def test_legitimate_technical_text_accepted_unchanged(context, text):
     assert store.get_tasks([changed["id"]])["items"][0]["body"] == text + " More."
 
 
+@pytest.mark.parametrize("field", ["body", "acceptance_criteria"])
+@pytest.mark.parametrize("marker", ["```", "~~~", "````", "~~~~"])
+@pytest.mark.parametrize("prefix", ["> ", "> > ", "    ", "- ", "> - ", "  1. "])
+@pytest.mark.parametrize("closing", ["same", "longer", "open"])
+def test_container_fenced_examples_accepted_unchanged(context, field, marker, prefix, closing):
+    store, project, ws = context
+    text = (
+        prefix
+        + marker
+        + "text\n"
+        + prefix
+        + (r"First paragraph.\nSecond paragraph.\nThird paragraph.")
+    )
+    if closing != "open":
+        text += "\n" + prefix + marker + (marker[0] if closing == "longer" else "")
+    created = store.create_task(project, "Container example", workstream_id=ws, **{field: text})
+    spec = store.get_tasks([created["id"]])["items"][0]
+    assert spec[field] == text
+    updated = text + "\nOrdinary following prose."
+    store.update_task(spec["id"], spec["revision"], {field: updated}, spec["specification_etag"])
+    assert store.get_tasks([created["id"]])["items"][0][field] == updated
+
+
+@pytest.mark.parametrize("field", ["body", "acceptance_criteria"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        r"Use the regular expression \n- first\n- second to match the two "
+        "newline-prefixed list entries.",
+        r"Use regex \n- first\n- second to match entries.",
+        r"The regexp First paragraph.\nSecond paragraph.\nThird paragraph. matches this text.",
+    ],
+)
+def test_explicit_prose_regex_examples_accepted_unchanged(context, field, text):
+    store, project, ws = context
+    created = store.create_task(project, "Regex example", workstream_id=ws, **{field: text})
+    spec = store.get_tasks([created["id"]])["items"][0]
+    assert spec[field] == text
+    updated = text + " More explanation."
+    store.update_task(spec["id"], spec["revision"], {field: updated}, spec["specification_etag"])
+    assert store.get_tasks([created["id"]])["items"][0][field] == updated
+
+
+@pytest.mark.parametrize("field", ["body", "acceptance_criteria"])
+@pytest.mark.parametrize("closer", ["~~~", "```", "```` extra", "````` extra"])
+def test_nonmatching_fence_does_not_expose_code_to_guard(context, field, closer):
+    store, project, ws = context
+    text = "> ````text\n> " + closer + "\n> " + SOURCE[field] + "\n> `````"
+    created = store.create_task(project, "Fence content", workstream_id=ws, **{field: text})
+    assert store.get_tasks([created["id"]])["items"][0][field] == text
+
+
+@pytest.mark.parametrize("field", ["body", "acceptance_criteria"])
+@pytest.mark.parametrize("marker", ["```", "~~~"])
+def test_prose_after_container_fence_is_still_validated(context, field, marker):
+    store, project, ws = context
+    text = "> " + marker + "text\n> " + r"Intentional\n- first\n- second"
+    text += "\n> " + marker + marker[0] + "\n" + SOURCE[field]
+    assert_rejected(
+        store,
+        business_state(store),
+        field,
+        "No task was created",
+        lambda: store.create_task(
+            project, "Escaped after example", workstream_id=ws, **{field: text}
+        ),
+    )
+
+
 def test_corrected_source_all_write_paths_accept_unchanged(context):
     store, project, ws = context
     corrected = {

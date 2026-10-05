@@ -3312,15 +3312,41 @@ class Store:
         ordinary multiline specifications and technical escape mentions stay
         untouched. Ambiguous escapes deliberately pass this conservative guard.
         """
-        prose = re.sub(
-            r"(?ms)^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[ \t]*$|\Z)",
-            " ",
-            value,
-        )
+        # Strip Markdown containers before recognizing fences. Be permissive
+        # about indentation: an ambiguous example should pass, rather than risk
+        # rejecting quoted or list-nested code. Closing runs may be longer than
+        # their opener, but must use the same character and contain only spaces.
+        prose_lines = []
+        fence = None
+        for line in value.splitlines():
+            content = re.sub(r"^(?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d+[.)])[ \t]+)*", "", line)
+            content = content.lstrip(" \t")
+            marker = re.match(r"(`{3,}|~{3,})(.*)$", content)
+            if fence is not None:
+                if (
+                    marker
+                    and marker[1][0] == fence[0]
+                    and len(marker[1]) >= len(fence)
+                    and not marker[2].strip()
+                ):
+                    fence = None
+                prose_lines.append("")
+            elif marker and (marker[1][0] == "~" or "`" not in marker[2]):
+                fence = marker[1]
+                prose_lines.append("")
+            else:
+                prose_lines.append(line)
+        prose = "\n".join(prose_lines)
         prose = re.sub(r"(`+)(?!`).*?(?<!`)\1(?!`)", " ", prose, flags=re.DOTALL)
         escape = r"\\+n"
         for line in prose.splitlines():
             if len(re.findall(escape, line)) < 2:
+                continue
+            # An explicitly introduced regex can intentionally contain the same
+            # sentence/list shapes as damaged prose. Treat that context as
+            # ambiguous instead of rejecting an unquoted technical example.
+            introduction = re.split(escape, line, maxsplit=1)[0]
+            if re.search(r"\b(?:regex(?:p)?|regular expression)\b", introduction, re.IGNORECASE):
                 continue
             # Two escaped bullet boundaries or a blank paragraph between prose
             # are strong signals. Sentence boundaries cover single-line prose
