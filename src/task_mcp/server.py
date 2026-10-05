@@ -232,7 +232,6 @@ def create_server(
         """Create an empty global group and include it in this workstream's scope.
 
         Choose a permanent descriptive public_id; conflicts require a different name.
-        Hexadecimal-only names are reserved for legacy viewer bookmarks.
         Omission derives a title slug with a numeric suffix when needed.
         """
         return store.compact_call(
@@ -300,7 +299,6 @@ def create_server(
         Choose a descriptive public_id such as readable-task-ids: globally unique,
         permanent and accepted everywhere task_id is used. A conflict requires another
         name. Omission derives a title slug with a numeric suffix when needed.
-        Hexadecimal-only names are reserved for legacy viewer bookmarks.
         """
         return store.compact_call(
             "create_task",

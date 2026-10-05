@@ -31,8 +31,6 @@ New task/group IDs appear in full, for example `readable-task-ids`; exact public
 names resolve independently of other names with the same prefix. Cards and detail
 headers show the complete selectable ID, with **Copy ID** in details. Long IDs wrap
 on narrow screens. Search includes the public ID. Existing `tsk_…` IDs stay unchanged.
-New IDs cannot consist entirely of hexadecimal characters, preserving the namespace
-of existing shortened task/group bookmarks.
 
 Project/workstream and legacy task/group IDs appear in URLs as the first 8
 hexadecimal characters after their type prefix

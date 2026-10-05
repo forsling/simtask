@@ -248,10 +248,7 @@ New tasks and groups have permanent descriptive public IDs, for example
 `decompose_task` member. These IDs are accepted anywhere a task/group reference
 is needed, including prerequisites, scope expressions, reads, edits and sign-off.
 Use up to 96 lowercase ASCII letters, digits and single hyphens, beginning with a
-letter. Hexadecimal-only names (such as `face` or `e1e1e1e1`) are reserved for legacy
-viewer bookmarks; use a descriptive name such as `task-face` instead. Title-derived
-names receive this prefix automatically when needed.
-IDs are globally unique across projects and groups, and remain reserved
+letter. IDs are globally unique across projects and groups, and remain reserved
 for done/dropped tasks. An explicit collision returns `public_id_conflict`: choose
 a more specific name and retry. Creation is atomic, including concurrent collisions
 and decomposition. Omission derives a title slug with numeric suffixes for duplicate
