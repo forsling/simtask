@@ -963,7 +963,6 @@ function row(r) {
     const title = node("span", r.title, "row-title");
     if (v.badge) title.append(" ", node("span", v.label, "badge tone-" + v.tone));
     const main = el("span", "row-main", title, taskIdLabel(r.id));
-    if (r.summary) main.append(node("small", r.summary + (r.summary_stale ? " · Summary predates current spec" : ""), "row-summary muted"));
     b.append(node("span", "", "dot tone-" + v.tone), main);
   }
   return b;
