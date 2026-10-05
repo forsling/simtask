@@ -47,7 +47,9 @@ earlier `#/project/...` addresses are not supported; they open the default view.
 ## Working with tasks
 
 - The sidebar lists projects; the current project expands to its registered
-  workstreams, each with a count of tasks that need you. “All tasks” includes
+  workstreams, each with a count of tasks that need you: exactly the tasks its
+  Needs input section shows, counted from that workstream's task cards on each
+  board refresh. “All tasks” includes
   tasks outside any one workstream. Workstream names and counts describe
   recorded state, not a running agent.
 - The list groups tasks by where they stand for you, not by the agents'

@@ -374,13 +374,39 @@ function streamName(id) {
   const s = state.streams.find((s) => s.id === id);
   return s?.branch || s?.name || "another workstream";
 }
-// Tasks waiting for the user's input. The open board counts its own rows, so the
-// sidebar and the Needs input section agree.
+// Tasks waiting for the user's input. Every workstream's count comes from its own
+// cards through standingOf, exactly as its Needs input section would sort them: the
+// open board counts its loaded rows, and each other workstream's count is read from
+// its card list (no specifications) once per board refresh. The server's status
+// counts rank review ahead of open questions, so they cannot stand in for it.
+const INPUT = SECTIONS.find((s) => s.key === "input").standings;
+const needsInput = (rows) => rows.filter((r) => INPUT.includes(r.standing ?? standingOf(r))).length;
+const needsCounts = new Map(); // workstream ID -> count from its latest card list
+const needsTokens = new Map(); // workstream ID -> token of the latest read that may set it
+let needsToken = 0;
 function needsYou(stream) {
-  if (!state.groups && state.boardStream === stream.id)
-    return state.rows.filter((r) => ["signoff", "decision"].includes(r.standing)).length;
-  const c = stream.status?.counts || {};
-  return (c.signoff || 0) + (c.unresolved_items || 0);
+  if (!state.groups && state.boardStream === stream.id) return needsInput(state.rows);
+  return needsCounts.get(stream.id) ?? null;
+}
+function noteNeeds(id, rows) {
+  needsTokens.set(id, ++needsToken);
+  needsCounts.set(id, needsInput(rows));
+}
+// Reads the given workstreams' cards in parallel and redraws the sidebar if a count
+// changed. A newer read of a workstream (or its board loading) supersedes an older one.
+async function refreshNeeds(project, streams) {
+  const reads = streams.map((s) => {
+    const token = ++needsToken;
+    needsTokens.set(s.id, token);
+    return pages("tasks", { project, workstream_id: s.id }).then((rows) => {
+      if (needsTokens.get(s.id) !== token) return false;
+      const n = needsInput(rows), changed = needsCounts.get(s.id) !== n;
+      needsCounts.set(s.id, n);
+      return changed;
+    });
+  });
+  const changed = (await Promise.allSettled(reads)).some((r) => r.status === "fulfilled" && r.value);
+  if (changed && project === state.project) renderNav();
 }
 
 /* ---------- location URLs ---------- */
@@ -720,6 +746,11 @@ async function reload({ quiet = false, requested = null } = {}) {
     state.rows = rows.map((r) => ({ ...r, standing: standingOf(r) }));
     state.boardStream = groups ? null : stream;
     state.streams = streams;
+    // The open board's count comes from its rows; every other workstream's is read
+    // again (group boards read only those not counted yet), without holding the board.
+    if (state.boardStream) noteNeeds(state.boardStream, state.rows);
+    const recount = streams.filter((s) => s.id !== state.boardStream && (!groups || !needsTokens.has(s.id)));
+    if (recount.length) refreshNeeds(project, recount).catch(() => {});
     state.loadedAt = Date.now();
     state.orderStream = !groups && state.stream ? state.stream : null;
     state.orderRevision = state.orderStream ? board.workstream_order_revision : null;

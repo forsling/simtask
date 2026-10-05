@@ -125,7 +125,8 @@ async function test() {
 
   // The sidebar count matches the loaded Needs input section.
   assert.equal(run("needsYou(state.streams[0])"), 5);
-  assert.equal(run('needsYou({id: "other", status: {counts: {signoff: 2, unresolved_items: 1}}})'), 3);
+  // A workstream whose cards have not been read shows no count, never the server's.
+  assert.equal(run('needsYou({id: "other", status: {counts: {signoff: 2, unresolved_items: 1}}})'), null);
 
   // Expanding Done shows done and dropped tasks without badges.
   const doneHead = kids(list).find(n => n.classList.contains("section-head") && text(n).includes("Done"));
@@ -176,4 +177,92 @@ async function test() {
   assert.match(held, /A design\/decision needs your answer/);
   assert.doesNotMatch(held, /Approve & sign off/);
 }
-test().catch(error => {console.error(error); process.exitCode = 1;});
+
+// Every workstream's sidebar count equals what its Needs input section shows, also for
+// workstreams that are not open. The server ranks review ahead of open questions, so
+// its status counts miss a task with a question and a result under review.
+async function sidebar() {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const streams = [
+    {id: "w", branch: "main", project_id: "p", status: {scoped_count: 2, counts: {signoff: 0, unresolved_items: 0, ready: 2}}},
+    {id: "s", branch: "side", project_id: "p", status: {scoped_count: 3, counts: {signoff: 1, review: 1, unresolved_items: 0, ready: 1}}},
+  ];
+  const boards = {
+    w: [card("shared", "Shared, passed only in side"), card("plain", "Plain open task")],
+    s: [
+      card("ur", "Question and a result under review", {view: "review", unresolved_count: 1, attempt_counts: counts({review: 1})}),
+      card("shared", "Shared, passed only in side", {view: "signoff", attempt_counts: counts({passed: 1})}),
+      card("idle", "Open", {view: "ready"}),
+    ],
+  };
+  const project = [boards.s[0], {...boards.s[1], attempt_counts: undefined, view: undefined, aggregate_attempt_counts: counts({passed: 1})}, boards.w[1], boards.s[2]];
+  const requests = [];
+  context.harness = {streams, boards, project, requests};
+  run(`
+    state.project = "p"; state.projects = [{id: "p", name: "Project"}]; state.streams = harness.streams;
+    state.groups = false; state.selected = null; state.boardStream = null; state.rows = [];
+    api = async (action, payload) => {
+      harness.requests.push(action + ":" + (payload.workstream_id || ""));
+      if (action === "workstreams") return {items: harness.streams, next_offset: null};
+      if (action === "groups") return {items: [], next_offset: null};
+      if (action === "tasks") return {items: payload.workstream_id ? harness.boards[payload.workstream_id] : harness.project,
+        next_offset: null, workstream_order_revision: 1};
+      throw new Error("unexpected " + action);
+    };
+    pages = async (action, data) => (await api(action, data)).items;
+  `);
+  const navCount = name => {
+    const item = descendants(get("nav")).find(n => n.classList.contains("nav-item") && text(n).startsWith(name));
+    const count = kids(item).find(n => n.classList.contains("count"));
+    return {count: count.textContent, attention: count.classList.contains("attention")};
+  };
+  const inputRows = () => {
+    let inInput = false, n = 0;
+    for (const node of kids(get("list"))) {
+      if (node.classList.contains("section-head")) inInput = text(node).includes("Needs input");
+      else if (inInput && node.classList.contains("row")) n++;
+    }
+    return n;
+  };
+  const visit = async stream => {
+    requests.length = 0;
+    run(`state.stream = ${JSON.stringify(stream)}; state.groups = false;`);
+    await run("reload()");
+    for (let i = 0; i < 5; i++) await settle();
+  };
+
+  // From main: side's count comes from its own cards, read once, not from status counts.
+  await visit("w");
+  assert.equal(run('needsYou(state.streams[1])'), 2, "question + result under review counts as needing input");
+  assert.deepEqual(navCount("side"), {count: "2", attention: true});
+  assert.deepEqual(navCount("main"), {count: "2", attention: false}, "nothing needs input in main");
+  assert.deepEqual([...requests].sort(), ["tasks:s", "tasks:w", "workstreams:"],
+    "one card read for each other workstream; the open board is not read twice");
+  // From All tasks: every workstream is read once.
+  await visit(null);
+  assert.deepEqual(navCount("side"), {count: "2", attention: true});
+  assert.deepEqual([...requests].sort(), ["tasks:", "tasks:s", "tasks:w", "workstreams:"]);
+  // Opening side: the Needs input section shows exactly the count the sidebar showed.
+  await visit("s");
+  assert.equal(inputRows(), 2);
+  assert.deepEqual(navCount("side"), {count: "2", attention: true});
+  assert.deepEqual([...requests].sort(), ["tasks:s", "tasks:w", "workstreams:"]);
+  // A group board keeps counts already read instead of reading every workstream again.
+  requests.length = 0;
+  run(`state.groups = "project"; state.stream = null;`);
+  await run("reload()");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(requests, ["groups:"]);
+  assert.deepEqual(navCount("side"), {count: "2", attention: true});
+
+  // A slower, older read never overwrites a newer count.
+  let release;
+  run(`api = async (action, payload) => payload.workstream_id === "s" ? harness.slow : {items: [], next_offset: null}`);
+  context.harness.slow = new Promise(resolve => { release = resolve; });
+  const older = run(`refreshNeeds("p", [state.streams[1]])`);
+  run(`noteNeeds("s", [harness.boards.s[2]])`);
+  release({items: context.harness.boards.s, next_offset: null});
+  await older;
+  assert.equal(run("needsCounts.get('s')"), 0);
+}
+test().then(sidebar).catch(error => {console.error(error); process.exitCode = 1;});
