@@ -63,8 +63,10 @@ wraps:
 ```
 
 Open the private link printed by the command. The address bar then shows a
-token-free location URL (project, view and selected task or group), so reload,
-back/forward and bookmarks keep your place in a tab that holds the token. Repeated launches reuse the live
+short, token-free location path such as `/w/1c4684b6/t/a5dfba02` (workstream and
+task by 8-character ID prefix; see [docs/viewer.md](docs/viewer.md#location-urls)),
+so reload, back/forward and bookmarks keep your place in a tab that holds the
+token. Repeated launches reuse the live
 viewer for that database. The explicit `open_task_viewer` MCP tool returns the
 same link for its configured database; it does not change client approvals or
 open a browser automatically. The listener stays running after the CLI or MCP

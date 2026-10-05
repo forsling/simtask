@@ -16,9 +16,10 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from task_mcp import store as store_module
 from task_mcp.server import create_server
 from task_mcp.store import Store
-from task_mcp.viewer import ViewerServer, _live, launch_viewer, stop_viewer
+from task_mcp.viewer import ASSETS, ViewerServer, _live, launch_viewer, stop_viewer
 
 
 @pytest.fixture
@@ -329,6 +330,163 @@ def test_narrow_api_and_safe_assets(viewer):
         assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
         assert response.headers["Referrer-Policy"] == "no-referrer"
     assert request(server, "/api/ping", headers={"X-Task-Token": ""}, method="GET")[0] == 401
+
+
+LOCATION_PATHS = [
+    "/p/1c4684b6",
+    "/p/1c4684b6/t/a5dfba02",
+    "/p/1c4684b6/g",
+    "/p/1c4684b6/g/a5dfba02",
+    "/w/1c4684b6",
+    "/w/1c4684b6/t/a5dfba02",
+    "/w/" + "1c4684b6" * 4 + "/t/" + "a5dfba02" * 4,
+    "/g/a5dfba02",
+    "/sg",
+    "/sg/a5dfba02",
+]
+
+
+@pytest.mark.parametrize("path", LOCATION_PATHS)
+def test_location_paths_serve_the_app_page_with_unchanged_checks(viewer, path):
+    server, _, _ = viewer
+    page = (ASSETS / "index.html").read_bytes()
+    # The page itself needs no token, exactly like "/"; its API calls still do.
+    status, body = request(server, path, headers={"X-Task-Token": ""}, method="GET")
+    assert (status, body) == (200, page)
+    req = urllib.request.Request(server.origin + path)
+    with urllib.request.urlopen(req) as response:
+        assert response.headers["Content-Type"] == "text/html; charset=utf-8"
+        assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+        assert response.headers["Referrer-Policy"] == "no-referrer"
+        assert response.headers["Cache-Control"] == "no-store"
+    for headers in (
+        {"Host": "evil.invalid"},
+        {"Origin": "http://evil.invalid"},
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Sec-Fetch-Site": "same-site"},
+    ):
+        assert request(server, path, headers=headers, method="GET")[0] == 403, headers
+        assert request(server, "/", headers=headers, method="GET")[0] == 403, headers
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/w",
+        "/w/",
+        "/w/1c4684b6/",
+        "/w/1C4684B6",
+        "/w/zz",
+        "/w/" + "a" * 33,
+        "/w/1c4684b6?view=1",
+        "/w/1c4684b6/t",
+        "/w/1c4684b6/g/a5dfba02",
+        "/p/1c4684b6/x",
+        "/p/1c4684b6/t/a5dfba02/more",
+        "/p/1c4684b6/g/",
+        "/g",
+        "/g/a5dfba02/t/1c4684b6",
+        "/sg/",
+        "/t/a5dfba02",
+        "/project/prj_1c4684b6",
+        "/index.html",
+        "/w/../app.js",
+        "/?x=1",
+    ],
+)
+def test_unknown_paths_stay_not_found(viewer, path):
+    server, _, _ = viewer
+    assert request(server, path, method="GET") == (404, {"error": "Not found"})
+
+
+def test_api_routes_keep_their_status_beside_location_paths(viewer):
+    server, _, _ = viewer
+    assert request(server, "/api/ping", method="GET")[0] == 200
+    assert request(server, "/api/ping", headers={"X-Task-Token": ""}, method="GET")[0] == 401
+    assert request(server, "/api/w/1c4684b6", headers={"X-Task-Token": ""}, method="GET")[0] == 401
+    assert request(server, "/api/w/1c4684b6", method="GET")[0] == 404
+    assert request(server, "/api/projects", method="GET")[0] == 404
+    assert request(server, "/w/1c4684b6", method="POST")[0] == 400
+    assert request(server, "/w/1c4684b6", headers={"X-Task-Token": ""})[0] == 401
+    assert (
+        request(
+            server,
+            "/api/resolve-prefix",
+            {"kind": "workstream", "prefix": "1c"},
+            {"X-Task-Token": "x"},
+        )[0]
+        == 401
+    )
+
+
+def test_resolve_matches_workstream_and_group_prefixes_and_reports_ambiguity(tmp_path, monkeypatch):
+    # Controlled IDs: two workstreams share a short prefix across projects.
+    planned = {
+        "wst_": iter(["1c4684b6" + "1" * 24, "1c4684b6" + "2" * 24]),
+        "tsk_": iter(["a5dfba02" + "1" * 24, "a5dfba02" + "2" * 24, "a5dfba02" + "3" * 24]),
+    }
+    original = store_module._id
+    monkeypatch.setattr(
+        store_module,
+        "_id",
+        lambda prefix: prefix + next(planned[prefix]) if prefix in planned else original(prefix),
+    )
+    store = Store(tmp_path / "tasks.sqlite3", "test-browser")
+    one = store.init_project(str(tmp_path / "one"), branch="main", confirmed=True)
+    two = store.init_project(str(tmp_path / "two"), branch="main", confirmed=True)
+    w1, w2 = one["workstream"]["id"], two["workstream"]["id"]
+    task = store.create_task(
+        one["project"]["id"],
+        "A task",
+        "Body",
+        "Done",
+        workstream_id=w1,
+        user_request="An explicit synthetic human request",
+    )
+    group_one = store.create_group(w1, "Group one")
+    group_two = store.create_group(w2, "Group two")
+    assert task["id"].startswith("tsk_a5dfba02") and group_two["id"].startswith("tsk_a5dfba02")
+    server = ViewerServer(store)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+
+        def resolve(kind, prefix):
+            status, result = request(
+                server, "/api/resolve-prefix", {"kind": kind, "prefix": prefix}
+            )
+            assert status == 200, result
+            return result["items"]
+
+        pid1, pid2 = one["project"]["id"], two["project"]["id"]
+        assert resolve("workstream", "1c4684b6") == [
+            {"id": w1, "project_id": pid1},
+            {"id": w2, "project_id": pid2},
+        ]
+        assert resolve("workstream", w2[4:]) == [{"id": w2, "project_id": pid2}]
+        assert resolve("workstream", "1c4684b62") == [{"id": w2, "project_id": pid2}]
+        assert resolve("workstream", "ffffffff") == []
+        # Groups share the task ID space; a task is never a group match.
+        ids = lambda items: [item["id"] for item in items]  # noqa: E731
+        assert ids(resolve("group", "a5dfba02")) == [group_one["id"], group_two["id"]]
+        assert resolve("group", task["id"][4:]) == []
+        assert ids(resolve("group", group_two["id"][4:13])) == [group_two["id"]]
+        for data in (
+            {"kind": "task", "prefix": "a5dfba02"},
+            {"kind": "project", "prefix": "a5dfba02"},
+            {"kind": "workstream", "prefix": ""},
+            {"kind": "workstream", "prefix": "1C4684B6"},
+            {"kind": "workstream", "prefix": "1c46%"},
+            {"kind": "workstream", "prefix": "a" * 33},
+            {"kind": "workstream", "prefix": 1},
+            {"kind": ["workstream"], "prefix": "1c"},
+            {"kind": "workstream"},
+        ):
+            assert request(server, "/api/resolve-prefix", data)[0] == 400, data
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_idempotent_launch_stop_and_restart(tmp_path):

@@ -9,20 +9,40 @@ and returns the link. No browser is launched automatically.
 
 ## Location URLs
 
-After the launch link connects, the address bar shows where you are, for example
-`/#/project/<project-id>/workstream/<workstream-id>/task/<task-id>`. The view is
-`all` (All tasks), `workstream/<id>`, `groups` (the project's task groups) or
-`shared-groups`, optionally followed by `task/<id>` or, in group views,
-`group/<id>`. Reloading returns to the same project, view and selection.
+After the launch link connects, the address bar shows a short, token-free path
+for where you are, for example `/w/1c4684b6/t/a5dfba02` (task `a5dfba02` in
+workstream `1c4684b6`). A workstream or group implies its project, so only the
+project-wide views name one:
+
+| Path | Location |
+| --- | --- |
+| `/w/<workstream>` and `/w/<workstream>/t/<task>` | A workstream, optionally with a selected task |
+| `/p/<project>` and `/p/<project>/t/<task>` | The project's **All tasks** |
+| `/p/<project>/g` | The project's **Task groups** |
+| `/g/<group>` | A group, in the view it implies: its project's **Task groups**, or **Shared task groups** when it spans projects |
+| `/p/<project>/g/<group>` | A group shown in a project's **Task groups** other than the one it implies (a shared group, for example) |
+| `/sg` and `/sg/<group>` | **Shared task groups** |
+
+IDs appear as the first 8 hexadecimal characters after their type prefix
+(`wst_1c4684b6…` becomes `1c4684b6`). Only when that prefix is ambiguous is the
+full 32-character ID used: tasks resolve within the view's task list, projects
+among all projects, and workstreams and groups across the database. Any longer
+or shorter prefix also works in a typed address when it matches exactly one item.
+Shared task groups name no project, so the sidebar keeps the project that was
+open (after a reload, the group's own project or the first project).
+
+Reloading returns to the same project, view and selection.
 Back/forward move between locations visited in the viewer: sidebar links, task
 and group clicks, group chips, prerequisite, member and workstream links and **Next agent
 action** each add an entry, while `j`/`k` moves and automatic first-task selection
 update the current entry. A copied or bookmarked location reopens in a tab that
 already holds the token; elsewhere, open the private launch link first, which
 starts on the first project's first workstream. Location URLs never contain the
-token. A location whose project, workstream, task or group no longer exists, or
-which the task has left, opens the nearest valid view (the project's All tasks,
-the first project, or the view's first item) with a short notice.
+token. A location whose project, workstream, task or group no longer exists,
+which the task has left, or whose prefix matches more than one item, opens the
+nearest valid view (the open project's All tasks or Task groups, Shared task
+groups, the first project, or the view's first item) with a short notice. The
+earlier `#/project/...` addresses are not supported; they open the default view.
 
 ## Working with tasks
 
@@ -113,8 +133,10 @@ requests are rejected. CSP disallows remote resources, framing and inline
 scripts. The private link places its token in the URL fragment, which is not
 sent to HTTP logs; the app immediately removes it from the address bar,
 retains it in that tab's session storage and replaces it with a token-free
-location URL. Location URLs are fragments too, so the server still serves only
-`/` and its assets. Restarting the viewer rotates the
+location path. The server serves the same app page for `/` and for well-formed
+location paths (`/p/…`, `/w/…`, `/g/…`, `/sg…` with hexadecimal IDs) under the
+same Host/Origin/fetch-site checks; the page carries no data, and every API call
+still needs the token header. Other paths remain 404. Restarting the viewer rotates the
 token. Other local processes with the same user's filesystem privileges remain
 inside this trust boundary; actor labels and human assertions are not identity
 authentication.

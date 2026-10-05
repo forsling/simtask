@@ -1,6 +1,7 @@
 // Execute the shipped location URL handling against a small history/location double:
-// token stripping, push/replace per navigation, back/forward and stale fallbacks.
-// Real-browser behavior (reload, bookmarks, address bar edits) is checked separately.
+// short path routes, token stripping, push/replace per navigation, back/forward, prefix
+// ambiguity and stale fallbacks. Real-browser behavior (reload, bookmarks, address bar
+// edits, the server serving these paths) is checked separately.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -14,165 +15,251 @@ function element() {
     append(...children) {this.children.push(...children);}, prepend() {}, setAttribute() {},
     replaceChildren(...children) {this.children = children;}, scrollIntoView() {}};
 }
-const projects = [{id: "p1", name: "One"}, {id: "p2", name: "Two"}];
-const streams = {p1: [{id: "w1", project_id: "p1", branch: "A"}, {id: "w2", project_id: "p1", branch: "B"}], p2: [{id: "w3", project_id: "p2", branch: "M"}]};
-const tasks = {w1: ["t1", "t2"], w2: ["t3", "t4"], w3: ["t5"], p1: ["t1", "t2", "t3", "t4", "t6"], p2: ["t5"]};
-const groups = {p1: ["g1", "g2"], p2: []};
+// IDs are a type prefix and 32 hex characters; URLs show the first 8 unless ambiguous.
+const id = (kind, head, tail = "0") => `${kind}_${head}${tail.repeat(24)}`;
+const P1 = id("prj", "11111111"), P2 = id("prj", "22222222");
+const W1 = id("wst", "a1a1a1a1"), W2 = id("wst", "b2b2b2b2"), W3 = id("wst", "c3c3c3c3");
+// Two workstreams in different projects share a short prefix: only the server sees both.
+const W4 = id("wst", "dddddddd", "1"), W5 = id("wst", "dddddddd", "2");
+const [T1, T2, T3, T4, T5, T6] = ["10000001", "10000002", "10000003", "10000004", "10000005", "10000006"].map(h => id("tsk", h));
+// Two tasks in one board share a short prefix.
+const T7 = id("tsk", "77777777", "1"), T8 = id("tsk", "77777777", "2");
+const G1 = id("tsk", "e1e1e1e1"), G2 = id("tsk", "e2e2e2e2"), G3 = id("tsk", "e3e3e3e3");
+const G4 = id("tsk", "eeeeeeee", "1"), G5 = id("tsk", "eeeeeeee", "2");
+const hex = x => x.slice(4), short = x => x.slice(4, 12);
 
-function viewer(initialHash, stored = "") {
-  const entries = [initialHash], listeners = {}, notices = [], calls = [];
+const projects = [{id: P1, name: "One"}, {id: P2, name: "Two"}];
+const streams = {
+  [P1]: [{id: W1, project_id: P1, branch: "A"}, {id: W2, project_id: P1, branch: "B"}, {id: W5, project_id: P1, branch: "D"}],
+  [P2]: [{id: W3, project_id: P2, branch: "M"}, {id: W4, project_id: P2, branch: "N"}],
+};
+const tasks = {[W1]: [T1, T2], [W2]: [T3, T4, T7, T8], [W3]: [T5], [W4]: [], [W5]: [T6], [P1]: [T1, T2, T3, T4, T6, T7, T8], [P2]: [T5]};
+// Group homes: G1 lives in One, G2 spans both projects, G3 is empty and originates in Two.
+const groupInfo = {
+  [G1]: {origin: P1, by: [P1]}, [G2]: {origin: P1, by: [P1, P2]}, [G3]: {origin: P2, by: []},
+  [G4]: {origin: P1, by: [P1]}, [G5]: {origin: P2, by: [P2]},
+};
+const groupLists = {[P1]: [G1, G2, G4], [P2]: [G2, G3, G5]};
+const allStreams = Object.values(streams).flat();
+
+function viewer(initial, stored = "") {
+  const entries = [{...initial}], listeners = {}, notices = [], calls = [];
   let index = 0, reloaded = 0, storedToken = stored;
-  const hashOf = url => (String(url).includes("#") ? "#" + String(url).split("#")[1] : "");
   const elements = new Map();
-  const get = id => {
-    if (!elements.has(id)) elements.set(id, element());
-    return elements.get(id);
+  const get = name => {
+    if (!elements.has(name)) elements.set(name, element());
+    return elements.get(name);
+  };
+  const urlOf = url => {
+    const [p, h] = String(url).split("#");
+    return {path: p, hash: h === undefined ? "" : "#" + h};
   };
   const context = vm.createContext({
     document: {getElementById: get, createElement: element, createElementNS: () => element(), addEventListener() {}, querySelectorAll() {return [];}},
     window: {addEventListener(type, fn) {(listeners[type] ||= []).push(fn);}},
     setTimeout() {},
-    location: {get hash() {return entries[index];}, reload() {reloaded++;}},
+    location: {get pathname() {return entries[index].path;}, get hash() {return entries[index].hash;}, reload() {reloaded++;}},
     sessionStorage: {getItem() {return storedToken;}, setItem(k, v) {storedToken = v;}},
     history: {
-      pushState(_, __, url) {entries.splice(index + 1); entries.push(hashOf(url)); index++;},
-      replaceState(_, __, url) {entries[index] = hashOf(url);},
+      pushState(_, __, url) {entries.splice(index + 1); entries.push(urlOf(url)); index++;},
+      replaceState(_, __, url) {entries[index] = urlOf(url);},
     },
   });
   vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
   const run = code => vm.runInContext(code, context);
   context.apiMock = async (action, data) => {
-    calls.push(action);
+    calls.push([action, data]);
     if (action === "projects") return {items: projects, next_offset: null};
     if (action === "workstreams") return {items: streams[data.project] || [], next_offset: null};
     if (action === "tasks") {
       const ids = tasks[data.workstream_id || data.project] || [];
-      return {items: ids.map(id => ({id, title: id, view: "ready"})), next_offset: null, workstream_order_revision: data.workstream_id ? 1 : null};
+      return {items: ids.map(t => ({id: t, title: t, view: "ready"})), next_offset: null, workstream_order_revision: data.workstream_id ? 1 : null};
     }
-    if (action === "groups") return {items: (groups[data.project] || []).map(id => ({id, title: id, object_type: "group", progress: {by_project: {p1: {}}}})), next_offset: null};
+    if (action === "groups") {
+      const ids = data.project ? groupLists[data.project] : Object.keys(groupInfo);
+      return {items: ids.map(g => ({id: g, title: g, object_type: "group", project_id: null, project_count: groupInfo[g].by.length})), next_offset: null};
+    }
+    if (action === "resolve-prefix") {
+      const pool = data.kind === "workstream" ? allStreams.map(s => [s.id, s.project_id]) : Object.entries(groupInfo).map(([g, i]) => [g, i.origin]);
+      const items = pool.filter(([x]) => hex(x).startsWith(data.prefix)).sort().slice(0, 2).map(([x, p]) => ({id: x, project_id: p}));
+      return {items};
+    }
     if (action === "details") {
-      const id = data.ids[0];
-      if (!/^[tg]\d$/.test(id)) throw new Error("not_found");
-      return {items: [{id, object_type: id[0] === "g" ? "group" : "task"}]};
+      const x = data.ids[0];
+      if (groupInfo[x]) return {items: [{id: x, object_type: "group", project_id: null, origin_project_id: groupInfo[x].origin,
+        progress: {by_project: Object.fromEntries(groupInfo[x].by.map(p => [p, {}]))}}]};
+      if (Object.values(tasks).flat().includes(x)) return {items: [{id: x, object_type: "task"}]};
+      throw new Error("unknown_task");
     }
     throw new Error("unexpected " + action);
   };
-  run('api = apiMock; renderDetail = () => {}; includedWorkstreams = async () => []; toast = (m) => noticeSink(m);');
+  run("api = apiMock; renderDetail = () => {}; includedWorkstreams = async () => []; toast = (m) => noticeSink(m);");
   context.noticeSink = m => notices.push(m);
+  const settle = async () => {
+    for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r));
+  };
   const fire = async (...types) => {
     for (const type of types) for (const fn of listeners[type] || []) fn();
     await settle();
   };
-  const settle = () => new Promise(resolve => setTimeout(resolve, 0)).then(() => new Promise(r => setImmediate(r)));
   return {
-    run, entries, notices, calls, settle,
+    run: async code => { const result = await run(code); await settle(); return result; },
+    entries, notices, calls,
     token: () => storedToken,
     reloads: () => reloaded,
-    hash: () => entries[index],
+    path: () => entries[index].path,
     count: () => entries.length,
-    at: () => ({stream: run("state.stream"), groups: run("state.groups"), selected: run("state.selected"), project: run("state.project")}),
-    // Browser traversal fires popstate and hashchange; the viewer must open it once.
-    back: () => { index--; return fire("popstate", "hashchange"); },
-    forward: () => { index++; return fire("popstate", "hashchange"); },
-    edit: hash => { entries.splice(index + 1); entries.push(hash); index++; return fire("popstate", "hashchange"); },
+    at: () => ({project: run("state.project"), stream: run("state.stream"), groups: run("state.groups"), selected: run("state.selected")}),
+    // Browser traversal fires popstate (and hashchange only when the fragment changes).
+    back: () => { index--; return fire("popstate"); },
+    forward: () => { index++; return fire("popstate"); },
+    edit: (p, hash = "") => { entries.splice(index + 1); entries.push({path: p, hash}); index++; return fire(hash ? "hashchange" : "popstate"); },
   };
 }
 
 async function main() {
-  // The launch link's token is stored and stripped before any request; the
-  // default location then replaces the address without a new history entry.
-  const v = viewer("#launch-token-123");
+  // The launch link's token is stored and stripped before any request; the default
+  // location then replaces the address without a new history entry.
+  const v = viewer({path: "/", hash: "#launch-token-123"});
   assert.equal(v.token(), "launch-token-123");
-  assert.equal(v.hash(), "");
+  assert.deepEqual(v.entries[0], {path: "/", hash: ""});
   await v.run("boot()");
-  assert.equal(v.hash(), "#/project/p1/workstream/w1/task/t1");
+  assert.equal(v.path(), `/w/a1a1a1a1/t/${short(T1)}`);
   assert.equal(v.count(), 1);
-  assert.equal(v.run("token"), "launch-token-123");
+  assert.equal(v.run && (await v.run("token")), "launch-token-123");
 
   // Deliberate navigation pushes one entry; the automatic first-row selection replaces it.
-  await v.run('changeScope("w2")');
-  assert.equal(v.hash(), "#/project/p1/workstream/w2/task/t3");
+  await v.run(`changeScope("${W2}")`);
+  assert.equal(v.path(), `/w/b2b2b2b2/t/${short(T3)}`);
   assert.equal(v.count(), 2);
-  await v.run('selectTask("t4", {open: true, entry: "push"})');
-  assert.equal(v.hash(), "#/project/p1/workstream/w2/task/t4");
-  assert.equal(v.count(), 3);
+  // A task whose short prefix is shared within the board is spelled in full.
+  await v.run(`selectTask("${T7}", {open: true, entry: "push"})`);
+  assert.equal(v.path(), `/w/b2b2b2b2/t/${hex(T7)}`);
+  await v.run(`selectTask("${T4}", {open: true, entry: "push"})`);
+  assert.equal(v.path(), `/w/b2b2b2b2/t/${short(T4)}`);
+  assert.equal(v.count(), 4);
   // Keyboard moves update the address in place.
   await v.run("moveSelection(-1)");
-  assert.equal(v.hash(), "#/project/p1/workstream/w2/task/t3");
-  assert.equal(v.count(), 3);
-  await v.run('changeScope(null)');
-  assert.equal(v.hash(), "#/project/p1/all/task/t1");
+  assert.equal(v.path(), `/w/b2b2b2b2/t/${short(T3)}`);
+  assert.equal(v.count(), 4);
+  // Project-wide views keep the project segment.
+  await v.run("changeScope(null)");
+  assert.equal(v.path(), `/p/11111111/t/${short(T1)}`);
+  // A group that lives in this project needs no project segment once its home is known.
   await v.run('chooseGroups("project")');
-  assert.equal(v.hash(), "#/project/p1/groups/group/g1");
+  assert.equal(v.path(), `/g/${short(G1)}`);
+  // A shared group shown in a project's list keeps that project; in Shared groups it does not.
+  await v.run(`selectTask("${G2}", {open: true, entry: "push"})`);
+  assert.equal(v.path(), `/p/11111111/g/${short(G2)}`);
   await v.run('chooseGroups("shared")');
-  assert.equal(v.hash(), "#/project/p1/shared-groups");
-  await v.run('chooseProject("p2")');
-  assert.equal(v.hash(), "#/project/p2/workstream/w3/task/t5");
-  assert.equal(v.count(), 7);
+  assert.equal(v.path(), `/g/${short(G2)}`);
+  await v.run(`chooseProject("${P2}")`);
+  assert.equal(v.path(), `/w/c3c3c3c3/t/${short(T5)}`);
+  const visited = v.count();
+  assert.equal(visited, 9);
 
   // Back/forward reopen each visited location without adding entries.
   await v.back();
-  assert.deepEqual(v.at(), {stream: null, groups: "shared", selected: null, project: "p1"});
+  assert.deepEqual(v.at(), {project: P2, stream: null, groups: "shared", selected: G2});
   await v.back();
-  assert.deepEqual(v.at(), {stream: null, groups: "project", selected: "g1", project: "p1"});
+  assert.deepEqual(v.at(), {project: P1, stream: null, groups: "project", selected: G2});
+  await v.back();
+  assert.deepEqual(v.at(), {project: P1, stream: null, groups: "project", selected: G1});
+  await v.back();
+  assert.deepEqual(v.at(), {project: P1, stream: null, groups: false, selected: T1});
   await v.back();
   await v.back();
-  assert.deepEqual(v.at(), {stream: "w2", groups: false, selected: "t3", project: "p1"});
-  assert.equal(v.hash(), "#/project/p1/workstream/w2/task/t3");
+  assert.deepEqual(v.at(), {project: P1, stream: W2, groups: false, selected: T7});
+  assert.equal(v.path(), `/w/b2b2b2b2/t/${hex(T7)}`);
   await v.forward();
-  assert.deepEqual(v.at(), {stream: null, groups: false, selected: "t1", project: "p1"});
-  assert.equal(v.count(), 7);
+  assert.deepEqual(v.at(), {project: P1, stream: W2, groups: false, selected: T3});
+  assert.equal(v.count(), visited);
   assert.deepEqual(v.notices, []);
 
-  // An edited address opens once, even though both popstate and hashchange fire.
-  const before = v.calls.filter(c => c === "workstreams").length;
-  await v.edit("#/project/p1/workstream/w1/task/t2");
-  assert.deepEqual(v.at(), {stream: "w1", groups: false, selected: "t2", project: "p1"});
-  assert.equal(v.calls.filter(c => c === "workstreams").length - before, 2); // openLocation + board reload
+  // Opening a task location reads the workstream prefix and that workstream's board only.
+  v.calls.length = 0;
+  await v.edit(`/w/a1a1a1a1/t/${short(T2)}`);
+  assert.deepEqual(v.at(), {project: P1, stream: W1, groups: false, selected: T2});
+  assert.deepEqual(v.calls.map(([a]) => a), ["resolve-prefix", "workstreams", "tasks", "workstreams", "details"]);
+  assert.ok(v.calls.every(([a, d]) => a !== "tasks" || d.workstream_id === W1));
 
-  // Stale or unknown locations fall back to the nearest valid view with a notice.
-  const stale = async (hash, expected, canonical, notice) => {
+  // A workstream whose short prefix another project's workstream shares is respelled in
+  // full once the server reports the ambiguity; it still resolves from that address.
+  await v.run(`chooseProject("${P1}")`);
+  await v.run(`changeScope("${W5}")`);
+  assert.equal(v.path(), `/w/${hex(W5)}/t/${short(T6)}`);
+  await v.edit(`/w/${hex(W2)}`);
+  assert.deepEqual(v.at(), {project: P1, stream: W2, groups: false, selected: T3});
+  // A full or shorter prefix that is unambiguous is rewritten to the short form.
+  assert.equal(v.path(), `/w/b2b2b2b2/t/${short(T3)}`);
+  await v.edit("/w/a1a1");
+  assert.equal(v.path(), `/w/a1a1a1a1/t/${short(T1)}`);
+  // An empty group implies the project it originates in.
+  await v.edit(`/g/${short(G3)}`);
+  assert.deepEqual(v.at(), {project: P2, stream: null, groups: "project", selected: G3});
+  assert.equal(v.path(), `/g/${short(G3)}`);
+  assert.deepEqual(v.notices, []);
+
+  // Stale, ambiguous or unknown locations fall back to the nearest valid view with a notice.
+  const stale = async (address, expected, canonical, notice) => {
     v.notices.length = 0;
-    await v.edit(hash);
-    assert.deepEqual(v.at(), expected, hash);
-    assert.equal(v.hash(), canonical, hash);
-    assert.equal(v.notices.length, 1, hash);
-    assert.match(v.notices[0], notice, hash);
+    await v.edit(address);
+    assert.deepEqual(v.at(), expected, address);
+    assert.equal(v.path(), canonical, address);
+    assert.equal(v.notices.length, 1, `${address}: ${v.notices}`);
+    assert.match(v.notices[0], notice, address);
   };
-  await stale("#/project/p1/workstream/gone/task/t2", {stream: null, groups: false, selected: "t2", project: "p1"},
-    "#/project/p1/all/task/t2", /workstream no longer exists\. Showing One · All tasks/);
-  await stale("#/project/p1/workstream/w2/task/t1", {stream: "w2", groups: false, selected: "t3", project: "p1"},
-    "#/project/p1/workstream/w2/task/t3", /not in B\. Showing the first task/);
-  await stale("#/project/gone/all/task/t5", {stream: "w1", groups: false, selected: "t1", project: "p1"},
-    "#/project/p1/workstream/w1/task/t1", /project no longer exists\. Showing One · A/);
-  await stale("#/project/p1/groups/group/zzz", {stream: null, groups: "project", selected: "g1", project: "p1"},
-    "#/project/p1/groups/group/g1", /group no longer exists/);
-  await stale("#/project/p1/all/task/t9", {stream: null, groups: false, selected: "t1", project: "p1"},
-    "#/project/p1/all/task/t1", /not in this project/);
-  await stale("#/elsewhere", {stream: "w1", groups: false, selected: "t1", project: "p1"},
-    "#/project/p1/workstream/w1/task/t1", /not a viewer location/);
-  await stale("#/project/p1/all/group/g1", {stream: "w1", groups: false, selected: "t1", project: "p1"},
-    "#/project/p1/workstream/w1/task/t1", /not a viewer location/);
-  // A linked group outside the list (opened from a task) survives as a location.
-  v.notices.length = 0;
-  await v.edit("#/project/p2/groups/group/g2");
-  assert.deepEqual(v.at(), {stream: null, groups: "project", selected: "g2", project: "p2"});
-  assert.equal(v.run("state.linkedGroup"), "g2");
-  assert.deepEqual(v.notices, []);
+  await v.run(`chooseProject("${P1}")`);
+  await stale(`/w/99999999/t/${short(T2)}`, {project: P1, stream: null, groups: false, selected: T2},
+    `/p/11111111/t/${short(T2)}`, /workstream no longer exists\. Showing One · All tasks/);
+  await stale("/w/dddddddd", {project: P1, stream: null, groups: false, selected: T1},
+    `/p/11111111/t/${short(T1)}`, /matches more than one workstream\. Showing One · All tasks/);
+  await stale(`/w/b2b2b2b2/t/${short(T1)}`, {project: P1, stream: W2, groups: false, selected: T3},
+    `/w/b2b2b2b2/t/${short(T3)}`, /not in B\. Showing the first task/);
+  await stale("/w/b2b2b2b2/t/77777777", {project: P1, stream: W2, groups: false, selected: T3},
+    `/w/b2b2b2b2/t/${short(T3)}`, /matches more than one task in B\. Showing the first task/);
+  await stale(`/p/99999999/t/${short(T5)}`, {project: P1, stream: W1, groups: false, selected: T1},
+    `/w/a1a1a1a1/t/${short(T1)}`, /project no longer exists\. Showing One · A/);
+  await stale("/p/11111111/g/99999999", {project: P1, stream: null, groups: "project", selected: G1},
+    `/g/${short(G1)}`, /group no longer exists\. Showing One task groups/);
+  await stale("/g/eeeeeeee", {project: P1, stream: null, groups: "project", selected: G1},
+    `/g/${short(G1)}`, /matches more than one task group/);
+  await stale("/sg/99999999", {project: P1, stream: null, groups: "shared", selected: G2},
+    `/g/${short(G2)}`, /group no longer exists\. Showing Shared task groups/);
+  await stale(`/p/11111111/t/${short(T5)}`, {project: P1, stream: null, groups: false, selected: T1},
+    `/p/11111111/t/${short(T1)}`, /not in this project/);
+  await stale("/elsewhere", {project: P1, stream: W1, groups: false, selected: T1},
+    `/w/a1a1a1a1/t/${short(T1)}`, /not a viewer location/);
+  await stale("/p/11111111/t", {project: P1, stream: W1, groups: false, selected: T1},
+    `/w/a1a1a1a1/t/${short(T1)}`, /not a viewer location/);
 
   // A launch link pasted into this tab reloads so startup adopts and strips its token.
-  await v.edit("#new-launch-token");
+  await v.edit(v.path(), "#new-launch-token");
   assert.equal(v.reloads(), 1);
-  assert.ok(v.entries.every(h => !h.includes("launch-token-123")));
+  assert.ok(v.entries.every(e => !e.path.includes("launch-token") && !e.path.includes("token")));
 
   // A bookmarked location in a tab holding the token opens directly, without a new entry.
-  const b = viewer("#/project/p2/workstream/w3/task/t5", "stored-token");
-  assert.equal(b.hash(), "#/project/p2/workstream/w3/task/t5");
+  const b = viewer({path: `/w/b2b2b2b2/t/${short(T4)}`, hash: ""}, "stored-token");
   await b.run("boot()");
-  assert.deepEqual(b.at(), {stream: "w3", groups: false, selected: "t5", project: "p2"});
+  assert.deepEqual(b.at(), {project: P1, stream: W2, groups: false, selected: T4});
+  assert.equal(b.path(), `/w/b2b2b2b2/t/${short(T4)}`);
   assert.equal(b.count(), 1);
-  assert.equal(b.run("token"), "stored-token");
+  assert.equal(await b.run("token"), "stored-token");
   assert.deepEqual(b.notices, []);
+  // A bookmarked shared group opens Shared groups; its origin project is expanded.
+  const s = viewer({path: `/g/${short(G2)}`, hash: ""}, "stored-token");
+  await s.run("boot()");
+  assert.deepEqual(s.at(), {project: P1, stream: null, groups: "shared", selected: G2});
+  assert.equal(s.path(), `/g/${short(G2)}`);
+  // Project-wide views reload as such.
+  const g = viewer({path: "/p/22222222/g", hash: ""}, "stored-token");
+  await g.run("boot()");
+  assert.deepEqual(g.at(), {project: P2, stream: null, groups: "project", selected: G2});
+  assert.equal(g.path(), `/p/22222222/g/${short(G2)}`);
+  // An old hash address is neither a token nor a location: it is dropped.
+  const o = viewer({path: "/", hash: "#/project/prj_x/all"}, "stored-token");
+  assert.equal(o.token(), "stored-token");
+  assert.deepEqual(o.entries[0], {path: "/", hash: ""});
   console.log("viewer route tests passed");
 }
 main().catch(error => {

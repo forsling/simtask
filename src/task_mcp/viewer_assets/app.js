@@ -2,12 +2,13 @@
 // Every piece of task text is inserted with textContent or DOM nodes, never parsed as HTML.
 const $ = (id) => document.getElementById(id);
 // The private launch link carries the token as a bare fragment (#<token>). Location
-// URLs are #/... routes and never contain it, so strip a launch token at once.
+// URLs are paths (/w/1c4684b6/t/a5dfba02) and never contain it, so drop any fragment
+// at once; one that is not a token (such as an old #/project/... address) is ignored.
 const launchHash = location.hash.slice(1);
-const launchToken = launchHash && !launchHash.startsWith("/") ? launchHash : "";
+const launchToken = /^[A-Za-z0-9_-]+$/.test(launchHash) ? launchHash : "";
 const token = launchToken || sessionStorage.getItem("task-token") || "";
 if (token) sessionStorage.setItem("task-token", token);
-history.replaceState(null, "", launchToken ? "/" : "/" + location.hash);
+history.replaceState(null, "", location.pathname || "/");
 
 const VIEWS = {
   signoff: { label: "Ready to sign off", short: "Sign off", tone: "go" },
@@ -342,113 +343,205 @@ function needsYou(stream) {
 
 /* ---------- location URLs ---------- */
 
-// #/project/<id>/(all | workstream/<id> | groups | shared-groups)[/(task|group)/<id>]
-// names the selected project, view and task or group. The token is never part of it.
-function routeHash() {
-  if (!state.project) return "";
-  const e = encodeURIComponent;
-  let hash = "#/project/" + e(state.project);
-  hash += state.groups === "shared" ? "/shared-groups" : state.groups ? "/groups" : state.stream ? "/workstream/" + e(state.stream) : "/all";
-  if (state.selected) hash += (state.groups ? "/group/" : "/task/") + e(state.selected);
-  return hash;
+// Short, token-free paths name the selected project, view and task or group:
+//   /p/<project>      All tasks         /p/<project>/t/<task>
+//   /p/<project>/g    Task groups       /p/<project>/g/<group>
+//   /w/<workstream>   a workstream      /w/<workstream>/t/<task>
+//   /g/<group>        a group in the view it implies (its project's groups, or shared)
+//   /sg               Shared groups     /sg/<group>
+// A workstream or group implies its project, so only project-wide views name one.
+// IDs appear as their first 8 hex characters, or in full when that prefix is ambiguous
+// where the address is resolved: tasks within the view's board, projects among all
+// projects, workstreams and groups across the database (through "resolve-prefix").
+const SHORT = 8;
+const hexOf = (id) => String(id).replace(/^[a-z]+_/, "");
+const longIds = new Set(); // IDs shown in full because their short prefix is ambiguous
+const checkedIds = new Set(); // workstream and group IDs whose short prefix was checked
+const groupHomes = new Map(); // group ID -> "shared", or the project whose groups it implies
+function shortId(id, pool = []) {
+  const hex = hexOf(id), short = hex.slice(0, SHORT);
+  return longIds.has(id) || pool.some((o) => o !== id && hexOf(o).startsWith(short)) ? hex : short;
 }
-// A parsed location, {} for the default location, or null for an unrecognized address.
-function parseRoute(hash) {
-  const path = hash.replace(/^#/, "").replace(/\/+$/, "");
-  if (!path) return {};
-  let parts;
-  try {
-    parts = path.replace(/^\//, "").split("/").map(decodeURIComponent);
-  } catch {
-    return null;
+function routePath() {
+  if (!state.project) return "";
+  const ids = (list) => list.map((x) => x.id);
+  const project = "/p/" + shortId(state.project, ids(state.projects));
+  if (state.groups) {
+    const group = state.selected;
+    if (!group) return state.groups === "shared" ? "/sg" : project + "/g";
+    const id = shortId(group, ids(state.rows));
+    const home = groupHomes.get(group);
+    if (home && home === (state.groups === "shared" ? "shared" : state.project)) return "/g/" + id;
+    return (state.groups === "shared" ? "/sg/" : project + "/g/") + id;
   }
-  if (parts[0] !== "project" || !parts[1]) return null;
-  const route = { project: parts[1] };
-  let rest = parts.slice(2);
-  if (rest[0] === "all" || rest[0] === "groups" || rest[0] === "shared-groups") {
-    route.view = rest[0];
-    rest = rest.slice(1);
-  } else if (rest[0] === "workstream" && rest[1]) {
-    route.view = "workstream";
-    route.stream = rest[1];
-    rest = rest.slice(2);
-  } else if (rest.length) return null;
-  const itemKind = route.view === "groups" || route.view === "shared-groups" ? "group" : "task";
-  if (rest.length === 2 && rest[0] === itemKind && rest[1] && route.view) route.item = rest[1];
-  else if (rest.length) return null;
-  return route;
+  const base = state.stream ? "/w/" + shortId(state.stream, ids(state.streams)) : project;
+  return state.selected ? base + "/t/" + shortId(state.selected, ids(state.rows)) : base;
+}
+// A parsed location ({view, project, stream, group, task} as hex prefixes), {} for the
+// default location, or null for an unrecognized address.
+function parseRoute(path) {
+  if (path === "/") return {};
+  const [a, b, c, d, ...rest] = path.split("/").slice(1);
+  const id = (s) => /^[0-9a-f]{1,32}$/.test(s || "");
+  if (rest.length) return null;
+  if (a === "p" && id(b)) {
+    if (c === undefined) return { view: "all", project: b };
+    if (c === "t" && id(d)) return { view: "all", project: b, task: d };
+    if (c === "g" && d === undefined) return { view: "groups", project: b };
+    if (c === "g" && id(d)) return { view: "groups", project: b, group: d };
+  } else if (a === "w" && id(b)) {
+    if (c === undefined) return { view: "workstream", stream: b };
+    if (c === "t" && id(d)) return { view: "workstream", stream: b, task: d };
+  } else if (a === "g" && id(b) && c === undefined) return { view: "group", group: b };
+  else if (a === "sg" && c === undefined) {
+    if (b === undefined) return { view: "shared-groups" };
+    if (id(b)) return { view: "shared-groups", group: b };
+  }
+  return null;
+}
+// Resolve a workstream or group prefix: the match, or {ambiguous} when there is not exactly one.
+async function resolvePrefix(kind, prefix) {
+  const { items } = await api("resolve-prefix", { kind, prefix });
+  if (items.length !== 1) return { ambiguous: items.length > 1 };
+  const found = items[0];
+  // A short prefix that matched once proves the 8-character one unique; keep a longer
+  // spelling until checkPrefix confirms that the short one would do.
+  if (prefix.length <= SHORT) {
+    checkedIds.add(found.id);
+    longIds.delete(found.id);
+  } else if (!checkedIds.has(found.id)) longIds.add(found.id);
+  return found;
+}
+// Spell a written workstream or group ID in full only if its short prefix is ambiguous
+// across the database. Checked once per ID, after the address is written; the
+// current address is respelled in place if it still names that ID.
+function checkPrefix(kind, id) {
+  if (checkedIds.has(id) || !/^[a-z]+_[0-9a-f]{32}$/.test(id)) return;
+  checkedIds.add(id);
+  const hex = hexOf(id), short = hex.slice(0, SHORT);
+  api("resolve-prefix", { kind, prefix: short }).then(({ items }) => {
+    const ambiguous = items.length > 1;
+    if (ambiguous === longIds.has(id)) return;
+    if (ambiguous) longIds.add(id);
+    else longIds.delete(id);
+    const parts = (location.pathname || "/").split("/");
+    // The workstream is /w/<id>...; the group ends /g/<id>, /sg/<id> or /p/<project>/g/<id>.
+    const at = kind === "workstream" ? (parts[1] === "w" ? 2 : 0) : ["g", "sg"].includes(parts[1]) || parts[3] === "g" ? parts.length - 1 : 0;
+    if (!at || parts[at] !== (ambiguous ? short : hex)) return;
+    parts[at] = ambiguous ? hex : short;
+    shownPath = parts.join("/");
+    history.replaceState(null, "", shownPath);
+  }, () => checkedIds.delete(id));
+}
+// Learn which view a group's /g/ address implies, from its details.
+function learnGroupHome(t) {
+  const projects = Object.keys(t.progress?.by_project || {});
+  const home = projects.length > 1 ? "shared" : projects[0] || t.origin_project_id;
+  if (home) groupHomes.set(t.id, home);
+  return home;
 }
 // The location this tab last wrote or opened; back/forward to anything else opens it.
-let shownHash = null;
+let shownPath = null;
 // Record the current location: "push" for a deliberate navigation, "replace" for
 // automatic selection, fallbacks and loads.
 function syncRoute(mode = "replace") {
-  const hash = routeHash();
-  if (!hash) return;
-  if (hash !== location.hash) history[mode === "push" ? "pushState" : "replaceState"](null, "", hash);
-  shownHash = hash;
+  const path = routePath();
+  if (!path) return;
+  if (path !== (location.pathname || "/")) history[mode === "push" ? "pushState" : "replaceState"](null, "", path);
+  shownPath = path;
+  if (state.groups && state.selected) checkPrefix("group", state.selected);
+  else if (!state.groups && state.stream) checkPrefix("workstream", state.stream);
 }
 // Open a location URL (on load, back/forward or an edited address). Anything that no
-// longer exists falls back to the nearest valid view with a short notice.
-async function openLocation(hash, { initial = false } = {}) {
+// longer exists, or a prefix matching several items, falls back to the nearest valid
+// view with a short notice.
+async function openLocation(path, { initial = false } = {}) {
   const generation = ++state.generation;
-  const route = parseRoute(hash);
+  const stale = () => generation !== state.generation;
+  const route = parseRoute(path);
   const notices = [];
   if (!route) notices.push("That address is not a viewer location.");
-  let project = state.projects.find((p) => p.id === route?.project);
-  if (route?.project && !project) {
-    state.projects = await pages("projects");
-    if (generation !== state.generation) return;
-    project = state.projects.find((p) => p.id === route.project);
-  }
-  if (route?.project && !project) notices.push("That project no longer exists.");
-  const located = !!project;
-  project ||= state.projects[0];
-  if (!project) return void notices.forEach((n) => toast(n));
-  const streams = await pages("workstreams", { project: project.id });
-  if (generation !== state.generation) return;
-  const view = located ? route.view : route?.view === "shared-groups" ? "shared-groups" : null;
-  let item = located || view === "shared-groups" ? route.item || null : null, stream = null, groups = false;
-  if (view === "workstream") {
-    if (streams.some((s) => s.id === route.stream)) stream = route.stream;
-    else notices.push("That workstream no longer exists.");
-  } else if (view === "groups") groups = "project";
-  else if (view === "shared-groups") groups = "shared";
-  else if (!view) stream = streams[0]?.id || null;
-  if (item && groups) {
-    // A linked group may be outside the list (as when opened from a task), so check it exists.
-    const found = await api("details", { ids: [item] }).then((r) => r.items[0], () => null);
-    if (generation !== state.generation) return;
-    if (found?.object_type !== "group") {
-      notices.push("That task group no longer exists.");
-      item = null;
+  let view = route?.view || null, projectId = null, stream = null, group = null, task = route?.task || null;
+  if (route?.project) {
+    const match = (list) => list.filter((p) => hexOf(p.id).startsWith(route.project));
+    let found = match(state.projects);
+    if (!found.length) {
+      state.projects = await pages("projects");
+      if (stale()) return;
+      found = match(state.projects);
+    }
+    if (found.length === 1) projectId = found[0].id;
+    else {
+      notices.push(found.length ? "That address matches more than one project." : "That project no longer exists.");
+      view = task = null;
     }
   }
+  if (route?.stream) {
+    const found = await resolvePrefix("workstream", route.stream);
+    if (stale()) return;
+    if (found.id) [stream, projectId] = [found.id, found.project_id];
+    else {
+      notices.push(found.ambiguous ? "That address matches more than one workstream." : "That workstream no longer exists.");
+      view = "all";
+    }
+  }
+  if (route?.group && view) {
+    const found = await resolvePrefix("group", route.group);
+    if (stale()) return;
+    if (found.id) group = found.id;
+    else notices.push(found.ambiguous ? "That address matches more than one task group." : "That task group no longer exists.");
+  }
+  let origin = null;
+  if (view === "group") {
+    view = "groups";
+    if (group) {
+      // A group implies its view: shared across projects, else its project's groups.
+      const t = (await api("details", { ids: [group] })).items[0];
+      if (stale()) return;
+      const home = learnGroupHome(t);
+      origin = t.origin_project_id;
+      if (home === "shared") view = "shared-groups";
+      else projectId = home;
+    }
+  }
+  if (projectId && !state.projects.some((p) => p.id === projectId)) {
+    state.projects = await pages("projects");
+    if (stale()) return;
+  }
+  // Views that name no project keep the open one (or the group's), else the first.
+  const project = [projectId, state.project, origin].map((id) => state.projects.find((p) => p.id === id)).find(Boolean) || state.projects[0];
+  if (!project) return void notices.forEach((n) => toast(n));
+  const streams = await pages("workstreams", { project: project.id });
+  if (stale()) return;
+  const groups = view === "groups" ? "project" : view === "shared-groups" ? "shared" : false;
+  if (!view) stream = streams[0]?.id || null;
+  if (!groups) group = null;
   closeDrawer();
   // On a narrow screen a reloaded task reopens its detail; back/forward shows the list.
-  if (initial && item) $("shell").classList.add("detail-open");
+  if (initial && (task || group)) $("shell").classList.add("detail-open");
   state.project = project.id;
   state.streams = streams;
   state.stream = stream;
   state.groups = groups;
-  state.linkedGroup = groups ? item : null;
-  state.selected = item;
+  state.linkedGroup = group;
+  state.selected = group;
   state.task = null;
-  const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : stream ? `${project.name} · ${streamName(stream)}` : `${project.name} · All tasks`;
+  const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : state.stream ? `${project.name} · ${streamName(state.stream)}` : `${project.name} · All tasks`;
   notices.forEach((n) => toast(`${n} Showing ${name}.`));
-  syncRoute();
+  // A requested task keeps the address until the loaded board resolves its prefix.
+  if (!task) syncRoute();
   renderNav();
-  await reload({ requested: groups ? null : item });
+  await reload({ requested: groups ? null : task });
 }
 function onLocationChange() {
-  if (location.hash === shownHash) return;
-  const hash = location.hash.slice(1);
-  shownHash = location.hash;
   // A launch link pasted into this tab: reload so startup adopts and strips its token.
-  if (hash && !hash.startsWith("/")) return location.reload();
+  if (location.hash.length > 1) return location.reload();
+  const path = location.pathname || "/";
+  if (path === shownPath) return;
+  shownPath = path;
   if (!state.projects.length || $("shell").classList.contains("stopped")) return;
   closeMenu();
-  openLocation(location.hash).catch((e) => toast(e.message, true));
+  openLocation(path).catch((e) => toast(e.message, true));
 }
 window.addEventListener("popstate", onLocationChange);
 window.addEventListener("hashchange", onLocationChange);
@@ -472,8 +565,8 @@ async function boot() {
       $("detail").replaceChildren();
       return;
     }
-    shownHash = location.hash;
-    await openLocation(location.hash, { initial: true });
+    shownPath = location.pathname || "/";
+    await openLocation(shownPath, { initial: true });
   } catch (e) {
     toast(e.message, true);
   }
@@ -602,16 +695,21 @@ async function reload({ quiet = false, requested = null } = {}) {
     renderNav();
     renderList();
     if (detailGeneration !== state.generation) return;
+    if (requested) {
+      // A location's task prefix resolves within this board; a task that has left the
+      // view (or a prefix matching several) falls back to the first task.
+      const matches = rows.filter((r) => hexOf(r.id).startsWith(requested));
+      if (matches.length === 1) state.selected = matches[0].id;
+      else {
+        const where = stream ? streamName(stream) : "this project";
+        toast((matches.length ? `That address matches more than one task in ${where}.` : `That task is not in ${where}.`) + (rows.length ? " Showing the first task." : ""));
+      }
+    }
     if (state.selected && (rows.some((r) => r.id === state.selected) || (groups && state.linkedGroup === state.selected))) await selectTask(state.selected, { quiet });
     else if (rows.length) {
-      // A location whose task has left this view falls back to the first task.
-      if (requested && requested === state.selected)
-        toast(`That task is not in ${stream ? streamName(stream) : "this project"}. Showing the first task.`);
       const first = orderedRows()[0] || rows[0];
       await selectTask(first.id);
     } else {
-      if (requested && requested === state.selected)
-        toast(`That task is not in ${stream ? streamName(stream) : "this project"}.`);
       state.selected = null;
       syncRoute();
       $("detail").classList.remove("loading");
@@ -899,6 +997,11 @@ async function selectTask(id, { open = false, quiet = false, entry = "replace" }
     const t = (await api("details", { ids: [id] })).items[0];
     if (state.selected !== id || generation !== state.generation) return;
     if (t.object_type === "group") {
+      // Now that the group's projects are known, its address may shorten to /g/<group>.
+      if (state.groups && !groupHomes.has(id)) {
+        learnGroupHome(t);
+        syncRoute();
+      }
       t.included_workstreams = await includedWorkstreams(t.id);
       if (state.selected !== id || generation !== state.generation) return;
     }
@@ -1207,6 +1310,7 @@ async function openGroup(id) {
   const generation = ++state.generation;
   const t = (await api("details", { ids: [id] })).items[0];
   if (generation !== state.generation) return;
+  learnGroupHome(t);
   const projects = Object.keys(t.progress.by_project);
   if (projects.length === 1 && projects[0] !== state.project) {
     const streams = await pages("workstreams", { project: projects[0] });
