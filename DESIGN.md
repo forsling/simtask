@@ -242,7 +242,8 @@ selects a reviewed attempt. Rejection chooses rework on the current specificatio
 specification question. Workstream membership stays unchanged. The service cannot authenticate the reviewer or the user's verdict;
 workflow clients must obtain and accurately record those decisions.
 "Sign off" requests asked/built/verified presentation and then a verdict;
-explicit approval needs no walkthrough. The walkthrough answers three questions
+explicit approval needs no walkthrough, though a still-open prerequisite is shown
+and the user asked whether it affects the verdict. The walkthrough answers three questions
 independently, in order: "Worth doing?", "Right approach?" and "Built well?",
 addressing every concern. Only the user approves. A failed "Built well?" maps to
 rework, "Right approach?" to revise, and "Worth doing?" (or obsolete work) to
@@ -416,7 +417,12 @@ change. Signoff records only the actual verdict and reasons with provenance;
 there are no separate purpose/technical judgments. Revise uses the reasons as
 the open question without fabricating a specification revision. Queue membership,
 context and factual proof survive; revival from dropped needs actual authority.
-Current-spec reviewed proof and clear completion gates govern approval.
+Current-spec reviewed proof and answered questions govern approval. An
+unsatisfied prerequisite does not refuse it: a reviewed result stays awaiting
+sign-off and the user, as the authority, judges whether the open blocker affects
+the verdict. The approval records which prerequisites were still open
+(`open_prerequisites`) in its decision and response, so history shows them;
+dependents of the approved task follow the ordinary prerequisite rules.
 Historical signoff records, including old defer and judgment fields, stay intact.
 
 A task's latest rejection is the newest successful reviewer rework or signoff

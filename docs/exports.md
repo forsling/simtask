@@ -44,7 +44,8 @@ does not depend on a client's cached tool schema.
   Proposed gates are explicitly nonblocking until accepted.
 - Latest rejection shows the actual review/signoff reasons with its originating
   attempt, workstream, specification and timestamp. Signoff history records actual
-  verdicts/reasons and preserves historical defer/judgment fields.
+  verdicts/reasons, any prerequisites still open when approved, and preserves
+  historical defer/judgment fields.
 - Implementation history includes results, evidence, review notes and optional
   nonblocking worth-doing/approach concerns (stored kinds value/design) labelled
   with source and author. Attempts for superseded specifications or other

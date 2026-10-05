@@ -4345,10 +4345,20 @@ class Store:
             ):
                 raise TaskError("revision_conflict: re-read the selected attempt")
             after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
-            unresolved_id = None
+            unresolved_id = open_prerequisites = None
             if decision == "approve":
-                if before["unresolved_items"] or self._unsatisfied_prerequisite(db, before["id"]):
-                    raise TaskError("task_not_ready_for_signoff")
+                if before["unresolved_items"]:
+                    raise TaskError(
+                        "task_not_ready_for_signoff: answer the open questions first, "
+                        "or choose rework, revise or drop"
+                    )
+                # The user judges whether an unsatisfied prerequisite affects the verdict;
+                # the decision records which ones were still open.
+                open_prerequisites = [
+                    {k: ref[k] for k in ("id", "title", "milestone", "state")}
+                    for ref in self._prerequisite_references(db, before["id"])
+                    if ref["blocking"]
+                ]
                 after.update(status="done", selected_attempt_id=attempt_id)
                 if unreviewed:
                     # The user's explicit approval is the review of record for this result.
@@ -4387,9 +4397,11 @@ class Store:
                 "unresolved_id": unresolved_id,
                 "independent_review": row["state"] == "passed",
             }
+            if open_prerequisites is not None:
+                recorded["open_prerequisites"] = open_prerequisites
             self._save_task(db, after)
             scope.update(before=before, after={**after, "signoff_decision": recorded})
-            return self._task_ack(db, after) | {
+            ack = self._task_ack(db, after) | {
                 "attempt_id": attempt_id,
                 "attempt_revision": recorded["resulting_attempt_revision"],
                 "attempt_state": "rework"
@@ -4402,6 +4414,9 @@ class Store:
                 "decision": decision,
                 "unresolved_id": unresolved_id,
             }
+            if open_prerequisites is not None:
+                ack["open_prerequisites"] = open_prerequisites
+            return ack
 
         return self._run("task.signoff", request, operation)
 

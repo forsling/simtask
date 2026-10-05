@@ -38,7 +38,9 @@ verdict the user gave, never one they did not.
    the matching verdict. Then ask for the user's verdict.
 
 7. Record it with `signoff_task`:
-   - **approve:** all three hold.
+   - **approve:** all three hold. Even after an explicit approval, show any
+     still-open prerequisite and ask whether it affects the verdict before
+     recording. Open questions must be answered first.
    - **rework:** "Built well?" failed; the work goes back to the implementer.
    - **revise:** "Right approach?" failed; the reasons become an open question.
    - **drop:** "Worth doing?" failed, or the work is obsolete or superseded. If
@@ -46,5 +48,4 @@ verdict the user gave, never one they did not.
      same step (`create_task`).
 
 8. If the user says "reject" with reasons, propose the matching verdict and
-   confirm it before recording. The latest rejection reasons travel with the
-   task to whoever picks it up next.
+   confirm it before recording.

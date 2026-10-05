@@ -171,6 +171,15 @@ def render_markdown(project, workstream, tasks, groups, scoped_count, include_cl
                     decision.get("reasons", decision.get("user_note")) or "",
                     level=5,
                 )
+                for dependency in decision.get("open_prerequisites") or ():
+                    lines.extend(
+                        [
+                            f"- Approved while prerequisite open: "
+                            f"{_inline(dependency['title'])} (`{dependency['id']}`; "
+                            f"{_inline(dependency['state'])}; {dependency['milestone']} required)",
+                            "",
+                        ]
+                    )
                 for key in ("purpose_judgment", "purpose_source", "result_judgment"):
                     if key in decision:
                         lines.extend([f"- Historical {key}: {_inline(decision[key])}", ""])

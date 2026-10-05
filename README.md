@@ -546,7 +546,9 @@ in that order, each independently, never using an earlier judgment as a
 premise. Recommend approval only when all three hold. Generic rejection with
 reasons needs a confirmed mapping: "Built well?" failures are rework, a
 different approach is revise, and work not worth doing (or obsolete) is drop.
-Only the user approves. One `signoff_task` decision selects the exact reviewed attempt.
+Only the user approves. Before recording an approval, show any still-open
+prerequisite and ask whether it affects the verdict.
+One `signoff_task` decision selects the exact reviewed attempt.
 `approve` completes it; `rework` requests repair and fresh review; `revise` returns
 to design with the reasons as an open question; `drop` closes without approval.
 When dropped delivered code must be removed, add a removal task to the current
@@ -777,7 +779,13 @@ attempt revisions. Reasons are required for rework/revise, optional for
 approve/drop. Current-spec passed/human-reviewed proof is required, except that
 an explicit user approve may accept a current-spec result still awaiting
 independent review when its reasons say so (the decision records
-`independent_review=false`). Approve also needs clear unresolved and prerequisite gates. Rework returns the attempt to
+`independent_review=false`). Approve refuses while an unresolved question remains
+(`task_not_ready_for_signoff`), but not for an unsatisfied prerequisite: a reviewed
+result stays awaiting sign-off, and the user judges whether the open blocker affects
+the verdict. The approval's decision and response list the prerequisites still open
+(`open_prerequisites`: ID, title, milestone, state; empty when none), and exports
+show them in sign-off history. Dependents of the approved task follow the ordinary
+prerequisite rules. Rework returns the attempt to
 implementation and requires fresh review. Revise copies the reasons into an open
 question without inventing a specification revision. Drop closes without approval;
 creating a removal task when delivered code must go is a workflow decision.
