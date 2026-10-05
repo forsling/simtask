@@ -4,8 +4,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shlex
 import sqlite3
+import unicodedata
 from collections.abc import Callable
 from contextlib import closing
 from contextvars import ContextVar
@@ -16,7 +18,7 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 10
+DATABASE_SCHEMA_REVISION = 11
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
 # Concerns have explicit provenance in their own column, never in arbitrary proof text.
 CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
@@ -145,6 +147,9 @@ SCHEMA = (
         action TEXT NOT NULL CHECK(action IN ('implement','review')),
         picked_at TEXT NOT NULL,
         PRIMARY KEY (task_id, workstream_id))""",
+    """CREATE TABLE IF NOT EXISTS task_identities (
+        internal_uuid TEXT PRIMARY KEY NOT NULL,
+        public_id TEXT NOT NULL UNIQUE REFERENCES tasks(id))""",
 )
 # Tables added after schema 10 without a revision bump, so older servers keep opening
 # the database. An existing database missing one is backed up before it is created.
@@ -290,6 +295,12 @@ class Store:
             Store._migrate_membership(db, source_version)
         if source_version < 10:
             Store._sync_orders(db, advance=False)
+        # Public IDs and every existing relationship/audit byte stay unchanged. UUIDs
+        # live in a private registry, never in task rows decoded for public payloads.
+        for row in db.execute(
+            "SELECT id FROM tasks WHERE id NOT IN (SELECT public_id FROM task_identities)"
+        ).fetchall():
+            db.execute("INSERT INTO task_identities VALUES (?,?)", (uuid4().hex, row["id"]))
         for statement in SCHEMA:
             if statement.startswith("CREATE TRIGGER"):
                 db.execute(statement)
@@ -3098,9 +3109,9 @@ class Store:
 
         return self._run("groups.listed", request, operation)
 
-    def resolve_prefix(self, kind, prefix):
-        """Match a short viewer-URL ID: at most two workstreams or groups whose hex starts so."""
-        request = dict(kind=kind, prefix=prefix)
+    def resolve_prefix(self, kind, prefix, match="prefix"):
+        """Resolve a legacy viewer prefix or an explicitly marked exact public group ID."""
+        request = dict(kind=kind, prefix=prefix, match=match)
 
         def operation(db, scope):
             sources = {
@@ -3109,6 +3120,20 @@ class Store:
             }
             if not isinstance(kind, str) or kind not in sources:
                 raise TaskError("invalid_kind: use workstream or group")
+            if match not in ("prefix", "public_id"):
+                raise TaskError("invalid_match: use prefix or public_id")
+            if match == "public_id":
+                if (
+                    kind != "group"
+                    or not isinstance(prefix, str)
+                    or len(prefix) > 96
+                    or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", prefix)
+                ):
+                    raise TaskError("invalid_public_id: use a complete public group ID")
+                row = db.execute(
+                    "SELECT id,project_id FROM tasks WHERE id=? AND object_type='group'", (prefix,)
+                ).fetchone()
+                return {"items": [dict(row)] if row is not None else []}
             if (
                 not isinstance(prefix, str)
                 or not 1 <= len(prefix) <= 32
@@ -3127,6 +3152,42 @@ class Store:
 
         return self._run("prefixes.read", request, operation)
 
+    @staticmethod
+    def _public_task_id(db, title, public_id=None):
+        """Choose once under the writer lock; explicit names never silently change."""
+        if public_id is not None:
+            if (
+                not isinstance(public_id, str)
+                or len(public_id) > 96
+                or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", public_id)
+            ):
+                raise TaskError(
+                    "invalid_public_id: use up to 96 lowercase letters, digits and single "
+                    "hyphens, beginning with a letter (for example readable-task-ids)"
+                )
+            if db.execute("SELECT 1 FROM tasks WHERE id=?", (public_id,)).fetchone():
+                raise TaskError(
+                    f"public_id_conflict: {public_id} is already reserved; choose a different "
+                    "descriptive public_id and retry (closed task IDs cannot be reused)"
+                )
+            return public_id
+        # Compatibility callers and browser ideas have no ID field. Derive a readable
+        # name, with a deterministic numeric suffix for duplicate titles.
+        ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+        base = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
+        if not base or not base[0].isalpha():
+            base = "task-" + base if base else "task"
+        base = base[:88].rstrip("-")
+        candidate, suffix = base, 2
+        while db.execute("SELECT 1 FROM tasks WHERE id=?", (candidate,)).fetchone():
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
+
+    @staticmethod
+    def _register_task_identity(db, public_id):
+        db.execute("INSERT INTO task_identities VALUES (?,?)", (uuid4().hex, public_id))
+
     def create_group(
         self,
         workstream_id,
@@ -3137,8 +3198,10 @@ class Store:
         project=None,
         source="unknown",
         user_request="",
+        public_id=None,
     ):
         request = dict(
+            public_id=public_id,
             workstream_id=workstream_id,
             title=title,
             body=body,
@@ -3170,7 +3233,7 @@ class Store:
                 raise TaskError("invalid_specification")
             now = timestamp()
             self._validate_summary(summary)
-            group_id = _id("tsk_")
+            group_id = self._public_task_id(db, title, public_id)
             db.execute(
                 """INSERT INTO tasks
                 (id,project_id,title,body,acceptance_criteria,status,object_type,
@@ -3179,6 +3242,7 @@ class Store:
                 VALUES (?,NULL,?,?,?,'open','group',1,NULL,'','[]',NULL,0,NULL,1,?,?)""",
                 (group_id, title.strip(), body, acceptance_criteria, now, now),
             )
+            self._register_task_identity(db, group_id)
             db.execute(
                 "UPDATE tasks SET summary=?,summary_spec_revision=?,source=?,user_request=? "
                 "WHERE id=?",
@@ -3248,6 +3312,7 @@ class Store:
         parent_group_id=None,
         source="agent",
         user_request="",
+        public_id=None,
     ):
         if not isinstance(title, str) or not title.strip() or not isinstance(body, str):
             raise TaskError("invalid_specification: title and description required")
@@ -3263,7 +3328,7 @@ class Store:
             "WHERE project_id=? AND object_type='task'",
             (project_id,),
         ).fetchone()[0]
-        task_id = _id("tsk_")
+        task_id = Store._public_task_id(db, title, public_id)
         db.execute(
             """INSERT INTO tasks
             (id,project_id,title,body,acceptance_criteria,status,object_type,spec_revision,
@@ -3293,6 +3358,7 @@ class Store:
                 "unknown",
             ),
         )
+        Store._register_task_identity(db, task_id)
         return task_id
 
     @staticmethod
@@ -3339,6 +3405,7 @@ class Store:
         group_expected_revision=None,
         summary=None,
         kind="task",
+        public_id=None,
     ):
         if kind == "group":
             if group_id is not None or group_expected_revision is not None:
@@ -3352,10 +3419,12 @@ class Store:
                 project=project,
                 source=source,
                 user_request=user_request,
+                public_id=public_id,
             )
         if kind != "task":
             raise TaskError("invalid_kind: use task or group")
         request = dict(
+            public_id=public_id,
             summary=summary,
             project=project,
             title=title,
@@ -3389,6 +3458,7 @@ class Store:
                 group_id,
                 source,
                 user_request,
+                public_id,
             )
             self._validate_summary(summary)
             db.execute(
@@ -3849,6 +3919,7 @@ class Store:
                     member.get("body", ""),
                     member.get("acceptance_criteria", ""),
                     task_id,
+                    public_id=member.get("public_id"),
                 )
                 self._copy_prerequisites(db, child_id, task_id)
                 children.append(child_id)

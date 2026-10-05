@@ -345,6 +345,16 @@ def test_narrow_api_and_safe_assets(viewer):
 
 
 LOCATION_PATHS = [
+    "/w/1c4684b6/t/id/e1e1e1e1",
+    "/p/1c4684b6/t/id/e1e1e1e1",
+    "/g/id/e1e1e1e1",
+    "/p/1c4684b6/g/id/e1e1e1e1",
+    "/sg/id/e1e1e1e1",
+    "/w/1c4684b6/t/id/readable-task-ids",
+    "/p/1c4684b6/t/id/readable-task-ids",
+    "/g/id/readable-task-group",
+    "/p/1c4684b6/g/id/readable-task-group",
+    "/sg/id/readable-task-group",
     "/p/1c4684b6",
     "/p/1c4684b6/t/a5dfba02",
     "/p/1c4684b6/g",
@@ -392,6 +402,13 @@ def test_location_paths_serve_the_app_page_with_unchanged_checks(viewer, path):
         "/w/" + "a" * 33,
         "/w/1c4684b6?view=1",
         "/w/1c4684b6/t",
+        "/w/1c4684b6/t/id",
+        "/w/1c4684b6/t/id/double--dash",
+        "/w/1c4684b6/t/id/" + "x" * 97,
+        "/w/1c4684b6/t/readable-task-ids",
+        "/g/readable-task-group",
+        "/g/id/",
+        "/g/id/tsk_" + "a" * 32,
         "/w/1c4684b6/g/a5dfba02",
         "/p/1c4684b6/x",
         "/p/1c4684b6/t/a5dfba02/more",
@@ -431,6 +448,36 @@ def test_api_routes_keep_their_status_beside_location_paths(viewer):
     )
 
 
+def test_group_exact_public_id_and_legacy_prefix_are_distinct(viewer, monkeypatch):
+    server, store, setup = viewer
+    ws = setup["workstream"]["id"]
+    public_id = "e1e1e1e1"
+    legacy_id = "tsk_" + public_id + "0" * 24
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Store,
+            "_public_task_id",
+            staticmethod(lambda db, title, public_id=None: legacy_id),
+        )
+        store.create_group(ws, "Existing group")
+    store.create_group(ws, "New group", public_id=public_id)
+    for match, expected in (("prefix", legacy_id), ("public_id", public_id)):
+        status, result = request(
+            server, "/api/resolve-prefix", {"kind": "group", "prefix": public_id, "match": match}
+        )
+        assert status == 200
+        assert [item["id"] for item in result["items"]] == [expected]
+    for invalid in ("unknown", ["public_id"]):
+        assert (
+            request(
+                server,
+                "/api/resolve-prefix",
+                {"kind": "group", "prefix": public_id, "match": invalid},
+            )[0]
+            == 400
+        )
+
+
 def test_resolve_matches_workstream_and_group_prefixes_and_reports_ambiguity(tmp_path, monkeypatch):
     # Controlled IDs: two workstreams share a short prefix across projects.
     planned = {
@@ -442,6 +489,12 @@ def test_resolve_matches_workstream_and_group_prefixes_and_reports_ambiguity(tmp
         store_module,
         "_id",
         lambda prefix: prefix + next(planned[prefix]) if prefix in planned else original(prefix),
+    )
+    # Simulate unchanged legacy IDs for the prefix compatibility checks.
+    monkeypatch.setattr(
+        Store,
+        "_public_task_id",
+        staticmethod(lambda db, title, public_id=None: store_module._id("tsk_")),
     )
     store = Store(tmp_path / "tasks.sqlite3", "test-browser")
     one = store.init_project(str(tmp_path / "one"), branch="main", confirmed=True)
@@ -971,3 +1024,10 @@ def test_shipped_idea_form_creates_one_gated_inbox_task_over_http(viewer):
     ]
     assert len(writes) == 1
     assert store.get_next_action(context["workstream"]["id"])["task"] is None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_frontend_public_ids_cards_headers_copy_and_search():
+    script = Path(__file__).with_name("viewer_ids.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr

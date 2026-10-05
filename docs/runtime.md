@@ -14,11 +14,11 @@ refresh the client's catalog, and retains its usual setup and audit behavior.
 | --- | --- |
 | `package_version` | Installed `task-mcp` distribution metadata, also used in MCP server initialization. Uninstalled source usage reports metadata unavailable. |
 | `source_identifier` | `sha256:` fingerprint of package Python sources, bundled reference skills and viewer assets, captured once at runtime startup. Relative paths and file bytes are hashed; Git metadata and bytecode are excluded. Works in editable checkouts and installed wheels, including uncommitted source edits. |
-| `protocol_schema_revision` | Task MCP application tool/result contract revision (`15` in this interface), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Protocol 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Protocol 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. Protocol 15 trims the catalog from 42 to 26 tools: setup actions, the checkout/branch match check and runtime identity live in `init`; group creation, membership and listing use `create_task`, `update_task`, `list_tasks` and the workstream membership tools; observer gate proposals are retired; export is CLI-only; and an explicit user approve may accept a result awaiting independent review. It then adds `set_note` and ready `init` notes (27 tools), and `archive_workstream` with `include_archived` discovery filters and init state `archived` (28 tools). |
+| `protocol_schema_revision` | Task MCP application tool/result contract revision (`16` in this interface), independent of package version, task revisions, export formats and the negotiated MCP wire protocol. Bump for a contract change. Protocol 8/schema 5 add review/signoff prerequisite milestones with review defaults for existing links/proposals. Protocol 9 adds audited prerequisite removal. Rejected candidate 10/schema 6 introduced exclusive queues; 13/schema 9 restore nonexclusive live scopes. Protocol 11/schema 7 simplify signoff to four verdicts/reasons and project latest rejection with an indexed audit lookup; its catalog has 42 tools. Protocol 12/schema 8 add optional value/design concern inputs and compact current concern references, stored in a private attempt column without rewriting proof or inferring historical metadata. Protocol 15 trims the catalog from 42 to 26 tools: setup actions, the checkout/branch match check and runtime identity live in `init`; group creation, membership and listing use `create_task`, `update_task`, `list_tasks` and the workstream membership tools; observer gate proposals are retired; export is CLI-only; and an explicit user approve may accept a result awaiting independent review. It then adds `set_note` and ready `init` notes (27 tools), and `archive_workstream` with `include_archived` discovery filters and init state `archived` (28 tools). Protocol 16 combines these changes with descriptive public task/group IDs and schema11 private UUID identity storage. |
 | `process_started_at` | UTC server runtime startup timestamp, captured when its identity module is first imported near process launch, rather than per request. |
 | `process_id` | OS PID of the serving process. Compare it with the startup timestamp because PIDs can be reused. |
 | `python_executable`, `package_path` | Interpreter and imported package location, useful for finding the wrong virtual environment or checkout. |
-| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`10` after deployed server startup). The diagnostic reads it through a read-only connection. |
+| `database_schema_revision` | Current persisted SQLite `PRAGMA user_version` of the configured database (`11` after server startup). The diagnostic reads it through a read-only connection. |
 
 The source identifier is a startup snapshot, not a fresh hash of files at each
 call and not a Git commit ID. Editing an editable install while the process is
@@ -125,3 +125,12 @@ with `membership_migration_conflict`, leaving the database unchanged and its
 verified backup available. Resolve the intended scope on a disposable copy and
 rerun; the migration never guesses or erases an original exclusion. Archives
 recover recorded references, not candidate-only intent that was never persisted.
+
+
+Protocol 15/schema 11 add descriptive public task/group IDs. Creation tools and
+decomposition members accept optional `public_id`; existing `tsk_…` references
+remain unchanged. A private UUID registry is backfilled without changing any task,
+relationship, proof or audit row. Verified `*.pre-schema-11.*.sqlite3` online backups
+include committed WAL data; identity backfill and validation roll back atomically.
+Rehearse on copies before coordinated live rollout and reconnect clients afterward
+to refresh the creation-tool catalog.

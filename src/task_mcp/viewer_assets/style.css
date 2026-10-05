@@ -1422,3 +1422,25 @@ dialog footer {
   overflow: hidden;
   font-weight: normal;
 }
+
+/* Permanent task references wrap in full and can be selected on cards and details. */
+.task-id {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  user-select: text;
+  cursor: text;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.task-id-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.task-id-header .task-id {
+  flex: 1 1 180px;
+}

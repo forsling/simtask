@@ -60,7 +60,7 @@ async function test() {
     state.streams = [{id: "wst_aaaa1111", project_id: "prj_bbbb2222", branch: "main"}]; state.stream = "wst_aaaa1111";
     toasts = []; toast = (text, error = false) => toasts.push({text, error});
     requests = []; api = async (action, payload) => {requests.push({action, payload});
-      return {id: "tsk_cccc3333", project_id: "prj_bbbb2222", revision: 1, workstream_ids: []};};
+      return {id: "colour-code-stale-workstreams", project_id: "prj_bbbb2222", revision: 1, workstream_ids: []};};
     reloads = 0; reload = async () => { reloads++; };`);
 
   if (origin) run(`state.project = ${JSON.stringify(project)}; state.projects = [{id: ${JSON.stringify(project)}, name: "Demo"}];`);
@@ -114,12 +114,12 @@ async function test() {
   assert.equal(get("dialog").open, false);
   assert.match(context.toasts.at(-1).text, /Idea saved to the inbox.*Design/);
   assert.equal(run("state.stream"), null);
-  assert.equal(run("state.selected"), "tsk_cccc3333");
-  assert.equal(context.pushed, "/p/bbbb2222/t/cccc3333");
+  assert.equal(run("state.selected"), "colour-code-stale-workstreams");
+  assert.equal(context.pushed, "/p/bbbb2222/t/id/colour-code-stale-workstreams");
   assert.equal(context.reloads, 1);
 
   // An idea's next step hands it to an agent instead of offering to build it.
-  const idea = {id: "tsk_cccc3333", title: "Colour-code stale workstreams", project_id: "prj_bbbb2222",
+  const idea = {id: "colour-code-stale-workstreams", title: "Colour-code stale workstreams", project_id: "prj_bbbb2222",
     status: "open", workstream_ids: [], prerequisites: [], attempts: [], spec_revision: 1,
     unresolved_items: [{id: "unr_1", text: "Idea to process: turn into a proper brief or task with the user"}]};
   run("state.stream = null");
@@ -131,7 +131,7 @@ async function test() {
   const go = descendants(panel).find(n => n.textContent === "Go through it with an agent");
   context.navigator = {clipboard: {writeText: async text => { context.copied = text; }}};
   await go.onclick({currentTarget: go});
-  assert.equal(context.copied, "Go through my ideas, starting with tsk_cccc3333 — Colour-code stale workstreams");
+  assert.equal(context.copied, "Go through my ideas, starting with colour-code-stale-workstreams — Colour-code stale workstreams");
   assert.equal(context.toasts.at(-1).text, "Copied. Paste it into your agent to start the walkthrough.");
   // Once the item is resolved it is an ordinary task again.
   idea.unresolved_items = [];

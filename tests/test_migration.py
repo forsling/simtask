@@ -337,7 +337,7 @@ def test_schema7_concern_metadata_preserves_proof_without_inventing_provenance(
             assert proof["verification"] == "Original verification"
             assert migrated.workstream_status(ws)["concern_tasks"]["total"] == 0
             assert Store(database).migration_backup_path is None
-        backups = list(tmp_path.glob("*.pre-schema-10.*.sqlite3"))
+        backups = list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3"))
         assert len(backups) == 1 and snapshot(backups[0]) == before
         assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
         restored = tmp_path / "restored-schema7.sqlite3"
@@ -588,7 +588,7 @@ def test_candidate_exclusion_conflict_aborts_with_backup_and_no_scope_guess(tmp_
     with pytest.raises(RuntimeError, match="membership_migration_conflict"):
         Store(database)
     assert snapshot(database) == before
-    backups = list(tmp_path.glob("*.pre-schema-10.*.sqlite3"))
+    backups = list(tmp_path.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3"))
     assert len(backups) == 1 and snapshot(backups[0]) == before
     writer.close()
 
@@ -665,7 +665,9 @@ def test_schema9_order_migration_seeds_effective_lists_and_preserves_history(
         with closing(sqlite3.connect(database)) as db:
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("PRAGMA foreign_key_check").fetchall()
-    backup = next(tmp_path.glob("schema9-order.sqlite3.pre-schema-10.*.sqlite3"))
+    backup = next(
+        tmp_path.glob(f"schema9-order.sqlite3.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3")
+    )
     assert snapshot(backup) == (columns, before)
     restored = tmp_path / "restored-schema9.sqlite3"
     with closing(sqlite3.connect(backup)) as source, closing(sqlite3.connect(restored)) as target:

@@ -63,8 +63,8 @@ wraps:
 ```
 
 Open the private link printed by the command. The address bar then shows a
-short, token-free location path such as `/w/1c4684b6/t/a5dfba02` (workstream and
-task by 8-character ID prefix; see [docs/viewer.md](docs/viewer.md#location-urls)),
+token-free location path such as `/w/1c4684b6/t/id/readable-task-ids` (workstream
+by 8-character ID prefix and task by its public ID; see [docs/viewer.md](docs/viewer.md#location-urls)),
 so reload, back/forward and bookmarks keep your place in a tab that holds the
 token. Repeated launches reuse the live
 viewer for that database. The explicit `open_task_viewer` MCP tool returns the
@@ -382,6 +382,26 @@ revision bump: previous servers ignore it and keep selecting and recording as
 before (a result they record still ends the marker). An existing database lacking
 the table gets a verified `*.pre-task_picks.*.sqlite3` backup first; expired
 markers are pruned when the next action is picked.
+## Task identity
+
+New tasks and groups have permanent descriptive public IDs, for example
+`readable-task-ids`. Pass `public_id` to `create_task` (including `kind=group`), or in each
+`decompose_task` member. These IDs are accepted anywhere a task/group reference
+is needed, including prerequisites, scope expressions, reads, edits and sign-off.
+Use up to 96 lowercase ASCII letters, digits and single hyphens, beginning with a
+letter. IDs are globally unique across projects and groups, and remain reserved
+for done/dropped tasks. An explicit collision returns `public_id_conflict`: choose
+a more specific name and retry. Creation is atomic, including concurrent collisions
+and decomposition. Omission derives a title slug with numeric suffixes for duplicate
+names; browser ideas use the same rule. IDs never change with titles/specifications.
+
+Existing tasks retain their exact `tsk_…` IDs and all existing references/history.
+Private UUIDs are stored separately and never appear in tools, exports or the
+viewer. Cards and detail headers display the complete public ID; details offer
+**Copy ID**, and task search includes IDs. Project/workstream/attempt IDs retain
+their existing format.
+New task/group locations put the complete public ID after `/id/`, keeping them
+distinct from existing shortened legacy URLs even for hexadecimal-only names.
 
 ## Task lifecycle
 
