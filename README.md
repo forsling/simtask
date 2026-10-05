@@ -300,8 +300,8 @@ revision bump (the database stays at schema 10), so a server running the
 previous code keeps working against the upgraded database, including after a
 restart. When an existing database lacks the table, startup first takes and
 verifies a private online backup named after the missing tables, such as
-`*.pre-notes.*.sqlite3` (or `*.pre-notes-workstream_archive.*.sqlite3` when the
-archive table is missing too), next to the database. For the live rollout, also take a manual backup first, for example
+`*.pre-notes.*.sqlite3` (or `*.pre-notes-workstream_archive-task_picks.*.sqlite3`
+when the archive and picked-marker tables are missing too), next to the database. For the live rollout, also take a manual backup first, for example
 `sqlite3 ~/.local/share/task-mcp/tasks.sqlite3 ".backup /safe/place/tasks.pre-notes.sqlite3"`,
 then start the new server. Rolling back needs no restore: previous code ignores
 the table.
@@ -355,6 +355,28 @@ without a schema revision bump: previous servers keep working against, and
 restarting on, the upgraded database, and simply keep listing archived
 workstreams. An existing database lacking the table gets a verified
 `*.pre-workstream_archive.*.sqlite3` backup first.
+
+## Picked tasks
+
+When `get_next_action` hands out an implement or review action it also records a
+picked marker for that task in that workstream (task, workstream, action, time),
+at no extra call. A new pick of the same task there replaces the marker. The
+marker is information only: `get_next_action` does not skip or lock picked tasks,
+and nothing requires an agent to act on it. It counts for 4 hours, and stops
+counting as soon as a result or review is recorded for that task in that
+workstream after the pick. While it counts, full `get_tasks` reads show it as
+`picks` (`workstream_id`, `action`, `picked_at`), the `attempt` include group of
+`list_tasks`/`get_tasks` shows it as `picked`, and the viewer lists the task
+under **In progress** with "An agent picked this up 12 minutes ago". Afterwards
+an unfinished task is **Open** again. Side effect: a coordinator that only asks
+for the next action, without working on it, marks that task picked for up to 4
+hours.
+
+Markers live in their own `task_picks` table, added like `notes` without a schema
+revision bump: previous servers ignore it and keep selecting and recording as
+before (a result they record still ends the marker). An existing database lacking
+the table gets a verified `*.pre-task_picks.*.sqlite3` backup first; expired
+markers are pruned when the next action is picked.
 
 ## Task lifecycle
 

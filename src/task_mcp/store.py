@@ -9,7 +9,7 @@ import sqlite3
 from collections.abc import Callable
 from contextlib import closing
 from contextvars import ContextVar
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -136,10 +136,21 @@ SCHEMA = (
         archived INTEGER NOT NULL CHECK(archived IN (0,1)),
         reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 200),
         revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)""",
+    # When get_next_action last handed a task out in a workstream: information only,
+    # never a lock. Additive like notes; a newer pick replaces the row, and reads ignore
+    # it once it is older than PICK_TTL or a result/review in that workstream is newer.
+    """CREATE TABLE IF NOT EXISTS task_picks (
+        task_id TEXT NOT NULL REFERENCES tasks(id),
+        workstream_id TEXT NOT NULL REFERENCES workstreams(id),
+        action TEXT NOT NULL CHECK(action IN ('implement','review')),
+        picked_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, workstream_id))""",
 )
 # Tables added after schema 10 without a revision bump, so older servers keep opening
 # the database. An existing database missing one is backed up before it is created.
-ADDITIVE_TABLES = ("notes", "workstream_archive")
+ADDITIVE_TABLES = ("notes", "workstream_archive", "task_picks")
+# A picked marker counts as work in progress for this long without a newer result.
+PICK_TTL = timedelta(hours=4)
 # Archive reasons are a short label for why a workstream left discovery.
 ARCHIVE_REASON_LIMIT = 200
 # Archived workstreams are left out of discovery and selection SQL unless requested.
@@ -2448,6 +2459,8 @@ class Store:
                 )
             else:
                 card["aggregate_attempt_counts"] = counts
+            if picks := Store._live_picks(db, task["id"], workstream_id):
+                card["picked"] = picks[0]
         return card
 
     @staticmethod
@@ -2595,6 +2608,7 @@ class Store:
                 "attempt_scope": workstream_id or "cross_workstream",
                 "selected_attempt_id": task["selected_attempt_id"],
                 "latest_rejection": full["latest_rejection"],
+                **({"picked": full["picked"]} if "picked" in full else {}),
             }
         if name == "concerns":
             concerned = [row for row in rows if row["concern_count"]]
@@ -2940,6 +2954,9 @@ class Store:
             )
         ]
         task["prerequisites"] = Store._prerequisite_references(db, task["id"])
+        if history and task["object_type"] == "task":
+            if picks := Store._live_picks(db, task["id"]):
+                task["picks"] = picks
         if history:
             task["attempts"] = [
                 Store._attempt_details(r)
@@ -4010,6 +4027,27 @@ class Store:
             reasons.append("signoff")
         return reasons
 
+    @staticmethod
+    def _pick_cutoff():
+        """Picks at or after this time are recent enough to count as work in progress."""
+        return (
+            (datetime.now(UTC) - PICK_TTL).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        )
+
+    @staticmethod
+    def _live_picks(db, task_id, workstream_id=None):
+        """Recent picks of a task with no result or review in that workstream since."""
+        rows = db.execute(
+            "SELECT p.workstream_id, p.action, p.picked_at FROM task_picks p "
+            "WHERE p.task_id=? AND p.picked_at>=? "
+            + ("AND p.workstream_id=? " if workstream_id else "")
+            + "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.task_id=p.task_id "
+            "AND a.workstream_id=p.workstream_id AND a.updated_at>=p.picked_at) "
+            "ORDER BY p.picked_at DESC, p.workstream_id",
+            (task_id, Store._pick_cutoff()) + ((workstream_id,) if workstream_id else ()),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_next_action(self, workstream_id, include_archived=False):
         """One autonomous action in workstream order; selected proof is local/current only."""
 
@@ -4064,11 +4102,17 @@ class Store:
                             selected["concerns"] = [
                                 c for c in selected["concerns"] if c["attempt_id"] != proof["id"]
                             ]
-                        return result | {
-                            "action": "review" if pending else "implement",
-                            "task": selected,
-                            "attempt": proof,
-                        }
+                        action = "review" if pending else "implement"
+                        # Information only: nothing skips or locks a picked task.
+                        db.execute(
+                            "DELETE FROM task_picks WHERE picked_at<?", (self._pick_cutoff(),)
+                        )
+                        db.execute(
+                            "INSERT OR REPLACE INTO task_picks "
+                            "(task_id,workstream_id,action,picked_at) VALUES (?,?,?,?)",
+                            (task["id"], workstream_id, action, timestamp()),
+                        )
+                        return result | {"action": action, "task": selected, "attempt": proof}
                 for reason in reasons:
                     counts[reason] += 1
             return result | {"diagnostics": result["diagnostics"] | counts}

@@ -291,8 +291,14 @@ newest first then ID ascending is deterministic. Passed/human_review waits for
 human sign-off; rework implementation carries its attempt/findings. One selected
 full spec includes the read token and local gates; review
 includes exactly one complete local proof and review provenance, without history.
-Null selection gives bounded counts/waiting reasons. Reads keep existing audit
-semantics and do not claim, reorder or write progress. Explicit manual reviews
+Null selection gives bounded counts/waiting reasons. Selecting an action records
+an information-only picked marker (task, workstream, action, time) in the
+additive `task_picks` table, replacing that task's earlier pick there; it never
+claims, locks, skips, reorders or writes progress. A marker counts for 4 hours
+and ends early once a result or review for that task in that workstream is newer
+(so results recorded by older servers end it too). Full reads and the `attempt`
+include group show live markers and the viewer shows such tasks as In progress;
+a coordinator that only peeks at the next action therefore marks it picked. Explicit manual reviews
 retain their existing authority and cannot clear remaining gates. Workflow clients
 check the actual checkout/artifacts and send reviews to fresh independent reviewers.
 No working/start/lease/checkpoint lifecycle or routine extra repository scan exists.

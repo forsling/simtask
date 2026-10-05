@@ -71,8 +71,11 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   passed review or was human-reviewed; badge **Design/decision** when any open
   design/decision question holds the task, including design briefs and tasks
   revised at sign-off), **In progress** (a result is recorded and still with the
-  agents: under review or being fixed after review), **Open** (no result yet,
-  ready or blocked; a blocker shows in the task's details), **Later** (deferred)
+  agents: under review or being fixed after review; or an agent picked the task
+  up through `get_next_action` in the last 4 hours, in this workstream or on All
+  tasks in any, and has recorded nothing since, shown as "An agent picked this up 12 minutes ago"), **Open** (no result
+  yet and no recent pick, ready or blocked; a blocker shows in the task's
+  details), **Later** (deferred)
   and **Done** (done/dropped, collapsed). Cards carry no other badges; whether
   work is a first attempt or a rework round shows in the task's details and
   history, where the latest rejection appears only until a newer result exists.

@@ -1,7 +1,7 @@
 # Runtime identity and stale capabilities
 
 The coordinated main rollout deployed protocol revision `14` and database schema
-revision `10`. Protocol `15` trims the catalog to 26 tools, then adds `set_note` (27 tools) and `archive_workstream` (28 tools) on the same schema `10`; notes and archive state use additive tables that schema 10 servers ignore. Reconnect existing MCP clients to
+revision `10`. Protocol `15` trims the catalog to 26 tools, then adds `set_note` (27 tools) and `archive_workstream` (28 tools) on the same schema `10`; notes, archive state and `get_next_action` picked markers use additive tables that schema 10 servers ignore. Reconnect existing MCP clients to
 refresh their tool catalogs, and inspect each connection's runtime identity.
 Future changes that could break active clients must remain isolated until a
 coordinated rollout.

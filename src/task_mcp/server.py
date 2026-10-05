@@ -493,7 +493,8 @@ def create_server(
     def get_next_action(workstream_id: str, include_archived: bool = False) -> dict[str, Any]:
         """Pick the next implement or review action in workstream order, with the full
         specification, etag, latest rejection and, for review or rework, the applicable
-        attempt. Only members with clear gates qualify; null returns waiting counts.
+        attempt. Only members with clear gates qualify; null returns waiting counts. Marks
+        the task picked for 4h (information only, no lock).
         """
         return store.get_next_action(workstream_id, include_archived)
 

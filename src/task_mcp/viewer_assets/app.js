@@ -44,15 +44,17 @@ const CLOSED = ["done", "dropped", "deferred"];
 // result states in view (this workstream's, or every workstream's on project boards).
 //   decision  held by any open design/decision question (briefs, revised at sign-off)
 //   signoff   a result passed review (or was human-reviewed) and awaits the verdict
-//   progress  a result is recorded and still with the agents (in review or being fixed)
-//   open      no result yet, ready or blocked
+//   progress  a result is recorded and still with the agents (in review or being fixed),
+//             or an agent picked the task up recently (r.picked)
+//   open      no result yet and no recent pick, ready or blocked
 function standingOf(r, counts = r.attempt_counts || r.aggregate_attempt_counts || {}) {
   if (r.object_type === "group") return "group";
   const closed = [r.status, r.view].find((s) => CLOSED.includes(s));
   if (closed) return closed;
   if (r.unresolved_count || r.view === "unresolved_items") return "decision";
   if (counts.passed || counts.human_review || r.view === "signoff") return "signoff";
-  if (counts.review || counts.rework || r.view === "review") return "progress";
+  // The server reports a pick only while it counts: a few hours, until a newer result.
+  if (counts.review || counts.rework || r.view === "review" || r.picked) return "progress";
   return "open";
 }
 // The same standing for a fetched task, from its current-spec results in view.
@@ -61,7 +63,12 @@ function taskStanding(t) {
   for (const a of t.attempts || [])
     if (a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))
       counts[a.state] = (counts[a.state] || 0) + 1;
-  return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0 }, counts);
+  return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0, picked: currentPick(t) }, counts);
+}
+// The most recent live pick of a fetched task in view (this workstream's, or any on
+// project boards); the server lists only picks that still count.
+function currentPick(t) {
+  return (t.picks || []).find((p) => !state.stream || p.workstream_id === state.stream) || null;
 }
 // The latest rejection stays in view only while it is current: no newer result exists.
 function currentRejection(t) {
@@ -167,6 +174,14 @@ function ago(iso) {
   if (s < 86400) return Math.floor(s / 3600) + "h ago";
   if (s < 86400 * 14) return Math.floor(s / 86400) + "d ago";
   return new Date(iso).toLocaleDateString();
+}
+// "12 minutes ago" in plain words, for when an agent picked a task up.
+function pickedAgo(iso) {
+  const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
+  const h = Math.floor(m / 60);
+  return `${h} hour${h === 1 ? "" : "s"} ago`;
 }
 // Long branch names read better with the prefix dimmed: codex/ + session-resilience.
 function branchLabel(name) {
@@ -1242,9 +1257,12 @@ function nextStep(t, standing) {
     return null;
   } else if (standing === "progress") {
     title = "In progress";
-    text = currentAttempt(t, ["review"])
-      ? "A result is recorded and is with the agents for independent review."
-      : "A result was sent back for changes and the agents are fixing it.";
+    const pick = currentPick(t), when = pick && pickedAgo(pick.picked_at);
+    if (currentAttempt(t, ["review"]))
+      text = "A result is recorded and is with the agents for independent review." + (pick?.action === "review" ? ` A reviewer picked it up ${when}.` : "");
+    else if (currentAttempt(t, ["rework"]))
+      text = "A result was sent back for changes and the agents are fixing it." + (pick ? ` An agent picked it up ${when}.` : "");
+    else text = `An agent picked this up ${when || "recently"}. No result is recorded yet.`;
   } else {
     title = "Open";
     text = "No result is recorded yet. An agent can pick this up.";

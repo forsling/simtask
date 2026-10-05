@@ -387,7 +387,7 @@ def test_previous_code_keeps_working_against_the_migrated_database(tmp_path, lab
         assert running.stdout.readline().strip() == "started"
         # The newer server migrates (with a backup) and archives a workstream meanwhile.
         current = Store(database, actor="simon")
-        missing = "notes-workstream_archive" if label == "main" else "workstream_archive"
+        missing = ("notes-" if label == "main" else "") + "workstream_archive-task_picks"
         assert current.migration_backup_path.name.startswith(f"tasks.sqlite3.pre-{missing}.")
         current.archive_workstream(ids["old"], 0, "Inactive snapshot")
         output, _ = running.communicate("go\n", timeout=60)
