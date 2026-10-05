@@ -422,9 +422,10 @@ async function refreshNeeds(project, streams) {
 //   /sg               Shared groups     /sg/<group>
 // A workstream or group implies its project, so only project-wide views name one.
 // Readable public task/group IDs appear in full. Legacy IDs and project/workstream
-// IDs appear as their first 8 hex characters, or in full when that prefix is ambiguous
+// Legacy IDs appear as their first 8 hex characters, or in full when that prefix is ambiguous
 // where the address is resolved: tasks within the view's board, projects among all
 // projects, workstreams and groups across the database (through "resolve-prefix").
+// New public task/group IDs stay complete under /id/, including all-hex names.
 const SHORT = 8;
 const hexOf = (id) => String(id).replace(/^[a-z]+_/, "");
 const longIds = new Set(); // IDs shown in full because their short prefix is ambiguous
@@ -433,8 +434,9 @@ const groupHomes = new Map(); // group ID -> "shared", or the project whose grou
 function shortId(id, pool = []) {
   if (!/^[a-z]+_[0-9a-f]{1,32}$/.test(id)) return id;
   const hex = hexOf(id), short = hex.slice(0, SHORT);
-  return longIds.has(id) || pool.some((o) => o !== id && hexOf(o).startsWith(short)) ? hex : short;
+  return longIds.has(id) || pool.some((o) => o !== id && /^[a-z]+_[0-9a-f]{32}$/.test(o) && hexOf(o).startsWith(short)) ? hex : short;
 }
+const taskRouteId = (id, pool) => /^tsk_[0-9a-f]{32}$/.test(id) ? shortId(id, pool) : "id/" + id;
 function routePath() {
   if (!state.project) return "";
   const ids = (list) => list.map((x) => x.id);
@@ -442,44 +444,51 @@ function routePath() {
   if (state.groups) {
     const group = state.selected;
     if (!group) return state.groups === "shared" ? "/sg" : project + "/g";
-    const id = shortId(group, ids(state.rows));
+    const id = taskRouteId(group, ids(state.rows));
     const home = groupHomes.get(group);
     if (home && home === (state.groups === "shared" ? "shared" : state.project)) return "/g/" + id;
     return (state.groups === "shared" ? "/sg/" : project + "/g/") + id;
   }
   const base = state.stream ? "/w/" + shortId(state.stream, ids(state.streams)) : project;
-  return state.selected ? base + "/t/" + shortId(state.selected, ids(state.rows)) : base;
+  return state.selected ? base + "/t/" + taskRouteId(state.selected, ids(state.rows)) : base;
 }
 // A parsed location ({view, project, stream, group, task} as public IDs/hex prefixes), {} for the
 // default location, or null for an unrecognized address.
 function parseRoute(path) {
   if (path === "/") return {};
-  const [a, b, c, d, ...rest] = path.split("/").slice(1);
+  const [a, b, c, d, e, ...rest] = path.split("/").slice(1);
   const id = (s) => /^[0-9a-f]{1,32}$/.test(s || "");
-  const taskId = (s) => id(s) || (typeof s === "string" && s.length <= 96 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(s));
+  const publicId = (s) => typeof s === "string" && s.length <= 96 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(s);
   if (rest.length) return null;
+  if ((a === "p" || a === "w") && id(b) && d === "id" && publicId(e)) {
+    if (c === "t") return {view: a === "p" ? "all" : "workstream", [a === "p" ? "project" : "stream"]: b, task: e, publicId: true};
+    if (a === "p" && c === "g") return {view: "groups", project: b, group: e, publicId: true};
+  }
+  if (e !== undefined) return null;
+  if ((a === "g" || a === "sg") && b === "id" && publicId(c) && d === undefined) return {view: a === "g" ? "group" : "shared-groups", group: c, publicId: true};
   if (a === "p" && id(b)) {
     if (c === undefined) return { view: "all", project: b };
-    if (c === "t" && taskId(d)) return { view: "all", project: b, task: d };
+    if (c === "t" && id(d)) return { view: "all", project: b, task: d };
     if (c === "g" && d === undefined) return { view: "groups", project: b };
-    if (c === "g" && taskId(d)) return { view: "groups", project: b, group: d };
+    if (c === "g" && id(d)) return { view: "groups", project: b, group: d };
   } else if (a === "w" && id(b)) {
     if (c === undefined) return { view: "workstream", stream: b };
-    if (c === "t" && taskId(d)) return { view: "workstream", stream: b, task: d };
-  } else if (a === "g" && taskId(b) && c === undefined) return { view: "group", group: b };
+    if (c === "t" && id(d)) return { view: "workstream", stream: b, task: d };
+  } else if (a === "g" && id(b) && c === undefined) return { view: "group", group: b };
   else if (a === "sg" && c === undefined) {
     if (b === undefined) return { view: "shared-groups" };
-    if (taskId(b)) return { view: "shared-groups", group: b };
+    if (id(b)) return { view: "shared-groups", group: b };
   }
   return null;
 }
-// Resolve a workstream or group prefix: the match, or {ambiguous} when there is not exactly one.
-async function resolvePrefix(kind, prefix) {
-  const { items } = await api("resolve-prefix", { kind, prefix });
+// Resolve a legacy prefix or marked exact public group ID; report ambiguity explicitly.
+async function resolvePrefix(kind, prefix, publicId = false) {
+  const { items } = await api("resolve-prefix", { kind, prefix, ...(publicId ? {match: "public_id"} : {}) });
   if (items.length !== 1) return { ambiguous: items.length > 1 };
   const found = items[0];
   // A short prefix that matched once proves the 8-character one unique; keep a longer
   // spelling until checkPrefix confirms that the short one would do.
+  if (publicId) return found;
   if (prefix.length <= SHORT) {
     checkedIds.add(found.id);
     longIds.delete(found.id);
@@ -560,7 +569,7 @@ async function openLocation(path, { initial = false } = {}) {
     }
   }
   if (route?.group && view) {
-    const found = await resolvePrefix("group", route.group);
+    const found = await resolvePrefix("group", route.group, route.publicId);
     if (stale()) return;
     if (found.id) group = found.id;
     else notices.push(found.ambiguous ? "That address matches more than one task group." : "That task group no longer exists.");
@@ -602,10 +611,10 @@ async function openLocation(path, { initial = false } = {}) {
   state.task = null;
   const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : state.stream ? `${project.name} · ${streamName(state.stream)}` : `${project.name} · All tasks`;
   notices.forEach((n) => toast(`${n} Showing ${name}.`));
-  // A requested task keeps the address until the loaded board resolves its prefix.
+  // Keep the requested address until the board resolves its exact ID or legacy prefix.
   if (!task) syncRoute();
   renderNav();
-  await reload({ requested: groups ? null : task });
+  await reload({ requested: groups ? null : task, publicId: !!route?.publicId });
 }
 function onLocationChange() {
   // A launch link pasted into this tab: reload so startup adopts and strips its token.
@@ -725,7 +734,7 @@ async function changeScope(id) {
   renderNav();
   await reload();
 }
-async function reload({ quiet = false, requested = null } = {}) {
+async function reload({ quiet = false, requested = null, publicId = false } = {}) {
   const generation = ++state.listGeneration;
   // A row click or navigation that starts while this board loads owns the detail pane
   // (and bumps state.generation); auto-selecting here would cancel it.
@@ -765,10 +774,9 @@ async function reload({ quiet = false, requested = null } = {}) {
     renderList();
     if (detailGeneration !== state.generation) return;
     if (requested) {
-      // A location's task prefix resolves within this board; a task that has left the
-      // view (or a prefix matching several) falls back to the first task.
-      const exact = rows.filter((r) => r.id === requested);
-      const matches = exact.length ? exact : rows.filter((r) => /^tsk_[0-9a-f]{32}$/.test(r.id) && hexOf(r.id).startsWith(requested));
+      // Exact public IDs and legacy prefixes resolve separately within this board.
+      // A task that left the view (or an ambiguous prefix) falls back to the first task.
+      const matches = publicId ? rows.filter((r) => r.id === requested) : rows.filter((r) => /^tsk_[0-9a-f]{32}$/.test(r.id) && hexOf(r.id).startsWith(requested));
       if (matches.length === 1) state.selected = matches[0].id;
       else {
         const where = stream ? streamName(stream) : "this project";

@@ -81,8 +81,7 @@ function viewer(initial, stored = "") {
     }
     if (action === "resolve-prefix") {
       const pool = data.kind === "workstream" ? allStreams.map(s => [s.id, s.project_id]) : Object.entries(groupInfo).map(([g, i]) => [g, i.origin]);
-      const exact = pool.filter(([x]) => x === data.prefix);
-      const items = (exact.length ? exact : pool.filter(([x]) => /^[a-z]+_[0-9a-f]{32}$/.test(x) && hex(x).startsWith(data.prefix))).sort().slice(0, 2).map(([x, p]) => ({id: x, project_id: p}));
+      const items = (data.match === "public_id" ? pool.filter(([x]) => x === data.prefix) : pool.filter(([x]) => /^[a-z]+_[0-9a-f]{32}$/.test(x) && hex(x).startsWith(data.prefix))).sort().slice(0, 2).map(([x, p]) => ({id: x, project_id: p}));
       return {items};
     }
     if (action === "details") {
@@ -268,24 +267,58 @@ async function main() {
   const readable = "restore-readable-task-ids-across-design-and-signoff";
   tasks[W1].push(readable, readable + "-next");
   tasks[P1].push(readable, readable + "-next");
-  await v.edit(`/w/${short(W1)}/t/${readable}`);
+  await v.edit(`/w/${short(W1)}/t/id/${readable}`);
   assert.equal(v.at().selected, readable);
-  assert.equal(v.path(), `/w/${short(W1)}/t/${readable}`);
+  assert.equal(v.path(), `/w/${short(W1)}/t/id/${readable}`);
   await v.run(`selectTask("${readable}-next", {open: true, entry: "push"})`);
-  assert.equal(v.path(), `/w/${short(W1)}/t/${readable}-next`);
+  assert.equal(v.path(), `/w/${short(W1)}/t/id/${readable}-next`);
   await v.back();
   assert.equal(v.at().selected, readable);
-  const reloaded = viewer({path: `/w/${short(W1)}/t/${readable}`, hash: ""}, "stored-token");
+  const reloaded = viewer({path: `/w/${short(W1)}/t/id/${readable}`, hash: ""}, "stored-token");
   await reloaded.run("boot()");
   assert.equal(reloaded.at().selected, readable);
   const readableGroup = "readable-group-reference";
   groupInfo[readableGroup] = {origin: P1, by: [P1]};
   groupLists[P1].push(readableGroup);
-  await v.edit(`/g/${readableGroup}`);
+  await v.edit(`/g/id/${readableGroup}`);
   assert.equal(v.at().selected, readableGroup);
-  assert.equal(v.path(), `/g/${readableGroup}`);
-  assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/double--dash")'), null);
-  assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/' + 'x'.repeat(97) + '")'), null);
+  assert.equal(v.path(), `/g/id/${readableGroup}`);
+  // Full public IDs live under /id/, even when identical to a legacy prefix.
+  const legacyHexTask = id("tsk", "f1f1f1f1");
+  const hexTask = short(legacyHexTask), hexGroup = short(G1);
+  tasks[W1].push(legacyHexTask, hexTask);
+  tasks[P1].push(legacyHexTask, hexTask);
+  groupInfo[hexGroup] = {origin: P1, by: [P1]};
+  groupLists[P1].push(hexGroup);
+  await v.edit(`/w/${short(W1)}/t/${hexTask}`);
+  assert.equal(v.at().selected, legacyHexTask);
+  assert.equal(v.path(), `/w/${short(W1)}/t/${hexTask}`);
+  await v.edit(`/w/${short(W1)}/t/id/${hexTask}`);
+  assert.equal(v.at().selected, hexTask);
+  assert.equal(v.path(), `/w/${short(W1)}/t/id/${hexTask}`);
+  await v.back();
+  assert.equal(v.at().selected, legacyHexTask);
+  await v.forward();
+  assert.equal(v.at().selected, hexTask);
+  const hexReload = viewer({path: `/w/${short(W1)}/t/id/${hexTask}`, hash: ""}, "stored-token");
+  await hexReload.run("boot()");
+  assert.equal(hexReload.at().selected, hexTask);
+  await v.edit(`/g/${hexGroup}`);
+  assert.equal(v.at().selected, G1);
+  assert.equal(v.path(), `/g/${hexGroup}`);
+  await v.edit(`/g/id/${hexGroup}`);
+  assert.equal(v.at().selected, hexGroup);
+  assert.equal(v.path(), `/g/id/${hexGroup}`);
+  const groupReload = viewer({path: `/g/id/${hexGroup}`, hash: ""}, "stored-token");
+  await groupReload.run("boot()");
+  assert.equal(groupReload.at().selected, hexGroup);
+  // Missing names cannot accidentally match a longer legacy task/group prefix.
+  await v.edit(`/w/${short(W1)}/t/id/${hexTask}0`);
+  assert.match(v.notices.at(-1), /not in/);
+  await v.edit(`/g/id/${short(G1)}0`);
+  assert.match(v.notices.at(-1), /no longer exists/);
+  assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/id/double--dash")'), null);
+  assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/id/' + 'x'.repeat(97) + '")'), null);
   console.log("viewer route tests passed");
 }
 main().catch(error => {

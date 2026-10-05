@@ -64,7 +64,7 @@ wraps:
 ```
 
 Open the private link printed by the command. The address bar then shows a
-token-free location path such as `/w/1c4684b6/t/readable-task-ids` (workstream
+token-free location path such as `/w/1c4684b6/t/id/readable-task-ids` (workstream
 by 8-character ID prefix and task by its public ID; see [docs/viewer.md](docs/viewer.md#location-urls)),
 so reload, back/forward and bookmarks keep your place in a tab that holds the
 token. Repeated launches reuse the live
@@ -259,6 +259,8 @@ Private UUIDs are stored separately and never appear in tools, exports or the
 viewer. Cards and detail headers display the complete public ID; details offer
 **Copy ID**, and task search includes IDs. Project/workstream/attempt IDs retain
 their existing format.
+New task/group locations put the complete public ID after `/id/`, keeping them
+distinct from existing shortened legacy URLs even for hexadecimal-only names.
 
 ## Task lifecycle
 

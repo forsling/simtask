@@ -20,10 +20,11 @@ from task_mcp.store import Store, TaskError, default_database
 
 ASSETS = Path(__file__).with_name("viewer_assets")
 _ID = "[0-9a-f]{1,32}"
-_TASK_ID = r"(?=[^/]{1,96}(?:/|$))(?:[a-z][a-z0-9]*(?:-[a-z0-9]+)*|[0-9a-f]{1,32})"
+_PUBLIC_ID = r"(?=[^/]{1,96}(?:/|$))[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
+_TASK_ID = rf"(?:id/{_PUBLIC_ID}|{_ID})"
 # Location URLs the app page is served for: /p/<id>[/t/<id> | /g[/<id>]],
 # /w/<id>[/t/<id>], /g/<id> and /sg[/<id>].
-# Task/group IDs are public slugs or legacy hex prefixes; no query strings.
+# Full public task/group IDs follow /id/; legacy hex prefixes stay unmarked.
 APP_PATH = re.compile(
     rf"/(?:p/{_ID}(?:/t/{_TASK_ID}|/g(?:/{_TASK_ID})?)?|w/{_ID}(?:/t/{_TASK_ID})?|g/{_TASK_ID}|sg(?:/{_TASK_ID})?)"
 )

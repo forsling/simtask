@@ -14,23 +14,25 @@ and returns the link. No browser is launched automatically.
 ## Location URLs
 
 After the launch link connects, the address bar shows a short, token-free path
-for where you are, for example `/w/1c4684b6/t/readable-task-ids` (task `readable-task-ids` in
+for where you are, for example `/w/1c4684b6/t/id/readable-task-ids` (task `readable-task-ids` in
 workstream `1c4684b6`). A workstream or group implies its project, so only the
 project-wide views name one:
 
 | Path | Location |
 | --- | --- |
-| `/w/<workstream>` and `/w/<workstream>/t/<task>` | A workstream, optionally with a selected task |
-| `/p/<project>` and `/p/<project>/t/<task>` | The project's **All tasks** |
+| `/w/<workstream>` and `/w/<workstream>/t/id/<task>` | A workstream, optionally with a selected task |
+| `/p/<project>` and `/p/<project>/t/id/<task>` | The project's **All tasks** |
 | `/p/<project>/g` | The project's **Task groups** |
-| `/g/<group>` | A group, in the view it implies: its project's **Task groups**, or **Shared task groups** when it spans projects |
-| `/p/<project>/g/<group>` | A group shown in a project's **Task groups** other than the one it implies (a shared group, for example) |
-| `/sg` and `/sg/<group>` | **Shared task groups** |
+| `/g/id/<group>` | A group, in the view it implies: its project's **Task groups**, or **Shared task groups** when it spans projects |
+| `/p/<project>/g/id/<group>` | A group shown in a project's **Task groups** other than the one it implies (a shared group, for example) |
+| `/sg` and `/sg/id/<group>` | **Shared task groups** |
 
-New task/group IDs appear in full, for example `readable-task-ids`; exact public
+New task/group IDs appear in full after `/id/`, for example `readable-task-ids`; exact public
 names resolve independently of other names with the same prefix. Cards and detail
 headers show the complete selectable ID, with **Copy ID** in details. Long IDs wrap
 on narrow screens. Search includes the public ID. Existing `tsk_…` IDs stay unchanged.
+Hexadecimal-only public IDs are valid: `/g/id/e1e1e1e1` selects the new group with
+that exact ID, while `/g/e1e1e1e1` continues to select the matching legacy group.
 
 Project/workstream and legacy task/group IDs appear in URLs as the first 8
 hexadecimal characters after their type prefix
@@ -38,6 +40,7 @@ hexadecimal characters after their type prefix
 full 32-character ID used: tasks resolve within the view's task list, projects
 among all projects, and workstreams and groups across the database. Any longer
 or shorter prefix also works in a typed address when it matches exactly one item.
+Legacy task/group URLs omit `/id/`, for example `/w/1c4684b6/t/a5dfba02`.
 Shared task groups name no project, so the sidebar keeps the project that was
 open (after a reload, the group's own project or the first project).
 

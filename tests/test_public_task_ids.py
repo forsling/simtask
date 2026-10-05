@@ -151,6 +151,41 @@ def test_invalid_ids_roll_back(context, public_id):
     assert context[0].list_tasks(context[1])["items"] == []
 
 
+@pytest.mark.parametrize("kind", ["task", "group"])
+@pytest.mark.parametrize("explicit", [True, False])
+@pytest.mark.parametrize("public_id", ["a", "e1e1e1e1", "a" * 32])
+def test_hex_public_ids_coexist_with_legacy_bookmarks(
+    context, monkeypatch, kind, explicit, public_id
+):
+    store, project, ws = context
+    legacy_id = "tsk_" + public_id + "0" * (32 - len(public_id))
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Store,
+            "_public_task_id",
+            staticmethod(lambda db, title, public_id=None: legacy_id),
+        )
+        if kind == "group":
+            store.create_group(ws, "Existing group")
+        else:
+            create(context)
+    legacy = store.get_tasks([legacy_id])["items"][0]
+    if kind == "group":
+        bookmark = store.resolve_prefix("group", public_id)
+        new = store.create_group(ws, public_id, public_id=public_id if explicit else None)
+        assert store.resolve_prefix("group", public_id) == bookmark
+        assert bookmark["items"][0]["id"] == legacy_id
+        exact = store.resolve_prefix("group", public_id, match="public_id")
+        assert exact["items"][0]["id"] == public_id
+    else:
+        new = store.create_task(
+            project, public_id, workstream_id=ws, public_id=public_id if explicit else None
+        )
+    assert new["id"] == public_id
+    assert store.get_tasks([public_id])["items"][0]["id"] == public_id
+    assert store.get_tasks([legacy_id])["items"][0] == legacy
+
+
 def test_derived_names_ideas_and_decomposition(context):
     store, project, ws = context
     assert create(context, None)["id"] == "readable-task-ids"
@@ -185,8 +220,14 @@ def test_derived_names_ideas_and_decomposition(context):
     assert store.get_tasks([before["id"]])["items"][0]["object_type"] == "task"
     with pytest.raises(TaskError, match="unknown_task"):
         store.get_tasks(["new-member"])
-    assert store.resolve_prefix("group", "reference-redesign")["items"][0]["id"] == group["id"]
-    assert store.resolve_prefix("group", "reference-redesign-missing")["items"] == []
+    assert (
+        store.resolve_prefix("group", "reference-redesign", match="public_id")["items"][0]["id"]
+        == group["id"]
+    )
+    assert (
+        store.resolve_prefix("group", "reference-redesign-missing", match="public_id")["items"]
+        == []
+    )
 
 
 def snapshot(db):

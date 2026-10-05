@@ -33,8 +33,9 @@ and the existing unique public primary key; decomposition rolls back on any memb
 collision. A title/specification edit never changes the reference. Protocol 15
 exposes the optional creation input. GUI cards and headers show full selectable
 public references, detail headers support copy, and search includes the reference.
-Readable navigation uses exact public IDs; existing hexadecimal-prefix bookmarks
-continue to resolve legacy rows.
+Readable navigation puts exact public IDs after an `/id/` path segment. Unmarked
+hexadecimal-prefix bookmarks resolve only legacy rows; hexadecimal public names
+remain valid and cannot shadow those bookmarks.
 
 Projects are initialized explicitly at a canonical path. A project may attach
 other checkout paths. Each workstream has a durable ID and a mutable branch or

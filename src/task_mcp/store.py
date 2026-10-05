@@ -2300,9 +2300,9 @@ class Store:
 
         return self._run("groups.listed", request, operation)
 
-    def resolve_prefix(self, kind, prefix):
-        """Match a short viewer-URL ID: at most two workstreams or groups whose hex starts so."""
-        request = dict(kind=kind, prefix=prefix)
+    def resolve_prefix(self, kind, prefix, match="prefix"):
+        """Resolve a legacy viewer prefix or an explicitly marked exact public group ID."""
+        request = dict(kind=kind, prefix=prefix, match=match)
 
         def operation(db, scope):
             sources = {
@@ -2311,15 +2311,20 @@ class Store:
             }
             if not isinstance(kind, str) or kind not in sources:
                 raise TaskError("invalid_kind: use workstream or group")
-            if kind == "group" and isinstance(prefix, str):
+            if match not in ("prefix", "public_id"):
+                raise TaskError("invalid_match: use prefix or public_id")
+            if match == "public_id":
+                if (
+                    kind != "group"
+                    or not isinstance(prefix, str)
+                    or len(prefix) > 96
+                    or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", prefix)
+                ):
+                    raise TaskError("invalid_public_id: use a complete public group ID")
                 row = db.execute(
                     "SELECT id,project_id FROM tasks WHERE id=? AND object_type='group'", (prefix,)
                 ).fetchone()
-                if row is not None:
-                    return {"items": [dict(row)]}
-                if re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", prefix) and len(prefix) <= 96:
-                    if not re.fullmatch(r"[0-9a-f]{1,32}", prefix):
-                        return {"items": []}
+                return {"items": [dict(row)] if row is not None else []}
             if (
                 not isinstance(prefix, str)
                 or not 1 <= len(prefix) <= 32
