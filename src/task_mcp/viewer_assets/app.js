@@ -33,9 +33,9 @@ const VIEWS = {
 };
 const SECTIONS = [
   { key: "signoff", title: "Signoff", standings: ["signoff"], attention: true },
-  { key: "design", title: "Design", standings: ["decision"], attention: true },
   { key: "progress", title: "In progress", standings: ["progress"] },
   { key: "open", title: "Open", standings: ["open"] },
+  { key: "design", title: "Design", standings: ["decision"], attention: true },
   { key: "later", title: "Later", standings: ["deferred"], collapsible: true },
   { key: "done", title: "Done", standings: ["done", "dropped"], collapsible: true },
 ];

@@ -99,24 +99,29 @@ async function test() {
     if (n.classList.contains("section-head")) sections.push({title: n.children[n.children.length - 2].textContent, rows: []});
     else if (n.classList.contains("row")) sections.at(-1).rows.push(n);
   }
-  assert.deepEqual(sections.map(s => s.title), ["Signoff", "Design", "In progress", "Open", "Later", "Done"]);
+  assert.deepEqual(sections.map(s => s.title), ["Signoff", "In progress", "Open", "Design", "Later", "Done"]);
   const ids = s => sections.find(x => x.title === s).rows.map(r => r.dataset.id);
   assert.deepEqual(ids("Signoff"), ["reworked", "human", "signoff"], "canonical relative order within Signoff");
   assert.deepEqual(ids("Design"), ["brief", "revised"], "canonical relative order within Design");
-  assert.deepEqual(Array.from(run("orderedRows().map(r => r.id)")), ["reworked", "human", "signoff", "brief", "revised", "fixing", "review", "blocked", "ready", "deferred"]);
+  assert.deepEqual(Array.from(run("orderedRows().map(r => r.id)")), ["reworked", "human", "signoff", "fixing", "review", "blocked", "ready", "brief", "revised", "deferred"]);
   assert.deepEqual(Array.from(run("state.rows.map(r => r.id)")), context.board.map(r => r.id), "grouping changes no stored order");
   assert.deepEqual(ids("In progress"), ["fixing", "review"]);
   assert.deepEqual(ids("Open"), ["blocked", "ready"]);
   assert.deepEqual(ids("Later"), ["deferred"]);
   assert.deepEqual(ids("Done"), [], "Done starts collapsed");
 
-  // j/k follows the displayed Signoff -> Design order, including search results.
+  // j/k follows the displayed section order, including search results.
   run(`selectTask = async id => { state.selected = id; }; state.selected = "signoff";`);
   const press = key => listeners.get("keydown")({key, target: {tagName: "BODY"}, preventDefault() {}});
   press("j");
-  assert.equal(run("state.selected"), "brief");
+  assert.equal(run("state.selected"), "fixing");
   press("k");
   assert.equal(run("state.selected"), "signoff");
+  run(`state.selected = "ready";`);
+  press("j");
+  assert.equal(run("state.selected"), "brief", "Design follows Open");
+  press("k");
+  assert.equal(run("state.selected"), "ready");
   get("search").value = "Design brief";
   run("renderList()");
   assert.deepEqual(kids(get("list")).filter(n => n.classList.contains("row")).map(n => n.dataset.id), ["brief"]);
