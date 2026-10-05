@@ -52,15 +52,15 @@ earlier `#/project/...` addresses are not supported; they open the default view.
 
 - The sidebar lists projects; the current project expands to its registered
   workstreams, each with a count of tasks that need you: exactly the tasks its
-  Needs input section shows, counted from that workstream's task cards on each
-  board refresh. “All tasks” includes
+  Signoff and Design sections show, counted from that workstream's task cards
+  on each board refresh. “All tasks” includes
   tasks outside any one workstream. Workstream names and counts describe
   recorded state, not a running agent.
 - The list groups tasks by where they stand for you, not by the agents'
-  internal stage: **Needs input** (badge **Sign-off** when a current-spec result
-  passed review or was human-reviewed; badge **Design/decision** when any open
-  design/decision question holds the task, including design briefs and tasks
-  revised at sign-off), **In progress** (a result is recorded and still with the
+  internal stage: **Signoff** (badge **Sign-off** when a current-spec result
+  passed review or was human-reviewed), then **Design** (orange dot when any
+  unresolved item holds the task, including design briefs and tasks revised
+  at sign-off), **In progress** (a result is recorded and still with the
   agents: under review or being fixed after review), **Open** (no result yet,
   ready or blocked; a blocker shows in the task's details), **Later** (deferred)
   and **Done** (done/dropped, collapsed). Cards carry no other badges; whether
@@ -85,12 +85,12 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   (`Sign off tsk_<id> — <title>`) for you to paste into your agent and confirms
   with a short notice. The browser launches no agent and records no verdict.
   Where the clipboard cannot be written, the prompt appears selected beside the
-  button for you to copy. A result that passed review stays under Sign-off even
+  button for you to copy. A result that passed review stays under Signoff even
   while a prerequisite is still open; the panel names the open prerequisite in
   one line so the walkthrough can weigh it. Blocked tasks without a passed
-  result show the prerequisites they wait for. Design/decision questions are
-  shown for reading; you settle them with an agent, which records the answer. A
-  passed result does not remove design/decision questions or prerequisites;
+  result show the prerequisites they wait for. Unresolved items are
+  shown for reading under **Unresolved items**; you settle them with an agent,
+  which records the answer. A passed result does not remove unresolved items or prerequisites;
   Store still validates every decision.
 - Prerequisites show compact ID/title, project name/ID, the required review or
   sign-off milestone, satisfaction and canonical blocking/completion
@@ -121,13 +121,13 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   history: yours, or a plain stand-in such as “Deferred in the browser.”
   Workstreams, details and results are kept through every status change.
 - **+ Idea** (beside Refresh, in All tasks and workstream views) saves a thought
-  before it is lost: **Your idea, in one line** (up to 200 characters) and an
-  optional **One more sentence** (up to 500). Saving creates, in one audited
+  before it is lost: **Idea title (required)** (one line, up to 200 characters) and a
+  multiline **Details (optional)** area (up to 500). Saving creates, in one audited
   Store step, a task in the project's inbox (no workstream, even when opened
-  from one): the line as title, the sentence as description, source user and
+  from one): the short title and details as description, source user and
   the exact text as its request, held by one open item, “Idea to process: turn
   into a proper brief or task with the user”. The viewer confirms and opens it
-  in **All tasks** under Needs input with the **Design/decision** badge. No
+  in **All tasks** under **Design** with an orange dot. No
   agent picks it up as is. Its next step, **Go through it with an agent**,
   copies a prompt (`Go through my ideas, starting with tsk_<id> — <title>`);
   the capture skill then goes through your ideas one at a time with you,
@@ -147,7 +147,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   fonts, scripts or image services load. Light and dark themes follow the OS.
 
 Apart from **+ Idea**, the browser does not create or edit tasks, projects or workstreams, answer
-design/decision questions, record results or reviews, sign off, pick the next
+unresolved items, record results or reviews, sign off, pick the next
 agent action, edit group scope or membership, or handle gate proposals. Agents
 do these through MCP, with you. The browser intentionally has no general Store
 method, SQL or shell command endpoint.
@@ -186,6 +186,10 @@ cross-process locking. Do not share the sidecar or private link. These are
 runtime discovery files, not a task copy. The JSON file is removed on normal
 shutdown; empty lock files can remain. A stale JSON file after a crash is
 replaced on the next explicit launch. The database directory must be writable.
+
+The viewer snapshots its HTML, JavaScript and CSS at startup so source changes
+cannot expose newer controls through an older running backend. After updating
+the code, stop and relaunch the viewer to load the backend and UI together.
 
 The detached process outlives the launching terminal or stdio session. Stop it
 with the confirmed **Stop viewer** action, or `task-mcp ui --db PATH --stop`.

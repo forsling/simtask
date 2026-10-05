@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from task_mcp import store as store_module
+from task_mcp import viewer as viewer_module
 from task_mcp.server import create_server
 from task_mcp.store import Store
 from task_mcp.viewer import ASSETS, ViewerServer, _live, launch_viewer, stop_viewer
@@ -286,6 +287,41 @@ def test_prerequisite_rows_use_compact_facts_and_fetch_details_only_on_navigatio
 def test_request_security(viewer, headers, expected):
     server, _, _ = viewer
     assert request(server, "/api/projects", headers=headers)[0] == expected
+
+
+def test_running_viewer_keeps_assets_paired_with_loaded_backend(tmp_path, monkeypatch):
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    original = {
+        name: (ASSETS / name).read_bytes() for name in ("index.html", "app.js", "style.css")
+    }
+    for name, content in original.items():
+        (assets / name).write_bytes(content)
+    monkeypatch.setattr(viewer_module, "ASSETS", assets)
+    old = ViewerServer(Store(tmp_path / "tasks.sqlite3"))
+    thread = threading.Thread(target=old.serve_forever, daemon=True)
+    thread.start()
+    try:
+        # Updating the package cannot add a newer control to a running old process.
+        for name in original:
+            (assets / name).write_bytes(b"New UI calling an action this backend does not support")
+        for route, name in (
+            ("/", "index.html"),
+            ("/w/abcd", "index.html"),
+            ("/app.js", "app.js"),
+            ("/style.css", "style.css"),
+        ):
+            assert request(old, route, method="GET") == (200, original[name])
+        # An explicit new process picks up the new bundle as a unit.
+        new = ViewerServer(old.store)
+        try:
+            assert all(content.startswith(b"New UI") for content in new.assets.values())
+        finally:
+            new.server_close()
+    finally:
+        old.shutdown()
+        old.server_close()
+        thread.join(timeout=2)
 
 
 def test_narrow_api_and_safe_assets(viewer):
@@ -843,7 +879,7 @@ def test_browser_add_b_retains_a_remove_a_retains_b_and_local_proof(viewer):
 def test_quick_idea_is_one_audited_inbox_task_held_until_processed(viewer):
     server, store, context = viewer
     project, ws = context["project"]["id"], context["workstream"]["id"]
-    text, note = "  Colour-code stale workstreams ", "Maybe after a week without results."
+    text, note = "  Colour-code stale workstreams ", "Maybe after a week.\n\n  Keep indentation.  "
     status, saved = request(server, "/api/idea", {"project": project, "text": text, "note": note})
     assert status == 200 and saved["changed"] and saved["workstream_ids"] == []
     task = store.get_tasks([saved["id"]])["items"][0]
@@ -861,7 +897,7 @@ def test_quick_idea_is_one_audited_inbox_task_held_until_processed(viewer):
     assert [
         (e["action"], e["outcome"], e["actor"]) for e in events if "read" not in e["action"]
     ] == [("task.idea_captured", "ok", "test-browser")]
-    # All tasks lists it as held (Needs input, Design/decision); no agent picks it up,
+    # All tasks lists it as held (Design); no agent picks it up,
     # even if someone later adds it to a workstream before processing it.
     row = next(r for r in store.list_tasks(project)["items"] if r["id"] == task["id"])
     assert row["unresolved_count"] == 1
@@ -882,11 +918,11 @@ def test_quick_idea_is_one_audited_inbox_task_held_until_processed(viewer):
         {"text": "Two\nlines"},
         {"text": "x" * 201},
         {"text": "Fine", "note": "y" * 501},
-        {"text": "Fine", "note": "Two\rlines"},
+        {"text": "Fine", "note": " " + "y" * 500},
         {"text": 3},
     ],
 )
-def test_quick_idea_rejects_anything_but_a_line_and_a_sentence(viewer, data):
+def test_quick_idea_rejects_invalid_title_or_details(viewer, data):
     server, store, context = viewer
     status, error = request(server, "/api/idea", {"project": context["project"]["id"], **data})
     assert status == 400 and "invalid_idea" in error["error"]
@@ -905,3 +941,33 @@ def test_frontend_quick_idea_dialog_confirmation_and_hand_off():
     script = Path(__file__).with_name("viewer_idea.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_shipped_idea_form_creates_one_gated_inbox_task_over_http(viewer):
+    server, store, context = viewer
+    script = Path(__file__).with_name("viewer_idea.test.cjs")
+    project = context["project"]["id"]
+    result = subprocess.run(
+        ["node", str(script), server.origin, server.token, project],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    saved = json.loads(result.stdout)
+    rows = store.list_tasks(project)["items"]
+    assert len(rows) == 1 and rows[0]["id"] == saved["id"]
+    task = store.get_tasks([saved["id"]])["items"][0]
+    assert task["title"] == "Colour-code stale workstreams"
+    assert task["body"] == "After a week.\n\n  Keep indentation.  "
+    assert task["user_request"] == task["title"] + "\n\n" + task["body"]
+    assert task["workstream_ids"] == [] and task["revision"] == 1
+    assert [i["text"] for i in task["unresolved_items"]] == [store_module.IDEA_ITEM]
+    writes = [
+        e
+        for e in store.list_events(project=project, limit=100)["items"]
+        if e["action"] == "task.idea_captured" and e["outcome"] == "ok"
+    ]
+    assert len(writes) == 1
+    assert store.get_next_action(context["workstream"]["id"])["task"] is None

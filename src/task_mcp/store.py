@@ -2588,20 +2588,20 @@ class Store:
         def operation(db, scope):
             project_id = self._project(db, project, scope)["id"]
             if not isinstance(text, str) or not isinstance(note, str):
-                raise TaskError("invalid_idea: the idea and note must be text")
-            title, sentence = text.strip(), note.strip()
+                raise TaskError("invalid_idea: the idea title and details must be text")
+            title, details = text.strip(), note.strip()
             if not title or len(title) > IDEA_TITLE_LIMIT or "\n" in title or "\r" in title:
                 raise TaskError(f"invalid_idea: one line of up to {IDEA_TITLE_LIMIT} characters")
-            if len(sentence) > IDEA_NOTE_LIMIT or "\n" in sentence or "\r" in sentence:
-                raise TaskError(f"invalid_idea: a note of up to {IDEA_NOTE_LIMIT} characters")
+            if len(note) > IDEA_NOTE_LIMIT:
+                raise TaskError(f"invalid_idea: details of up to {IDEA_NOTE_LIMIT} characters")
             task_id = self._insert_task(
                 db,
                 project_id,
                 title,
-                sentence,
+                note if details else "",
                 "",
                 source="user",
-                user_request=text + ("\n\n" + note if sentence else ""),
+                user_request=text + ("\n\n" + note if details else ""),
             )
             item = [{"id": _id("unr_"), "text": IDEA_ITEM}]
             db.execute("UPDATE tasks SET unresolved_json=? WHERE id=?", (_json(item), task_id))

@@ -14,7 +14,7 @@ history.replaceState(null, "", location.pathname || "/");
 // stage; whether work is a first attempt or a rework round belongs in the task history.
 const STANDINGS = {
   signoff: { label: "Sign-off", tone: "go", badge: true },
-  decision: { label: "Design/decision", tone: "warn", badge: true },
+  decision: { label: "Design", tone: "warn" },
   progress: { label: "In progress", tone: "info" },
   open: { label: "Open", tone: "ready" },
   deferred: { label: "Deferred", tone: "muted" },
@@ -32,7 +32,8 @@ const VIEWS = {
   ...STANDINGS,
 };
 const SECTIONS = [
-  { key: "input", title: "Needs input", standings: ["signoff", "decision"] },
+  { key: "signoff", title: "Signoff", standings: ["signoff"], attention: true },
+  { key: "design", title: "Design", standings: ["decision"], attention: true },
   { key: "progress", title: "In progress", standings: ["progress"] },
   { key: "open", title: "Open", standings: ["open"] },
   { key: "later", title: "Later", standings: ["deferred"], collapsible: true },
@@ -40,9 +41,9 @@ const SECTIONS = [
 ];
 const collapsed = new Set(["done"]);
 const CLOSED = ["done", "dropped", "deferred"];
-// A task's standing from its status, design/decision questions and the current-spec
+// A task's standing from its status, unresolved items and the current-spec
 // result states in view (this workstream's, or every workstream's on project boards).
-//   decision  held by any open design/decision question (briefs, revised at sign-off)
+//   decision  held by any unresolved item (briefs, revised at sign-off)
 //   signoff   a result passed review (or was human-reviewed) and awaits the verdict
 //   progress  a result is recorded and still with the agents (in review or being fixed)
 //   open      no result yet, ready or blocked
@@ -195,8 +196,8 @@ const EVENTS = {
   "attempt.recorded": "Result recorded",
   "attempt.reviewed": "Reviewed",
   "attempt.human_reviewed": "Human review",
-  "gate.unresolved_added": "Design/decision question added",
-  "gate.unresolved_resolved": "Design/decision answered",
+  "gate.unresolved_added": "Unresolved item added",
+  "gate.unresolved_resolved": "Unresolved item resolved",
   "gate.prerequisite_added": "Prerequisite added",
   "gate.prerequisite_proposed": "Gate proposed",
   "gate.proposal_accepted": "Proposal accepted",
@@ -378,11 +379,11 @@ function streamName(id) {
   return s?.branch || s?.name || "another workstream";
 }
 // Tasks waiting for the user's input. Every workstream's count comes from its own
-// cards through standingOf, exactly as its Needs input section would sort them: the
+// cards through standingOf, exactly as its Signoff and Design sections would sort them: the
 // open board counts its loaded rows, and each other workstream's count is read from
 // its card list (no specifications) once per board refresh. The server's status
 // counts rank review ahead of open questions, so they cannot stand in for it.
-const INPUT = SECTIONS.find((s) => s.key === "input").standings;
+const INPUT = SECTIONS.filter((s) => s.attention).flatMap((s) => s.standings);
 const needsInput = (rows) => rows.filter((r) => INPUT.includes(r.standing ?? standingOf(r))).length;
 const needsCounts = new Map(); // workstream ID -> count from its latest card list
 const needsTokens = new Map(); // workstream ID -> token of the latest read that may set it
@@ -820,7 +821,7 @@ function row(r) {
       node("span", `${done}/${total}`, "row-meta"),
     );
   } else {
-    // Only the Sign-off and Design/decision badges appear on cards; the badge sits
+    // Only Sign-off has a badge on cards; the orange dot identifies Design. The badge sits
     // inline after the title, so it never narrows or truncates it.
     const v = STANDINGS[r.standing] || { label: r.standing, tone: "muted" };
     b.classList.toggle("closed", r.standing === "done" || r.standing === "dropped");
@@ -856,7 +857,7 @@ function renderList() {
         renderList();
       }, "section-head" + (s.collapsible ? " toggle" : "") + (isCollapsed ? " collapsed" : ""));
       if (s.collapsible) head.append(icon("chevron", 12));
-      head.append(node("span", s.title), node("span", String(items.length), "count" + (s.key === "input" ? " attention" : "")));
+      head.append(node("span", s.title), node("span", String(items.length), "count" + (s.attention ? " attention" : "")));
       head.setAttribute("aria-expanded", String(!isCollapsed));
       list.append(head);
       if (!isCollapsed) list.append(...items.map(row));
@@ -1165,7 +1166,7 @@ function nextStep(t, standing) {
     buttons.push(button(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true)), "btn primary"));
   } else if (t.unresolved_items.length) {
     const n = t.unresolved_items.length;
-    title = n === 1 ? "A design/decision needs your answer" : `${n} design/decision questions need your answers`;
+    title = n === 1 ? "An unresolved item needs your answer" : `${n} unresolved items need your answers`;
     text = "Work on this task waits until each question below is settled. Talk it through with an agent, who records the answer.";
   } else if (passed) {
     signoff = true;
@@ -1245,7 +1246,7 @@ function body(t) {
     t.unresolved_items.forEach((q) => {
       list.append(el("div", "question", markdown(q.text)));
     });
-    out.push(section("Design/decision", list));
+    out.push(section("Unresolved items", list));
   }
   if (t.blocked_by.length) {
     const list = el("div", "links");
@@ -1540,12 +1541,13 @@ function closeDrawer() {
 
 /* ---------- dialogs ---------- */
 
-// A short, single-line text input.
-function field(name, label, { required = true, maxLength = 500 } = {}) {
+// A labelled short input, or a multiline details area.
+function field(name, label, { required = true, maxLength = 500, multiline = false } = {}) {
   const wrap = el("div", "field");
   const l = node("label", label);
   l.htmlFor = "field-" + name;
-  const i = node("input");
+  const i = node(multiline ? "textarea" : "input");
+  if (multiline) i.rows = 4;
   i.id = "field-" + name;
   i.name = name;
   i.required = required;
@@ -1677,25 +1679,25 @@ function resumeTask(t) {
 }
 // A quick idea goes to the open project's inbox, never a workstream, held by an "Idea
 // to process" item so nothing is built from it until an agent goes through it with the
-// user. Saving shows it in All tasks, under Needs input.
+// user. Saving shows it in All tasks, under Design.
 function captureIdea() {
   const project = state.project;
   if (!project || state.groups) return;
   const name = projectName(project);
   openDialog("Save an idea",
-    `Jot it down before it's lost. It goes to the inbox of ${name}${state.stream ? ", not this workstream" : ""}, and waits under Needs input. Nothing is built from it until you go through it with an agent.`,
+    `Jot it down before it's lost. It goes to the inbox of ${name}${state.stream ? ", not this workstream" : ""}, and waits under Design. Nothing is built from it until you go through it with an agent.`,
     "Save idea");
-  field("text", "Your idea, in one line", { maxLength: 200 });
-  field("note", "One more sentence (optional)", { required: false, maxLength: 500 });
+  field("text", "Idea title (required)", { maxLength: 200 });
+  field("note", "Details (optional)", { required: false, maxLength: 500, multiline: true });
   submitAction = async (values) => {
     const text = values.get("text") || "", note = values.get("note") || "";
-    if (!text.trim()) throw Object.assign(new Error("Write your idea in one line."), { local: true });
+    if (!text.trim()) throw Object.assign(new Error("Write a short idea title (up to 200 characters)."), { local: true });
     const saved = await api("idea", { project, text, note });
     return { afterSave: () => showIdea(saved) };
   };
 }
 async function showIdea(saved) {
-  toast("Idea saved to the inbox. It waits under Needs input.");
+  toast("Idea saved to the inbox. It waits under Design.");
   if (state.project !== saved.project_id) return reload({ quiet: true });
   state.groups = false;
   state.linkedGroup = null;

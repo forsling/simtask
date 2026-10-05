@@ -54,7 +54,7 @@ assert.ok(labels(run('nextStep(task, "signoff")')).includes("Sign off with an ag
 run('state.stream = "alt";');
 context.task.unresolved_items = [{id: "question", text: "Unsettled requirement"}];
 let panel = labels(run('nextStep(task, "decision")'));
-assert.ok(panel.includes("A design/decision needs your answer"));
+assert.ok(panel.includes("An unresolved item needs your answer"));
 assert.ok(panel.some(l => /A recorded result is kept below/.test(l)));
 assert.ok(!panel.includes("Record my review"));
 context.task.unresolved_items = [];

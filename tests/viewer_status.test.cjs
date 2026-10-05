@@ -1,11 +1,12 @@
 // Exercise the shipped status sections, card badges and sign-off prose with a small
-// DOM double. Layout (no title truncation at 1280 px) is checked in a real browser.
+// DOM double. This makes no claim about browser layout.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const all = [];
 const roots = new Map();
+const listeners = new Map();
 function element(tag = "div") {
   const node = {tag, children: [], textContent: "", hidden: false, draggable: false, value: "",
     dataset: {}, style: {}, className: "", title: "", parentElement: null,
@@ -37,7 +38,7 @@ function get(id) {
 }
 const context = vm.createContext({
   document: {getElementById: get, createElement: element, createElementNS: (_, tag) => element(tag), createDocumentFragment: element,
-    createTextNode: text => Object.assign(element(), {textContent: text}), addEventListener() {}, querySelectorAll: () => []},
+    createTextNode: text => Object.assign(element(), {textContent: text}), addEventListener(name, listener) { listeners.set(name, listener); }, querySelectorAll: () => []},
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
   sessionStorage: {getItem: () => ""}, history: {replaceState() {}, pushState() {}},
 });
@@ -98,32 +99,52 @@ async function test() {
     if (n.classList.contains("section-head")) sections.push({title: n.children[n.children.length - 2].textContent, rows: []});
     else if (n.classList.contains("row")) sections.at(-1).rows.push(n);
   }
-  assert.deepEqual(sections.map(s => s.title), ["Needs input", "In progress", "Open", "Later", "Done"]);
+  assert.deepEqual(sections.map(s => s.title), ["Signoff", "Design", "In progress", "Open", "Later", "Done"]);
   const ids = s => sections.find(x => x.title === s).rows.map(r => r.dataset.id);
-  assert.deepEqual(ids("Needs input"), ["brief", "reworked", "human", "signoff", "revised"], "workstream order within the section");
+  assert.deepEqual(ids("Signoff"), ["reworked", "human", "signoff"], "canonical relative order within Signoff");
+  assert.deepEqual(ids("Design"), ["brief", "revised"], "canonical relative order within Design");
+  assert.deepEqual(Array.from(run("orderedRows().map(r => r.id)")), ["reworked", "human", "signoff", "brief", "revised", "fixing", "review", "blocked", "ready", "deferred"]);
+  assert.deepEqual(Array.from(run("state.rows.map(r => r.id)")), context.board.map(r => r.id), "grouping changes no stored order");
   assert.deepEqual(ids("In progress"), ["fixing", "review"]);
   assert.deepEqual(ids("Open"), ["blocked", "ready"]);
   assert.deepEqual(ids("Later"), ["deferred"]);
   assert.deepEqual(ids("Done"), [], "Done starts collapsed");
 
-  // Only Sign-off and Design/decision badges; no stage words, rejections or numbering.
+  // j/k follows the displayed Signoff -> Design order, including search results.
+  run(`selectTask = async id => { state.selected = id; }; state.selected = "signoff";`);
+  const press = key => listeners.get("keydown")({key, target: {tagName: "BODY"}, preventDefault() {}});
+  press("j");
+  assert.equal(run("state.selected"), "brief");
+  press("k");
+  assert.equal(run("state.selected"), "signoff");
+  get("search").value = "Design brief";
+  run("renderList()");
+  assert.deepEqual(kids(get("list")).filter(n => n.classList.contains("row")).map(n => n.dataset.id), ["brief"]);
+  press("j");
+  assert.equal(run("state.selected"), "brief");
+  get("search").value = "";
+  run("renderList()");
+
+  // Only Sign-off badges; no stage words, rejections or numbering.
   const badges = {};
   for (const r of sections.flatMap(s => s.rows))
     badges[r.dataset.id] = descendants(r).filter(n => n.classList.contains("badge")).map(n => n.textContent);
-  assert.deepEqual(badges, {brief: ["Design/decision"], reworked: ["Sign-off"], human: ["Sign-off"], signoff: ["Sign-off"],
-    revised: ["Design/decision"], fixing: [], review: [], blocked: [], ready: [], deferred: []});
+  assert.deepEqual(badges, {brief: [], reworked: ["Sign-off"], human: ["Sign-off"], signoff: ["Sign-off"],
+    revised: [], fixing: [], review: [], blocked: [], ready: [], deferred: []});
+  for (const r of sections.find(s => s.title === "Design").rows)
+    assert.ok(descendants(r).some(n => n.classList.contains("dot") && n.classList.contains("tone-warn")), "Design keeps its orange dot");
   // Everything shown except the task titles themselves.
   const listText = descendants(list).filter(n => !n.classList.contains("row-title")).map(n => n.textContent).join(" ");
   assert.doesNotMatch(listText, /Rejected|Rework|Review\b|Ready|Blocked|Question|Sign off\b/);
   assert.ok(!descendants(list).some(n => /row-order|row-meta/.test(n.className)), "No position numbers or stage labels");
   // The badge sits inside the title text, after it, so it never narrows the title.
-  const reworked = sections[0].rows[1];
+  const reworked = sections[0].rows[0];
   const title = descendants(reworked).find(n => n.classList.contains("row-title"));
   assert.equal(title.textContent, "Rework then passed");
   assert.equal(title.children.at(-1).textContent, "Sign-off");
   assert.match(reworked.title, /^Sign-off · position 3 in main\. Drag to reorder\.$/);
 
-  // The sidebar count matches the loaded Needs input section.
+  // The sidebar counts both loaded Signoff and Design sections.
   assert.equal(run("needsYou(state.streams[0])"), 5);
   // A workstream whose cards have not been read shows no count, never the server's.
   assert.equal(run('needsYou({id: "other", status: {counts: {signoff: 2, unresolved_items: 1}}})'), null);
@@ -173,14 +194,15 @@ async function test() {
   // Revised at sign-off: the open question holds it, under the new name.
   context.task.unresolved_items = [{id: "unr", text: "Keep workstream as the term"}];
   assert.equal(run("taskStanding(task)"), "decision");
-  assert.match(bodyText(), /Design\/decision/);
+  assert.match(bodyText(), /Unresolved items/);
+  assert.doesNotMatch(bodyText(), /Design\/decision/);
   assert.doesNotMatch(bodyText(), /Open questions/);
   const held = descendants(run('nextStep(task, "decision")')).map(n => n.textContent).join(" ");
-  assert.match(held, /A design\/decision needs your answer/);
+  assert.match(held, /An unresolved item needs your answer/);
   assert.doesNotMatch(held, /Sign off with an agent|Answer/);
 }
 
-// Every workstream's sidebar count equals what its Needs input section shows, also for
+// Every workstream's sidebar count equals its Signoff and Design sections, also for
 // workstreams that are not open. The server ranks review ahead of open questions, so
 // its status counts miss a task with a question and a result under review.
 async function sidebar() {
@@ -221,7 +243,7 @@ async function sidebar() {
   const inputRows = () => {
     let inInput = false, n = 0;
     for (const node of kids(get("list"))) {
-      if (node.classList.contains("section-head")) inInput = text(node).includes("Needs input");
+      if (node.classList.contains("section-head")) inInput = /^(Signoff|Design)/.test(text(node));
       else if (inInput && node.classList.contains("row")) n++;
     }
     return n;
@@ -244,7 +266,7 @@ async function sidebar() {
   await visit(null);
   assert.deepEqual(navCount("side"), {count: "2", attention: true});
   assert.deepEqual([...requests].sort(), ["tasks:", "tasks:s", "tasks:w", "workstreams:"]);
-  // Opening side: the Needs input section shows exactly the count the sidebar showed.
+  // Opening side: both input sections total exactly the sidebar count.
   await visit("s");
   assert.equal(inputRows(), 2);
   assert.deepEqual(navCount("side"), {count: "2", attention: true});

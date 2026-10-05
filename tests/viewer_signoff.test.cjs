@@ -48,7 +48,7 @@ async function testActivity() {
     {action: "task.updated", label: "Edited", request: {
       note: "Legacy decision note", text: "Lower priority text",
     }, note: "Legacy decision note"},
-    {action: "gate.unresolved_added", label: "Design/decision question added", request: {
+    {action: "gate.unresolved_added", label: "Unresolved item added", request: {
       text: "Legacy question text",
     }, note: "Legacy question text"},
     {action: "task.signoff", label: "Sign-off decision", outcome: "error", request: {},

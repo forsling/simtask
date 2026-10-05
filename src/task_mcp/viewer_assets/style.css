@@ -88,7 +88,8 @@ body {
 }
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -1208,7 +1209,8 @@ dialog h2 {
   color: var(--text-2);
 }
 .field input,
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--line-2);
@@ -1217,10 +1219,15 @@ dialog h2 {
   line-height: 1.5;
 }
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--focus);
+}
+.field textarea {
+  resize: vertical;
+  min-height: 6em;
 }
 .check {
   display: flex;

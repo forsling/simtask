@@ -58,6 +58,11 @@ class ViewerServer(ThreadingHTTPServer):
 
     def __init__(self, store, token=None):
         self.store = store
+        # Keep this process's UI paired with its loaded dispatch code. Source updates
+        # take effect together only when the viewer is explicitly restarted.
+        self.assets = {
+            name: (ASSETS / name).read_bytes() for name in ("index.html", "app.js", "style.css")
+        }
         self.token = token or secrets.token_urlsafe(32)
         super().__init__(("127.0.0.1", 0), ViewerHandler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
@@ -120,7 +125,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.reply(404, {"error": "Not found"})
             return
         name, kind = assets.get(self.path, page)
-        self.reply(200, (ASSETS / name).read_bytes(), kind)
+        self.reply(200, self.server.assets[name], kind)
 
     def do_POST(self):
         if not self.allowed(True):
