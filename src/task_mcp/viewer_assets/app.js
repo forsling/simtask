@@ -1494,8 +1494,9 @@ function actionsMenu(anchor, t) {
       fn();
     }, "menu-item " + cls);
   const items = [];
-  // Questions belong to open work; a closed task gets none.
-  if (t.status === "open") items.push(item("Ask a question", () => askQuestion(t)));
+  // Questions belong to live work, including tasks sent back for rework; done and
+  // dropped tasks get none, and deferred tasks need Resume first.
+  if (!["done", "dropped", "deferred"].includes(t.status)) items.push(item("Ask a question", () => askQuestion(t)));
   items.push(item(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true))));
   if (t.workstream_ids?.length) items.push(item("Remove from workstream", () => removeFromWorkstreamTask(t).catch(e => toast(e.message, true))));
   if (t.status === "deferred" || t.status === "dropped") items.push(item("Resume", () => resumeTask(t)));

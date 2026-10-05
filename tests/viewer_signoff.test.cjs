@@ -133,7 +133,7 @@ async function test() {
   await run("copyPrompt")("Sign off again", anchor);
   assert.equal(box.value, "Sign off again"); assert.ok(selected);
 
-  // Ask a question: open tasks only, one short input, no checkbox.
+  // Ask a question: any live task (open or sent back for rework), one short input, no checkbox.
   const menu = status => {
     run(`task.status = ${JSON.stringify(status)}; actionsMenu({getBoundingClientRect: () => ({bottom: 0, right: 0})}, task);`);
     const items = get("popover").children.map(node => node.textContent);
@@ -141,6 +141,7 @@ async function test() {
     return items;
   };
   assert.deepEqual(plain(menu("open")), ["Ask a question", "Add to workstream", "Remove from workstream", "Defer", "Drop"]);
+  assert.deepEqual(plain(menu("rework")), ["Ask a question", "Add to workstream", "Remove from workstream", "Defer", "Drop"]);
   assert.deepEqual(plain(menu("deferred")), ["Add to workstream", "Remove from workstream", "Resume"]);
   assert.deepEqual(plain(menu("dropped")), ["Add to workstream", "Remove from workstream", "Resume"]);
   run("task.workstream_ids = []");

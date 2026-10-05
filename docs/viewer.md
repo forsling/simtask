@@ -103,9 +103,10 @@ earlier `#/project/...` addresses are not supported; they open the default view.
 - Shared groups show all members across all projects and global completion.
   Opening a member moves to its own project's queue. A group's completion does
   not mean a particular local workstream delivered all of its members.
-- A task's **Actions** menu offers **Ask a question** (open tasks only),
-  **Add to workstream**, **Remove from workstream**, and **Defer** and **Drop**,
-  or **Resume** for deferred and dropped tasks. Completed tasks offer no actions.
+- A task's **Actions** menu offers **Ask a question** (open tasks, including
+  those sent back for rework), **Add to workstream**, **Remove from
+  workstream**, and **Defer** and **Drop**, or **Resume** for deferred and
+  dropped tasks. Completed tasks offer no actions.
   **Add to workstream** and **Remove from workstream** identify the workstream
   being changed; adding retains existing memberships and removing changes only
   the named one. Details list every effective membership accurately. The inbox

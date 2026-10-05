@@ -84,14 +84,14 @@ more than one project. Both show whole-group progress and project counts;
 Group details list workstreams that explicitly include the group, with
 project/branch links to their task lists. Independently scoped member tasks
 do not imply that the whole group is included in a workstream.
-You can ask a question on an open task, add a task to or remove it from a
-workstream, drag to reorder a workstream, and defer, resume or drop tasks
-(Drop asks for confirmation; reasons are optional except when bringing back a
-dropped task). A task waiting for sign-off offers **Sign off with an agent**,
-which copies a ready prompt to paste into your agent: sign-off is a walkthrough
-with an agent, not a browser form. The browser does not create or edit tasks,
-answer questions, record reviews or sign off. Concurrent changes keep what you
-entered and offer reconciliation.
+You can ask a question on an open task (including one sent back for rework),
+add a task to or remove it from a workstream, drag to reorder a workstream, and
+defer, resume or drop tasks (Drop asks for confirmation; reasons are optional
+except when bringing back a dropped task). A task waiting for sign-off offers
+**Sign off with an agent**, which copies a ready prompt to paste into your
+agent: sign-off is a walkthrough with an agent, not a browser form. The browser
+does not create or edit tasks, answer questions, record reviews or sign off.
+Concurrent changes keep what you entered and offer reconciliation.
 The app uses the existing Store and database; it has no synchronized copy.
 Task text is displayed as safe, whitespace-preserving text, including Markdown
 source. Full task setup, result recording and uncommon workflow operations
