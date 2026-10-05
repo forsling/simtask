@@ -2351,6 +2351,11 @@ class Store:
                     "invalid_public_id: use up to 96 lowercase letters, digits and single "
                     "hyphens, beginning with a letter (for example readable-task-ids)"
                 )
+            if re.fullmatch(r"[0-9a-f]+", public_id):
+                raise TaskError(
+                    "invalid_public_id: hexadecimal-only names are reserved for legacy viewer "
+                    "bookmarks; choose a descriptive name such as readable-task-ids"
+                )
             if db.execute("SELECT 1 FROM tasks WHERE id=?", (public_id,)).fetchone():
                 raise TaskError(
                     f"public_id_conflict: {public_id} is already reserved; choose a different "
@@ -2361,7 +2366,10 @@ class Store:
         # name, with a deterministic numeric suffix for duplicate titles.
         ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
         base = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
-        if not base or not base[0].isalpha():
+        base = base[:88].rstrip("-")
+        # Check after truncation too: a long title's distinguishing suffix may be lost.
+        # All-hex names share the namespace of existing shortened task/group URLs.
+        if not base or not base[0].isalpha() or re.fullmatch(r"[0-9a-f]+", base):
             base = "task-" + base if base else "task"
         base = base[:88].rstrip("-")
         candidate, suffix = base, 2

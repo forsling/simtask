@@ -151,6 +151,62 @@ def test_invalid_ids_roll_back(context, public_id):
     assert context[0].list_tasks(context[1])["items"] == []
 
 
+@pytest.mark.parametrize("kind", ["task", "group"])
+@pytest.mark.parametrize("public_id", ["a", "face", "e1e1e1e1", "a" * 32, "a" * 96])
+def test_explicit_hex_names_are_reserved_for_legacy_bookmarks(context, kind, public_id):
+    store, project, ws = context
+    with pytest.raises(TaskError, match="invalid_public_id.*reserved for legacy viewer bookmarks"):
+        if kind == "group":
+            store.create_group(ws, "New group", public_id=public_id)
+        else:
+            create(context, public_id)
+    assert store.list_tasks(project)["items"] == []
+    with closing(sqlite3.connect(store.path)) as db:
+        assert db.execute("SELECT count(*) FROM task_identities").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("kind", ["task", "group"])
+def test_derived_hex_names_preserve_legacy_references(context, monkeypatch, kind):
+    store, project, ws = context
+    prefix = "e1e1e1e1"
+    legacy_id = "tsk_" + prefix + "0" * 24
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Store,
+            "_public_task_id",
+            staticmethod(lambda db, title, public_id=None: legacy_id),
+        )
+        if kind == "group":
+            store.create_group(ws, "Existing group")
+        else:
+            create(context)
+    legacy = store.get_tasks([legacy_id])["items"][0]
+    if kind == "group":
+        bookmark = store.resolve_prefix("group", prefix)
+        assert bookmark["items"][0]["id"] == legacy_id
+    with pytest.raises(TaskError, match="invalid_public_id.*reserved for legacy viewer bookmarks"):
+        if kind == "group":
+            store.create_group(ws, "New group", public_id=prefix)
+        else:
+            create(context, prefix)
+
+    for title in (prefix.upper(), "a" * 88 + "-descriptive-suffix"):
+        if kind == "group":
+            new = store.create_group(ws, title)
+        else:
+            new = store.create_task(project, title, workstream_id=ws)
+        assert new["id"].startswith("task-")
+        if kind == "group":
+            duplicate = store.create_group(ws, title)
+        else:
+            duplicate = store.create_task(project, title, workstream_id=ws)
+        assert duplicate["id"] == new["id"] + "-2"
+        assert len(duplicate["id"]) <= 96
+    assert store.get_tasks([legacy_id])["items"][0] == legacy
+    if kind == "group":
+        assert store.resolve_prefix("group", prefix) == bookmark
+
+
 def test_derived_names_ideas_and_decomposition(context):
     store, project, ws = context
     assert create(context, None)["id"] == "readable-task-ids"
@@ -159,6 +215,7 @@ def test_derived_names_ideas_and_decomposition(context):
     assert idea["id"] == "fix-task-references"
     assert store.capture_idea(project, "Fix task references")["id"] == "fix-task-references-2"
     assert store.capture_idea(project, "東京")["id"] == "task"
+    assert store.capture_idea(project, "Face")["id"] == "task-face"
     group = create(context, "reference-redesign")
     result = store.decompose_task(
         group["id"],
@@ -187,6 +244,9 @@ def test_derived_names_ideas_and_decomposition(context):
         store.get_tasks(["new-member"])
     assert store.resolve_prefix("group", "reference-redesign")["items"][0]["id"] == group["id"]
     assert store.resolve_prefix("group", "reference-redesign-missing")["items"] == []
+    hexadecimal = create(context, "hexadecimal-parent")
+    store.decompose_task(hexadecimal["id"], 1, [{"title": "Deadbeef"}])
+    assert store.list_group_members(hexadecimal["id"])["items"][0]["id"] == "task-deadbeef"
 
 
 def snapshot(db):

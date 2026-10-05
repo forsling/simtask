@@ -284,6 +284,26 @@ async function main() {
   await v.edit(`/g/${readableGroup}`);
   assert.equal(v.at().selected, readableGroup);
   assert.equal(v.path(), `/g/${readableGroup}`);
+  // Title-derived hex names are prefixed at creation. Adding such a task/group
+  // must preserve existing shortened bookmarks and keep the new IDs addressable.
+  await v.edit(`/w/${short(W1)}/t/${short(T1)}`);
+  assert.equal(v.at().selected, T1);
+  const hexTitleTask = `task-${short(T1)}`;
+  tasks[W1].push(hexTitleTask);
+  tasks[P1].push(hexTitleTask);
+  await v.edit(`/w/${short(W1)}/t/${short(T1)}`);
+  assert.equal(v.at().selected, T1);
+  await v.edit(`/w/${short(W1)}/t/${hexTitleTask}`);
+  assert.equal(v.at().selected, hexTitleTask);
+  await v.edit(`/g/${short(G1)}`);
+  assert.equal(v.at().selected, G1);
+  const hexTitleGroup = `task-${short(G1)}`;
+  groupInfo[hexTitleGroup] = {origin: P1, by: [P1]};
+  groupLists[P1].push(hexTitleGroup);
+  await v.edit(`/g/${short(G1)}`);
+  assert.equal(v.at().selected, G1);
+  await v.edit(`/g/${hexTitleGroup}`);
+  assert.equal(v.at().selected, hexTitleGroup);
   assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/double--dash")'), null);
   assert.equal(await v.run('parseRoute("/w/a1a1a1a1/t/' + 'x'.repeat(97) + '")'), null);
   console.log("viewer route tests passed");
