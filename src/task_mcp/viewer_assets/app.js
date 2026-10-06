@@ -12,6 +12,8 @@ history.replaceState(null, "", location.pathname || "/");
 
 // Where a task stands for the user. Cards show only this, never the agents' internal
 // stage; whether work is a first attempt or a rework round belongs in the task history.
+// The server decides each task's standing (Store._standing, one rule for the board, the
+// task detail and the sidebar counts); the viewer only labels and sections it.
 const STANDINGS = {
   signoff: { label: "Sign-off", tone: "go", badge: true },
   decision: { label: "Design", tone: "warn" },
@@ -41,31 +43,10 @@ const SECTIONS = [
 ];
 const collapsed = new Set(["done"]);
 const CLOSED = ["done", "dropped", "deferred"];
-// A task's standing from its status, unresolved items and the current-spec
-// result states in view (this workstream's, or every workstream's on project boards).
-//   decision  held by any unresolved item (briefs, revised at sign-off)
-//   signoff   a result passed review (or was human-reviewed) and awaits the verdict
-//   progress  a result is recorded and still with the agents (in review or being fixed),
-//             or an agent picked the task up recently (r.picked)
-//   open      no result yet and no recent pick, ready or blocked
-function standingOf(r, counts = r.attempt_counts || r.aggregate_attempt_counts || {}) {
-  if (r.object_type === "group") return "group";
-  const closed = [r.status, r.view].find((s) => CLOSED.includes(s));
-  if (closed) return closed;
-  if (r.unresolved_count || r.view === "unresolved_items") return "decision";
-  if (counts.passed || counts.human_review || r.view === "signoff") return "signoff";
-  // The server reports a pick only while it counts: a few hours, until a newer result.
-  if (counts.review || counts.rework || r.view === "review" || r.picked) return "progress";
-  return "open";
-}
-// The same standing for a fetched task, from its current-spec results in view.
-function taskStanding(t) {
-  const counts = {};
-  for (const a of t.attempts || [])
-    if (a.spec_revision === t.spec_revision && (!state.stream || a.workstream_id === state.stream))
-      counts[a.state] = (counts[a.state] || 0) + 1;
-  return standingOf({ status: t.status, unresolved_count: t.unresolved_items?.length || 0, picked: currentPick(t) }, counts);
-}
+// A fetched task's standing, which the server gives for the results in view (this
+// workstream's, or every workstream's on project boards). A server without it (an older
+// backend) leaves the standing visibly unknown instead of guessing.
+const taskStanding = (t) => t.standing || "unknown";
 // The most recent live pick of a fetched task in view (this workstream's, or any on
 // project boards); the server lists only picks that still count.
 function currentPick(t) {
@@ -107,6 +88,8 @@ const state = {
   showArchived: (() => { try { return sessionStorage.getItem("task-viewer-show-archived") === "1"; } catch { return false; } })(),
   // The workstream whose board state.rows holds (null for project and group boards).
   boardStream: null,
+  // Why the last workstream list (and its Needs input counts) failed to load, if it did.
+  countsError: null,
 };
 let submitAction = null;
 let submissionPending = false;
@@ -410,39 +393,22 @@ function currentArchived() {
 function defaultStream(streams) {
   return streams.find((s) => !isArchived(s))?.id || null;
 }
-// Tasks waiting for the user's input. Every workstream's count comes from its own
-// cards through standingOf, exactly as its Signoff and Design sections would sort them: the
-// open board counts its loaded rows, and each other workstream's count is read from
-// its card list (no specifications) once per board refresh. The server's status
-// counts rank review ahead of open questions, so they cannot stand in for it.
+// Tasks waiting for the user's input: those its Signoff and Design sections show. The
+// workstream list carries each workstream's count of every standing, by the same server
+// rule that gives the board its standings, so it is read with the workstreams on every
+// board refresh (group boards included) and no card list is read to count. The open
+// board counts its loaded rows, so its sidebar entry always matches the sections shown.
+// null: not counted (a server without standing counts).
 const INPUT = SECTIONS.filter((s) => s.attention).flatMap((s) => s.standings);
-const needsInput = (rows) => rows.filter((r) => INPUT.includes(r.standing ?? standingOf(r))).length;
-const needsCounts = new Map(); // workstream ID -> count from its latest card list
-const needsTokens = new Map(); // workstream ID -> token of the latest read that may set it
-let needsToken = 0;
 function needsYou(stream) {
-  if (!state.groups && state.boardStream === stream.id) return needsInput(state.rows);
-  return needsCounts.get(stream.id) ?? null;
+  const counts = stream.status?.standings;
+  if (!counts) return null;
+  if (!state.groups && state.boardStream === stream.id) return state.rows.filter((r) => INPUT.includes(r.standing)).length;
+  return INPUT.reduce((n, s) => n + (counts[s] || 0), 0);
 }
-function noteNeeds(id, rows) {
-  needsTokens.set(id, ++needsToken);
-  needsCounts.set(id, needsInput(rows));
-}
-// Reads the given workstreams' cards in parallel and redraws the sidebar if a count
-// changed. A newer read of a workstream (or its board loading) supersedes an older one.
-async function refreshNeeds(project, streams) {
-  const reads = streams.map((s) => {
-    const token = ++needsToken;
-    needsTokens.set(s.id, token);
-    return pages("tasks", { project, workstream_id: s.id }).then((rows) => {
-      if (needsTokens.get(s.id) !== token) return false;
-      const n = needsInput(rows), changed = needsCounts.get(s.id) !== n;
-      needsCounts.set(s.id, n);
-      return changed;
-    });
-  });
-  const changed = (await Promise.allSettled(reads)).some((r) => r.status === "fulfilled" && r.value);
-  if (changed && project === state.project) renderNav();
+// A task's detail, with its standing for the results in view.
+function details(id) {
+  return api("details", { ids: [id], ...(state.stream ? { workstream_id: state.stream } : {}) });
 }
 
 /* ---------- location URLs ---------- */
@@ -729,13 +695,25 @@ function renderNav() {
       if (old && !state.showArchived && !(active && state.stream === s.id)) return;
       const b = button("", () => changeScope(s.id), "nav-item" + (active && state.stream === s.id ? " active" : "") + (old ? " archived" : ""));
       b.append(icon("branch", 14), branchLabel(s.branch || s.name));
-      const n = old ? 0 : needsYou(s);
+      // A workstream with tasks that need you shows that count; with none, its task total;
+      // uncounted, a question mark. Counts from a failed refresh are marked out of date.
+      const n = old ? 0 : needsYou(s), total = s.status?.scoped_count ?? 0;
+      const outdated = state.countsError && !old ? " stale" : "";
       if (old) b.append(node("span", "archived", "tag-archived"));
-      else if (n) b.append(node("span", String(n), "count attention"));
-      else b.append(node("span", String(s.status?.scoped_count ?? ""), "count"));
-      b.title = `${s.branch || s.name} · ${s.status?.scoped_count || 0} tasks` + (n ? ` · ${n} need you` : "") + (old ? ` · archived: ${s.archive.reason}` : "");
+      else if (n === null) b.append(node("span", "?", "count unknown"));
+      else if (n) b.append(node("span", String(n), "count attention" + outdated));
+      else b.append(node("span", String(total), "count" + outdated));
+      b.title = `${s.branch || s.name} · ${total} task${total === 1 ? "" : "s"}` +
+        (old ? ` · archived: ${s.archive.reason}` : n === null ? " · tasks that need you are not counted; restart the viewer" : n ? ` · ${n} need you` : " · none need you") +
+        (outdated ? ` · may be out of date: the last refresh failed (${state.countsError}); refresh to try again` : "");
       sub.append(b);
     });
+    if (state.countsError) {
+      const retry = button("", () => reload({ quiet: true }), "nav-item counts-stale");
+      retry.append(node("span", "Counts may be out of date · Retry", "grow"));
+      retry.title = `The last refresh of the workstream counts failed (${state.countsError}).`;
+      sub.append(retry);
+    }
     if (archived.length) {
       const toggle = button(state.showArchived ? "Hide archived" : `Show ${archived.length} archived`, () => {
         state.showArchived = !state.showArchived;
@@ -797,24 +775,29 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
   );
   // Notes are context, not the board: a failed notes read hides them instead of the list.
   const notesLoad = groups ? Promise.resolve(null) : api("notes", { project, workstream_id: stream }).catch(() => null);
+  // The workstreams, with their Needs input counts, are read again on every board,
+  // group boards included. A failed read keeps the board and the previous list, and
+  // marks the counts out of date until a later refresh succeeds.
+  const streamsLoad = project
+    ? workstreams(project).then((items) => ({ items }), (error) => ({ error }))
+    : Promise.resolve({ items: state.streams });
   try {
     const board = groups ? null : await taskBoard({ project, workstream_id: state.stream });
     const loaded = groups
       ? await pages("groups", groups === "project" ? { project } : {})
       : board.items;
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
-    const streams = state.groups ? state.streams : await workstreams(project);
+    const listed = await streamsLoad;
     const notes = (await notesLoad)?.notes || null;
     if (stale()) return;
     renderNotes(notes);
-    state.rows = rows.map((r) => ({ ...r, standing: standingOf(r) }));
+    // Task cards carry the server's standing; group boards list groups, which have none.
+    state.rows = rows;
     state.boardStream = groups ? null : stream;
+    const streams = listed.items || state.streams;
     state.streams = streams;
-    // The open board's count comes from its rows; every other workstream's is read
-    // again (group boards read only those not counted yet), without holding the board.
-    if (state.boardStream) noteNeeds(state.boardStream, state.rows);
-    const recount = streams.filter((s) => s.id !== state.boardStream && !isArchived(s) && (!groups || !needsTokens.has(s.id)));
-    if (recount.length) refreshNeeds(project, recount).catch(() => {});
+    if (listed.error && !state.countsError) toast(`Couldn't refresh the workstream counts: ${listed.error.message}. They may be out of date; refresh to try again.`, true);
+    state.countsError = listed.error ? listed.error.message : null;
     state.loadedAt = Date.now();
     state.orderStream = !groups && state.stream ? state.stream : null;
     state.orderRevision = state.orderStream ? board.workstream_order_revision : null;
@@ -952,7 +935,7 @@ function row(r) {
   } else {
     // Only Sign-off has a badge on cards; the orange dot identifies Design. The badge sits
     // inline after the title, so it never narrows or truncates it.
-    const v = STANDINGS[r.standing] || { label: r.standing, tone: "muted" };
+    const v = STANDINGS[r.standing] || { label: r.standing || "Unknown", tone: "muted" };
     b.classList.toggle("closed", r.standing === "done" || r.standing === "dropped");
     if (orderEditable()) {
       b.draggable = true;
@@ -1187,7 +1170,7 @@ async function selectTask(id, { open = false, quiet = false, entry = "replace" }
   if (open) $("shell").classList.add("detail-open");
   if (!quiet) $("detail").classList.add("loading");
   try {
-    const t = (await api("details", { ids: [id] })).items[0];
+    const t = (await details(id)).items[0];
     if (state.selected !== id || generation !== state.generation) return;
     if (t.object_type === "group") {
       // Now that the group's projects are known, its address may shorten to /g/<group>.
@@ -1266,7 +1249,7 @@ function currentAttempt(t, requiredStates = null) {
   ) || null;
 }
 // What, if anything, the user can do next, stated plainly. The standing is where the
-// task is for the user (see standingOf); prose names no attempt IDs, agent labels or
+// task is for the user (see taskStanding); prose names no attempt IDs, agent labels or
 // internal workflow stages. The browser shows and steers: agents write and decide with
 // the user, so sign-off hands a ready prompt to an agent instead of recording a verdict.
 function nextStep(t, standing) {
@@ -1727,7 +1710,7 @@ function taskAction(t, action, extra) {
       return await api(action, { task_id: t.id, expected_revision: revision, ...extra(values) });
     } catch (error) {
       if (error.conflict) $("conflict").replaceChildren(button("Show the current task", async () => {
-        const latest = (await api("details", { ids: [t.id] })).items[0];
+        const latest = (await details(t.id)).items[0];
         $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
           node("p", "Status: " + (STANDINGS[taskStanding(latest)]?.label || latest.status)),
           markdown(latest.body), markdown(latest.acceptance_criteria),

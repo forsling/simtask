@@ -1063,3 +1063,10 @@ def test_frontend_public_ids_cards_headers_copy_and_search():
     script = Path(__file__).with_name("viewer_ids.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_frontend_status_sections_and_sidebar_counts():
+    script = Path(__file__).with_name("viewer_status.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr

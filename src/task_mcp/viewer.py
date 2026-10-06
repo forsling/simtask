@@ -61,6 +61,12 @@ def dispatch(store, action, data):
     if action == "tasks":
         # The board shows every section, closed ones included, from unabridged cards.
         data = {**data, "include_inactive": True, "full_cards": True}
+    # Store._standing is the one rule for where a task stands: each card's and task
+    # detail's standing, and each workstream's sidebar Needs input count.
+    if action == "workstreams":
+        data = {**data, "standings": True}
+    if action == "details":
+        data = {**data, "standing": True}
     return operations[action](**data)
 
 

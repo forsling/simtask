@@ -120,7 +120,7 @@ async function test() {
 
   // An idea's next step hands it to an agent instead of offering to build it.
   const idea = {id: "colour-code-stale-workstreams", title: "Colour-code stale workstreams", project_id: "prj_bbbb2222",
-    status: "open", workstream_ids: [], prerequisites: [], attempts: [], spec_revision: 1,
+    status: "open", standing: "decision", workstream_ids: [], prerequisites: [], attempts: [], spec_revision: 1,
     unresolved_items: [{id: "unr_1", text: "Idea to process: turn into a proper brief or task with the user"}]};
   run("state.stream = null");
   context.idea = idea;
@@ -135,6 +135,7 @@ async function test() {
   assert.equal(context.toasts.at(-1).text, "Copied. Paste it into your agent to start the walkthrough.");
   // Once the item is resolved it is an ordinary task again.
   idea.unresolved_items = [];
+  idea.standing = "open";
   assert.doesNotMatch(texts(run("nextStep(idea, taskStanding(idea))")), /idea/i);
 }
 test().catch(error => {console.error(error); process.exitCode = 1;});

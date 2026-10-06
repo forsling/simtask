@@ -26,6 +26,9 @@ CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
 INACTIVE_STATUSES = ("done", "deferred", "dropped")
 # Optional board-card detail groups, in documentation order.
 CARD_INCLUDE_GROUPS = ("blockers", "attempt", "concerns", "workstreams", "ids")
+# Where a task stands for the user, as the viewer sections its board and counts
+# Needs input in the sidebar. Store._standing is the only definition of this rule.
+STANDINGS = ("signoff", "decision", "progress", "open", "deferred", "done", "dropped")
 # Slim-card state words for gate views whose internal names are longer.
 STATE_WORDS = {"unresolved_items": "question", "prerequisites": "blocked"}
 # Values the list_tasks state filter accepts: slim state words, then older view names.
@@ -888,7 +891,11 @@ class Store:
             raise TaskError("workstream_exists: choose a distinct name and branch") from exc
         return ws
 
-    def list_workstreams(self, project=None, limit=50, offset=0, include_archived=False):
+    def list_workstreams(
+        self, project=None, limit=50, offset=0, include_archived=False, standings=False
+    ):
+        """standings=True (the viewer's internal option) adds each status's standing counts."""
+
         def operation(db, scope):
             self._page(limit, offset)
             self._validate_include_archived(include_archived)
@@ -917,7 +924,7 @@ class Store:
                 row["scope_has_more"] = len(all_ids) > 3
                 row["groups_has_more"] = len(groups) > 3
                 row["group_total"] = len(groups)
-                row["status"] = self._status_summary(db, row["id"], all_ids)
+                row["status"] = self._status_summary(db, row["id"], all_ids, standings)
             page = self._paged(rows, limit, offset)
             if not include_archived:
                 page["archived_hidden"] = db.execute(
@@ -927,16 +934,15 @@ class Store:
                 ).fetchone()[0]
             return page
 
-        return self._run(
-            "workstreams.listed",
-            {
-                "project": project,
-                "limit": limit,
-                "offset": offset,
-                "include_archived": include_archived,
-            },
-            operation,
-        )
+        request = {
+            "project": project,
+            "limit": limit,
+            "offset": offset,
+            "include_archived": include_archived,
+        }
+        if standings:
+            request["standings"] = True
+        return self._run("workstreams.listed", request, operation)
 
     def workstream_status(
         self,
@@ -1078,7 +1084,7 @@ class Store:
                 return reason
         return "ready"
 
-    def _status_summary(self, db, workstream_id, ids=None):
+    def _status_summary(self, db, workstream_id, ids=None, standings=False):
         ids = ids if ids is not None else self._scope_ids(db, workstream_id)
         scoped_ids = set(ids)
         counts = {
@@ -1103,8 +1109,11 @@ class Store:
                 "signoff",
             )
         }
+        standing_counts = dict.fromkeys(STANDINGS, 0)
         concerned_tasks = concern_count = 0
         for item in self._scoped_queue(db, workstream_id):
+            if standings and (standing := self._standing(item)) in standing_counts:
+                standing_counts[standing] += 1
             concerned_tasks += bool(item["concern_count"])
             concern_count += item["concern_count"]
             counts[item["view"]] += 1
@@ -1146,6 +1155,7 @@ class Store:
             "referenced_groups": referenced_groups[:3],
             "referenced_group_total": len(referenced_groups),
             "referenced_groups_has_more": len(referenced_groups) > 3,
+            **({"standings": standing_counts} if standings else {}),
         }
 
     def init(
@@ -2482,6 +2492,35 @@ class Store:
         return card
 
     @staticmethod
+    def _standing(card):
+        """Where a task stands for the user, from its card (see STANDINGS).
+
+        The card's results and picks are those in view: one workstream's, or every
+        workstream's for a project-wide card. The viewer sorts its board by this and
+        counts each workstream's Needs input with it, so the two always agree.
+          decision  held by any unresolved item (briefs, revised at sign-off, ideas)
+          signoff   a current-spec result passed review (or was human-reviewed)
+          progress  a result is with the agents (in review or being fixed), or an
+                    agent picked the task up recently and has recorded nothing since
+          open      no result and no recent pick, ready or blocked
+        Closed tasks stand as their status; groups have no standing ("group").
+        """
+        if card["object_type"] == "group":
+            return "group"
+        view = card.get("view")
+        for status in (card["status"], view):
+            if status in INACTIVE_STATUSES:
+                return status
+        if card["unresolved_count"] or view == "unresolved_items":
+            return "decision"
+        counts = card.get("attempt_counts") or card.get("aggregate_attempt_counts") or {}
+        if counts.get("passed") or counts.get("human_review") or view == "signoff":
+            return "signoff"
+        if counts.get("review") or counts.get("rework") or view == "review" or card.get("picked"):
+            return "progress"
+        return "open"
+
+    @staticmethod
     def _include_groups(include):
         """Validate optional card detail groups; order and duplicates are irrelevant."""
         if include is None:
@@ -3072,18 +3111,34 @@ class Store:
         )
         return attempt
 
-    def get_tasks(self, ids):
+    def get_tasks(self, ids, workstream_id=None, standing=False):
+        """Full internal/viewer detail. standing=True (the viewer's option) adds each task's
+        standing for the results in view: the named workstream's, or every workstream's."""
+
         def operation(db, scope):
             if not isinstance(ids, list) or not 1 <= len(ids) <= 20:
                 raise TaskError("invalid_ids: request 1–20 IDs")
-            tasks = [self._details(db, self._task(db, task_id, {})) for task_id in ids]
+            if workstream_id is not None:
+                self._workstream(db, workstream_id)
+            tasks = []
+            for task_id in ids:
+                task = self._task(db, task_id, {})
+                detail = self._details(db, task)
+                if standing:
+                    detail["standing"] = self._standing(self._card(db, task, workstream_id))
+                tasks.append(detail)
             if len({t["project_id"] for t in tasks}) == 1:
                 scope["project_id"] = tasks[0]["project_id"]
             if len(ids) == 1:
                 scope["task_id"] = ids[0]
             return {"items": tasks}
 
-        return self._run("tasks.read", {"ids": ids}, operation)
+        request = {"ids": ids}
+        if workstream_id is not None:
+            request["workstream_id"] = workstream_id
+        if standing:
+            request["standing"] = True
+        return self._run("tasks.read", request, operation)
 
     def list_groups(self, project=None, limit=20, offset=0):
         request = dict(project=project, limit=limit, offset=offset)
@@ -4795,6 +4850,7 @@ class Store:
             for task in page["items"]:
                 full = fulls.get(task["id"]) or self._card(db, task, workstream_id)
                 if full_cards:
+                    full = full | {"standing": self._standing(full)}
                     items.append(
                         full | {"workstream_order_key": positions[task["id"]]}
                         if workstream_id

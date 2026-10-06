@@ -66,7 +66,7 @@ async function test() {
   await run("addToWorkstreamTask(task)");
   context.values.set("workstream_id", "feature");
   run(`api = async (action, payload) => {
-    if (action === "details") return {items: [{...task, revision: 9, workstream_ids: ["main", "feature"]}]};
+    if (action === "details") return {items: [{...task, revision: 9, standing: "open", workstream_ids: ["main", "feature"]}]};
     throw Object.assign(new Error("revision_conflict"), {conflict: true});
   }; markdown = text => node("p", text);`);
   await assert.rejects(run("submitAction(values)"), /revision_conflict/);

@@ -61,8 +61,15 @@ earlier `#/project/...` addresses are not supported; they open the default view.
 
 - The sidebar lists projects; the current project expands to its registered
   workstreams, each with a count of tasks that need you: exactly the tasks its
-  Signoff and Design sections show, counted from that workstream's task cards
-  on each board refresh. “All tasks” includes
+  Signoff and Design sections show. The server decides where every task stands
+  by one rule, used for the sections, the task's details and these counts, and
+  returns each workstream's counts with the workstream list. The viewer reads
+  that list again on every refresh, group boards included, and reads no other
+  workstream's tasks to count. A workstream where nothing needs you shows its
+  task total instead (the tooltip says “none need you”); `?` means the server
+  sent no count (restart an older viewer). If a refresh of the list fails, the
+  viewer says so once, dims the last counts and shows **Counts may be out of
+  date · Retry** until a later refresh succeeds. “All tasks” includes
   tasks outside any one workstream. Workstream names and counts describe
   recorded state, not a running agent.
 - Above the list, the project's note and, in a named workstream, that

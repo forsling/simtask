@@ -29,9 +29,9 @@ vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = code => vm.runInContext(code, context);
 const text = node => typeof node === "string" ? node : [node.textContent, ...(node.children || []).map(text)].join("");
 const streams = [
-  {id: "old", project_id: "p", branch: "old-branch", status: {scoped_count: 2}, archive: {archived: true, reason: "Inactive snapshot", revision: 1}},
-  {id: "main", project_id: "p", branch: "main", status: {scoped_count: 1}},
-  {id: "back", project_id: "p", branch: "back", status: {scoped_count: 0}, archive: {archived: false, reason: "In use", revision: 2}},
+  {id: "old", project_id: "p", branch: "old-branch", status: {scoped_count: 2, standings: {signoff: 2}}, archive: {archived: true, reason: "Inactive snapshot", revision: 1}},
+  {id: "main", project_id: "p", branch: "main", status: {scoped_count: 1, standings: {open: 1}}},
+  {id: "back", project_id: "p", branch: "back", status: {scoped_count: 0, standings: {}}, archive: {archived: false, reason: "In use", revision: 2}},
 ];
 context.streams = streams;
 context.calls = [];
@@ -79,8 +79,10 @@ async function test() {
   context.calls = [];
   await run("changeScope('main')");
   assert.doesNotMatch(text(get("heading")), /Archived/);
-  // Archived workstreams' Needs input is not counted (their sidebar entry shows no count).
+  // Archived workstreams' Needs input is not counted (their sidebar entry shows no count),
+  // and no workstream's card list is read to count it.
   assert.equal(context.calls.some(([a, d]) => a === "tasks" && d.workstream_id === "old"), false);
+  assert.deepEqual(context.calls.filter(([a]) => a === "tasks").map(([, d]) => d.workstream_id), ["main"]);
 
   // The add picker leaves archived workstreams out; the remove picker keeps memberships.
   run(`openDialog = () => {}; placementAction = () => {}; submissionPending = false;`);

@@ -67,13 +67,15 @@ function event(target, clientY = 110, relatedTarget = null) {
 run(`
   server = {revision: {a: 7, b: 3}, order: {a: ["done", "alpha", "inbox", "hidden", "beta"], b: ["beta", "alpha", "done"]}};
   views = {done: "done", alpha: "ready", inbox: "unresolved_items", hidden: "deferred", beta: "ready"};
+  // The server gives every task card its standing.
+  standings = {done: "done", alpha: "open", inbox: "decision", hidden: "deferred", beta: "open"};
   calls = []; nextReorder = null;
   api = async (action, payload) => {
     calls.push({action, payload: JSON.parse(JSON.stringify(payload))});
     if (action === "tasks") {
       const ids = payload.workstream_id ? server.order[payload.workstream_id] : ["done", "alpha", "inbox", "hidden", "beta"];
       return {workstream_order_revision: payload.workstream_id ? server.revision[payload.workstream_id] : undefined, next_offset: null,
-        items: ids.map((id, i) => ({id, title: id.toUpperCase(), view: views[id], workstream_order_key: i + 1}))};
+        items: ids.map((id, i) => ({id, title: id.toUpperCase(), view: views[id], standing: standings[id], workstream_order_key: i + 1}))};
     }
     if (action === "reorder") {
       if (nextReorder) return nextReorder(payload);

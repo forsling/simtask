@@ -49,8 +49,9 @@ const kids = n => (n.children || []).filter(c => c && typeof c === "object");
 const descendants = n => [n, ...kids(n).flatMap(descendants)];
 const text = n => typeof n === "string" ? n : n.textContent + (n.children || []).map(text).join("");
 
-// Workstream cards carry this workstream's current-spec result counts; project cards
-// carry every workstream's. Neither counts results for an older specification.
+// Workstream cards carry this workstream's current-spec result counts and the standing
+// the server derived from them (Store._standing; test_viewer.py pins that rule against
+// these same cases). The viewer only sections and labels the server's standing.
 const counts = (o = {}) => ({review: 0, passed: 0, human_review: 0, rework: 0, ...o});
 const card = (id, title, extra = {}) => ({id, title, object_type: "task", status: "open",
   unresolved_count: 0, attempt_counts: counts(), workstream_order_key: 0, ...extra});
@@ -74,17 +75,17 @@ const cards = [
 const expected = {signoff: "signoff", reworked: "signoff", human: "signoff", brief: "decision",
   revised: "decision", review: "progress", fixing: "progress", ready: "open", blocked: "open",
   deferred: "deferred", done: "done", dropped: "dropped"};
-for (const c of cards) assert.equal(run("standingOf")(c), expected[c.id], c.id);
-// Project boards: aggregate counts across workstreams, no view field.
-assert.equal(run("standingOf")({status: "open", unresolved_count: 0, aggregate_attempt_counts: counts({passed: 1}), gate_diagnostics: []}), "signoff");
-assert.equal(run("standingOf")({status: "rework", unresolved_count: 0, aggregate_attempt_counts: counts({rework: 1}), gate_diagnostics: []}), "progress");
-assert.equal(run("standingOf")({status: "open", unresolved_count: 0, gate_diagnostics: ["inbox"]}), "open");
+for (const c of cards) c.standing = expected[c.id];
+// The viewer has no standing rule of its own: a card without the server's standing (an
+// older backend) is visibly unknown, never guessed from its fields.
+assert.equal(run("typeof standingOf"), "undefined");
+assert.equal(run("taskStanding")({status: "open", unresolved_count: 1}), "unknown");
 
 async function test() {
   context.board = [...cards].sort((a, b) => a.workstream_order_key - b.workstream_order_key);
   run(`
     state.project = "p"; state.projects = [{id: "p", name: "Project"}];
-    state.stream = "w"; state.streams = [{id: "w", branch: "main", project_id: "p", status: {counts: {signoff: 1, unresolved_items: 0}}}];
+    state.stream = "w"; state.streams = [{id: "w", branch: "main", project_id: "p", status: {scoped_count: 12, standings: {signoff: 3, decision: 2}}}];
     api = async (action, payload) => {
       if (action === "tasks") return {items: board, next_offset: null, workstream_order_revision: 4};
       throw new Error("unexpected " + action);
@@ -151,7 +152,9 @@ async function test() {
 
   // The sidebar counts both loaded Signoff and Design sections.
   assert.equal(run("needsYou(state.streams[0])"), 5);
-  // A workstream whose cards have not been read shows no count, never the server's.
+  // Another workstream's count is the server's Signoff and Design standings; a server
+  // without standing counts leaves it uncounted, never the gate-view status counts.
+  assert.equal(run('needsYou({id: "other", status: {standings: {signoff: 2, decision: 1, progress: 4}}})'), 3);
   assert.equal(run('needsYou({id: "other", status: {counts: {signoff: 2, unresolved_items: 1}}})'), null);
 
   // Expanding Done shows done and dropped tasks without badges.
@@ -171,6 +174,7 @@ async function test() {
       {id: "att_old", state: "rework", spec_revision: 1, workstream_id: "w", revision: 2, implementer: "codex-gpt5 implementer", created_at: "2026-10-05T07:00:00.000000Z"},
       {id: "att_new", state: "passed", spec_revision: 1, workstream_id: "w", revision: 2, implementer: "codex-gpt5 implementer", reviewer: "opus reviewer", created_at: "2026-10-05T09:00:00.000000Z"},
     ]};
+  context.task.standing = "signoff";
   assert.equal(run("taskStanding(task)"), "signoff");
   const bodyText = () => run("body(task)").flatMap(descendants).map(text).join(" ");
   assert.equal(run("currentRejection(task)"), null);
@@ -178,7 +182,7 @@ async function test() {
   assert.match(bodyText(), /Other results/, "Earlier rounds stay in the history");
   context.task.attempts.pop();
   context.task.attempts[0].state = "rework";
-  assert.equal(run("taskStanding(task)"), "progress");
+  context.task.standing = "progress";
   assert.match(bodyText(), /Latest rejection/);
   assert.match(bodyText(), /Stale revision/);
 
@@ -198,7 +202,7 @@ async function test() {
 
   // Revised at sign-off: the open question holds it, under the new name.
   context.task.unresolved_items = [{id: "unr", text: "Keep workstream as the term"}];
-  assert.equal(run("taskStanding(task)"), "decision");
+  context.task.standing = "decision";
   assert.match(bodyText(), /Unresolved items/);
   assert.doesNotMatch(bodyText(), /Design\/decision/);
   assert.doesNotMatch(bodyText(), /Open questions/);
@@ -206,69 +210,66 @@ async function test() {
   assert.match(held, /An unresolved item needs your answer/);
   assert.doesNotMatch(held, /Sign off with an agent|Answer/);
 
-  // Picked up: a recent pick (the server reports only live ones) is In progress before
-  // any result; without it the task is Open again. Questions still come first.
-  assert.equal(run("standingOf")(card("p", "Picked", {picked: {workstream_id: "w", action: "implement", picked_at: "2026-10-05T09:00:00Z"}})), "progress");
-  assert.equal(run("standingOf")({status: "open", unresolved_count: 0, aggregate_attempt_counts: counts(), picked: {workstream_id: "x"}}), "progress");
-  assert.equal(run("standingOf")(card("q", "Picked with a question", {unresolved_count: 1, picked: {workstream_id: "w"}})), "decision");
+  // Picked up: the server stands a recently picked task In progress; the panel says who
+  // picked it up and when.
   const picked = new Date(Date.now() - 12 * 60000).toISOString();
   run(`state.stream = "w";`);
   context.task = {...context.task, unresolved_items: [], attempts: [], latest_rejection: null,
-    picks: [{workstream_id: "w", action: "implement", picked_at: picked}]};
-  assert.equal(run("taskStanding(task)"), "progress");
+    standing: "progress", picks: [{workstream_id: "w", action: "implement", picked_at: picked}]};
   const working = descendants(run('nextStep(task, "progress")')).map(n => n.textContent).join(" ");
   assert.match(working, /An agent picked this up 12 minutes ago\. No result is recorded yet\./);
   context.task.attempts = [{id: "att_r", state: "review", spec_revision: 1, workstream_id: "w", revision: 1, created_at: "2026-10-05T09:00:00.000000Z"}];
   context.task.picks = [{workstream_id: "w", action: "review", picked_at: picked}];
   assert.match(descendants(run('nextStep(task, "progress")')).map(n => n.textContent).join(" "),
     /with the agents for independent review\. A reviewer picked it up 12 minutes ago\./);
-  context.task.attempts = [];
-  context.task.picks = [{workstream_id: "other", action: "implement", picked_at: picked}];
-  assert.equal(run("taskStanding(task)"), "open", "another workstream's pick does not count on this board");
-  run(`state.stream = null;`);
-  assert.equal(run("taskStanding(task)"), "progress", "project boards count any workstream's pick");
-  context.task.picks = [];
-  assert.equal(run("taskStanding(task)"), "open");
   assert.equal(run("pickedAgo")(new Date(Date.now() - 61 * 60000).toISOString()), "1 hour ago");
 }
 
-// Every workstream's sidebar count equals its Signoff and Design sections, also for
-// workstreams that are not open. The server ranks review ahead of open questions, so
-// its status counts miss a task with a question and a result under review.
+// Every workstream's sidebar count comes with the workstream list: the server's count
+// of each standing, by the rule that gives the board its standings. No other card list
+// is read; group boards refresh the counts too; a failed read is visible and retried.
 async function sidebar() {
   const settle = () => new Promise(resolve => setImmediate(resolve));
-  const streams = [
-    {id: "w", branch: "main", project_id: "p", status: {scoped_count: 2, counts: {signoff: 0, unresolved_items: 0, ready: 2}}},
-    {id: "s", branch: "side", project_id: "p", status: {scoped_count: 3, counts: {signoff: 1, review: 1, unresolved_items: 0, ready: 1}}},
+  // side: a question with a result under review (decision) and a passed result
+  // (signoff); main: nothing needs input (zero, shown as its task total).
+  const streams = () => [
+    {id: "w", branch: "main", project_id: "p", status: {scoped_count: 2, standings: {open: 2}}},
+    {id: "s", branch: "side", project_id: "p", status: {scoped_count: 3, standings: {decision: 1, signoff: 1, open: 1}}},
   ];
   const boards = {
-    w: [card("shared", "Shared, passed only in side"), card("plain", "Plain open task")],
+    w: [card("shared", "Shared, passed only in side", {standing: "open"}), card("plain", "Plain open task", {standing: "open"})],
     s: [
-      card("ur", "Question and a result under review", {view: "review", unresolved_count: 1, attempt_counts: counts({review: 1})}),
-      card("shared", "Shared, passed only in side", {view: "signoff", attempt_counts: counts({passed: 1})}),
-      card("idle", "Open", {view: "ready"}),
+      card("ur", "Question and a result under review", {view: "review", unresolved_count: 1, attempt_counts: counts({review: 1}), standing: "decision"}),
+      card("shared", "Shared, passed only in side", {view: "signoff", attempt_counts: counts({passed: 1}), standing: "signoff"}),
+      card("idle", "Open", {view: "ready", standing: "open"}),
     ],
   };
-  const project = [boards.s[0], {...boards.s[1], attempt_counts: undefined, view: undefined, aggregate_attempt_counts: counts({passed: 1})}, boards.w[1], boards.s[2]];
+  const project = [boards.s[0], boards.s[1], boards.w[1], boards.s[2]];
   const requests = [];
-  context.harness = {streams, boards, project, requests};
+  context.harness = {streams: streams(), boards, project, requests, fail: false};
+  context.toasts = [];
   run(`
     state.project = "p"; state.projects = [{id: "p", name: "Project"}]; state.streams = harness.streams;
     state.groups = false; state.selected = null; state.boardStream = null; state.rows = [];
+    toast = (m, error) => toasts.push(m);
     api = async (action, payload) => {
       harness.requests.push(action + ":" + (payload.workstream_id || ""));
-      if (action === "workstreams") return {items: harness.streams, next_offset: null};
+      if (action === "workstreams") {
+        if (harness.fail) throw new Error("Local service error");
+        return {items: harness.streams, next_offset: null};
+      }
       if (action === "groups") return {items: [], next_offset: null};
+      if (action === "notes") return {notes: null};
       if (action === "tasks") return {items: payload.workstream_id ? harness.boards[payload.workstream_id] : harness.project,
         next_offset: null, workstream_order_revision: 1};
       throw new Error("unexpected " + action);
     };
     pages = async (action, data) => (await api(action, data)).items;
   `);
+  const navItem = name => descendants(get("nav")).find(n => n.classList.contains("nav-item") && text(n).startsWith(name));
   const navCount = name => {
-    const item = descendants(get("nav")).find(n => n.classList.contains("nav-item") && text(n).startsWith(name));
-    const count = kids(item).find(n => n.classList.contains("count"));
-    return {count: count.textContent, attention: count.classList.contains("attention")};
+    const count = kids(navItem(name)).find(n => n.classList.contains("count"));
+    return {count: count.textContent, attention: count.classList.contains("attention"), stale: count.classList.contains("stale")};
   };
   const inputRows = () => {
     let inInput = false, n = 0;
@@ -278,45 +279,63 @@ async function sidebar() {
     }
     return n;
   };
-  const visit = async stream => {
+  const visit = async (stream, groups = false) => {
     requests.length = 0;
-    run(`state.stream = ${JSON.stringify(stream)}; state.groups = false;`);
+    run(`state.stream = ${JSON.stringify(stream)}; state.groups = ${JSON.stringify(groups)};`);
     await run("reload()");
     for (let i = 0; i < 5; i++) await settle();
   };
 
-  // From main: side's count comes from its own cards, read once, not from status counts.
+  // From main: side's count is the server's, read with the workstream list; no card list
+  // other than the open board is read.
   await visit("w");
   assert.equal(run('needsYou(state.streams[1])'), 2, "question + result under review counts as needing input");
-  assert.deepEqual(navCount("side"), {count: "2", attention: true});
-  assert.deepEqual(navCount("main"), {count: "2", attention: false}, "nothing needs input in main");
-  assert.deepEqual([...requests].sort(), ["notes:w", "tasks:s", "tasks:w", "workstreams:"],
-    "one card read for each other workstream; the open board is not read twice");
-  // From All tasks: every workstream is read once.
+  assert.deepEqual(navCount("side"), {count: "2", attention: true, stale: false});
+  assert.deepEqual(navCount("main"), {count: "2", attention: false, stale: false}, "nothing needs input: the task total");
+  assert.match(navItem("main").title, /2 tasks · none need you$/);
+  assert.match(navItem("side").title, /3 tasks · 2 need you$/);
+  assert.deepEqual([...requests].sort(), ["notes:w", "tasks:w", "workstreams:"]);
+  // From All tasks: the same single workstream read.
   await visit(null);
-  assert.deepEqual(navCount("side"), {count: "2", attention: true});
-  assert.deepEqual([...requests].sort(), ["notes:", "tasks:", "tasks:s", "tasks:w", "workstreams:"]);
+  assert.deepEqual(navCount("side"), {count: "2", attention: true, stale: false});
+  assert.deepEqual([...requests].sort(), ["notes:", "tasks:", "workstreams:"]);
   // Opening side: both input sections total exactly the sidebar count.
   await visit("s");
   assert.equal(inputRows(), 2);
-  assert.deepEqual(navCount("side"), {count: "2", attention: true});
-  assert.deepEqual([...requests].sort(), ["notes:s", "tasks:s", "tasks:w", "workstreams:"]);
-  // A group board keeps counts already read instead of reading every workstream again.
-  requests.length = 0;
-  run(`state.groups = "project"; state.stream = null;`);
-  await run("reload()");
-  for (let i = 0; i < 5; i++) await settle();
-  assert.deepEqual(requests, ["groups:"]);
-  assert.deepEqual(navCount("side"), {count: "2", attention: true});
+  assert.deepEqual(navCount("side"), {count: "2", attention: true, stale: false});
+  assert.deepEqual([...requests].sort(), ["notes:s", "tasks:s", "workstreams:"]);
 
-  // A slower, older read never overwrites a newer count.
-  let release;
-  run(`api = async (action, payload) => payload.workstream_id === "s" ? harness.slow : {items: [], next_offset: null}`);
-  context.harness.slow = new Promise(resolve => { release = resolve; });
-  const older = run(`refreshNeeds("p", [state.streams[1]])`);
-  run(`noteNeeds("s", [harness.boards.s[2]])`);
-  release({items: context.harness.boards.s, next_offset: null});
-  await older;
-  assert.equal(run("needsCounts.get('s')"), 0);
+  // A group board refreshes the counts too: a change made meanwhile shows.
+  context.harness.streams = streams();
+  context.harness.streams[0].status.standings = {signoff: 1, open: 1};
+  await visit(null, "project");
+  assert.deepEqual(requests, ["workstreams:", "groups:"]);
+  assert.deepEqual(navCount("main"), {count: "1", attention: true, stale: false});
+
+  // A failed read keeps the last counts, marks them out of date, says so once and offers
+  // a retry; the next successful refresh clears the mark.
+  context.harness.fail = true;
+  await visit(null, "project");
+  assert.deepEqual(navCount("main"), {count: "1", attention: true, stale: true});
+  assert.deepEqual(navCount("side"), {count: "2", attention: true, stale: true});
+  assert.match(navItem("side").title, /may be out of date: the last refresh failed \(Local service error\)/);
+  assert.equal(context.toasts.filter(m => /Couldn't refresh the workstream counts/.test(m)).length, 1);
+  const retry = navItem("Counts may be out of date");
+  assert.ok(retry, "a retry entry in the sidebar");
+  await visit(null, "project");
+  assert.equal(context.toasts.filter(m => /Couldn't refresh the workstream counts/.test(m)).length, 1, "said once, not on every refresh");
+  context.harness.fail = false;
+  requests.length = 0;
+  retry.onclick();
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(requests, ["workstreams:", "groups:"]);
+  assert.deepEqual(navCount("main"), {count: "1", attention: true, stale: false});
+  assert.equal(navItem("Counts may be out of date"), undefined);
+
+  // A server without standing counts (an older backend): uncounted, not zero.
+  context.harness.streams = streams().map(s => ({...s, status: {scoped_count: s.status.scoped_count}}));
+  await visit(null, "project");
+  assert.deepEqual(navCount("side"), {count: "?", attention: false, stale: false});
+  assert.match(navItem("side").title, /not counted; restart the viewer/);
 }
 test().then(sidebar).catch(error => {console.error(error); process.exitCode = 1;});

@@ -73,7 +73,7 @@ function viewer(initial, stored = "") {
     if (action === "workstreams") return {items: streams[data.project] || [], next_offset: null};
     if (action === "tasks") {
       const ids = tasks[data.workstream_id || data.project] || [];
-      return {items: ids.map(t => ({id: t, title: t, view: "ready"})), next_offset: null, workstream_order_revision: data.workstream_id ? 1 : null};
+      return {items: ids.map(t => ({id: t, title: t, view: "ready", standing: "open"})), next_offset: null, workstream_order_revision: data.workstream_id ? 1 : null};
     }
     if (action === "groups") {
       const ids = data.project ? groupLists[data.project] : Object.keys(groupInfo);
@@ -177,14 +177,15 @@ async function main() {
   assert.deepEqual(v.notices, []);
 
   // Opening a task location reads the workstream prefix, its notes and that workstream's board only;
-  // the sidebar's counts read each other workstream's cards once, beside the board.
+  // the sidebar's counts come with the workstream list, read again beside the board, and no
+  // other workstream's cards are read. The detail asks for the standing in this workstream.
   v.calls.length = 0;
   await v.edit(`/w/a1a1a1a1/t/${short(T2)}`);
   assert.deepEqual(v.at(), {project: P1, stream: W1, groups: false, selected: T2});
-  const counted = v.calls.filter(([a, d]) => a === "tasks" && d.workstream_id !== W1);
-  assert.deepEqual(v.calls.filter((c) => !counted.includes(c)).map(([a]) => a),
-    ["resolve-prefix", "workstreams", "notes", "tasks", "workstreams", "details"]);
-  assert.deepEqual(counted.map(([, d]) => d.workstream_id), [W2, W5]);
+  assert.deepEqual(v.calls.map(([a]) => a),
+    ["resolve-prefix", "workstreams", "notes", "workstreams", "tasks", "details"]);
+  assert.deepEqual(v.calls.filter(([a]) => a === "tasks").map(([, d]) => d.workstream_id), [W1]);
+  assert.equal(JSON.stringify(v.calls.at(-1)[1]), JSON.stringify({ids: [T2], workstream_id: W1}));
 
   // A workstream whose short prefix another project's workstream shares is respelled in
   // full once the server reports the ambiguity; it still resolves from that address.

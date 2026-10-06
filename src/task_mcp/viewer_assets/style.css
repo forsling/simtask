@@ -310,6 +310,17 @@ kbd {
   font-weight: 600;
   text-align: center;
 }
+/* Counts from a failed refresh, and workstreams the server did not count. */
+.count.stale,
+.count.unknown {
+  opacity: 0.55;
+  font-style: italic;
+}
+.nav-item.counts-stale {
+  font-size: 12px;
+  color: var(--ask);
+  min-height: 26px;
+}
 .sidebar-foot {
   border-top: 1px solid var(--line);
   padding: 12px 18px 14px;

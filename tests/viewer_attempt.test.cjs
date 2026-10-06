@@ -100,9 +100,11 @@ assert.equal(run('concernPanel({...proof, concerns: []})'), null);
 // Check the actual detail body uses the same action candidate. Isolate unrelated
 // Markdown/activity rendering so the DOM double need not implement a browser.
 run('markdown = (text) => node("p", text); activity = () => null; attemptCard = (a) => node("article", a.id);');
-// The detail derives the task's standing from its own current-spec results in view.
+// The detail shows the result matching the standing the server gives for the results in
+// view (the rule itself is Store._standing, tested in test_viewer.py).
 function shownResult(standing, stream) {
   run(`state.stream = ${JSON.stringify(stream)};`);
+  context.task.standing = standing;
   assert.equal(run("taskStanding(task)"), standing);
   const section = run('body(task)').find(n => n && descendants(n).some(c => c.textContent === "Result"));
   return section?.children[1].textContent;
