@@ -165,9 +165,11 @@ failed: check the task's history before retrying.
 ## Security and lifecycle
 
 The companion binds `127.0.0.1`, never a public interface, on an OS-selected
-port. Exact Host validation protects against DNS rebinding. API calls require
-a high-entropy token in a custom header, JSON content type, and the exact
-same-origin Origin header. No CORS permission is granted; cross-site browser
+port. Host validation (a literal `127.0.0.1:<port>`) protects against DNS
+rebinding; any loopback port is accepted so that an SSH tunnel from another
+laptop port (`./run.sh --remote`) works. API calls require a high-entropy token
+in a custom header, JSON content type, and an Origin header exactly matching
+that Host. No CORS permission is granted; cross-site browser
 requests are rejected. CSP disallows remote resources, framing and inline
 scripts. The private link places its token in the URL fragment, which is not
 sent to HTTP logs; the app immediately removes it from the address bar,

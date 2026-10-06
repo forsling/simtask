@@ -324,6 +324,19 @@ def test_running_viewer_keeps_assets_paired_with_loaded_backend(tmp_path, monkey
         thread.join(timeout=2)
 
 
+def test_forwarded_loopback_port_keeps_same_origin_checks(viewer):
+    # ./run.sh --remote reaches the viewer through an SSH tunnel on another laptop port.
+    server, _, _ = viewer
+    tunnel = "127.0.0.1:1"
+    assert request(server, "/api/projects", headers={"Host": tunnel})[0] == 403
+    forwarded = {"Host": tunnel, "Origin": "http://" + tunnel}
+    assert request(server, "/api/projects", headers=forwarded)[0] == 200
+    assert request(server, "/", headers=forwarded, method="GET")[0] == 200
+    for host in ("localhost:1", "127.0.0.1", "127.0.0.1:1.evil.invalid", "127.0.0.1:01"):
+        headers = {"Host": host, "Origin": "http://" + host}
+        assert request(server, "/api/projects", headers=headers)[0] == 403, host
+
+
 def test_narrow_api_and_safe_assets(viewer):
     server, _, context = viewer
     assert request(server, "/api/_connect")[0] == 400

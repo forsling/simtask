@@ -22,6 +22,10 @@ ASSETS = Path(__file__).with_name("viewer_assets")
 _ID = "[0-9a-f]{1,32}"
 # Location URLs the app page is served for: /p/<id>[/t/<id> | /g[/<id>]],
 # /w/<id>[/t/<id>], /g/<id> and /sg[/<id>]. IDs are hex prefixes; no query strings.
+# Any loopback port, not only the listener's own: an SSH tunnel (./run.sh --remote)
+# forwards a different laptop port. A literal 127.0.0.1 still defeats DNS rebinding,
+# and Origin must still match this Host exactly.
+LOOPBACK_HOST = re.compile(r"127\.0\.0\.1:[1-9][0-9]{0,4}")
 APP_PATH = re.compile(
     rf"/(?:p/{_ID}(?:/t/{_ID}|/g(?:/{_ID})?)?|w/{_ID}(?:/t/{_ID})?|g/{_ID}|sg(?:/{_ID})?)"
 )
@@ -90,11 +94,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def allowed(self, authenticated=False):
-        if self.headers.get("Host") != self.server.origin.removeprefix("http://"):
+        host = self.headers.get("Host") or ""
+        if not LOOPBACK_HOST.fullmatch(host):
             self.reply(403, {"error": "Invalid host"})
             return False
+        self.origin = "http://" + host
         origin = self.headers.get("Origin")
-        if origin and origin != self.server.origin:
+        if origin and origin != self.origin:
             self.reply(403, {"error": "Cross-origin requests are forbidden"})
             return False
         if self.headers.get("Sec-Fetch-Site") in {"cross-site", "same-site"}:
@@ -130,7 +136,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(True):
             return
-        if self.headers.get("Origin") != self.server.origin:
+        if self.headers.get("Origin") != self.origin:
             self.reply(403, {"error": "Same-origin confirmation required"})
             return
         if self.headers.get("Content-Type") != "application/json":

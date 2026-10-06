@@ -63,6 +63,19 @@ wraps:
 .venv/bin/task-mcp ui --db /absolute/path/tasks.sqlite3 --stop
 ```
 
+To use a viewer that runs on another machine from this one's browser, run
+`./run.sh --remote [host]` (default host `example-host`). Over SSH it runs
+`run.sh` from the same checkout path on the host, which starts or reuses that
+viewer with the host's default database, then opens or reuses an SSH tunnel from
+a free `127.0.0.1` port here to the viewer's loopback port there and prints a
+local link with the token. Both ends stay on loopback. `--remote [host] --restart`
+restarts the remote viewer (new port and token) and its tunnel; `--remote [host]
+--stop` closes the tunnel and stops the remote viewer. A live tunnel is reused
+only while it still forwards to the viewer's current port. Tunnel state (an ssh
+control socket) lives under `$XDG_RUNTIME_DIR/task-mcp/`. An unreachable host or
+a host without the checkout and `.venv` is an error, with no local fallback, and
+`TASK_MCP_DB` cannot be combined with `--remote`.
+
 Open the private link printed by the command. The address bar then shows a
 short, token-free location path such as `/w/1c4684b6/t/a5dfba02` (workstream and
 task by 8-character ID prefix; see [docs/viewer.md](docs/viewer.md#location-urls)),
