@@ -3033,14 +3033,18 @@ class Store:
         task["adopted"] = bool(task["workstream_ids"])
         task["summary_stale"] = Store._summary_stale(task)
         if task["parent_group_id"]:
+            # Only a reference: a group read by its ID gives the body and criteria.
             group = db.execute(
-                "SELECT id,title,body,acceptance_criteria,revision,spec_revision,"
-                "summary,summary_spec_revision "
-                "FROM tasks WHERE id=?",
+                "SELECT id,title,summary,spec_revision,summary_spec_revision FROM tasks WHERE id=?",
                 (task["parent_group_id"],),
             ).fetchone()
-            task["parent_group"] = dict(group)
-            task["parent_group"]["summary_stale"] = Store._summary_stale(task["parent_group"])
+            group = dict(group)
+            task["parent_group"] = {
+                "id": group["id"],
+                "title": group["title"],
+                "summary": group["summary"],
+                "summary_stale": Store._summary_stale(group),
+            }
         task["blocked_by"] = [
             r["blocked_by_id"]
             for r in db.execute(

@@ -451,8 +451,13 @@ acceptance criteria or replacement token. With `workstream_id`, state and the
 it they reflect current results in any workstream and imply no branch readiness.
 Call `get_tasks(ids=[...], specification=true, workstream_id=..., attempt_ids=[...])`
 when you need complete current requirements and exactly chosen proof together.
-No preliminary card read is needed. Parent context is complete;
-current-spec attempt summaries are limited to three, actionable first, with totals
+No preliminary card read is needed. A group member's `parent_group` is a
+reference: the group's `id`, `title`, `summary` and `summary_stale`. Specification
+reads, `get_next_action` and the viewer's details never embed the group's body or
+acceptance criteria. When a task needs them, read the group by ID: add it to a
+member's specification read, `get_tasks(ids=[task_id, group_id], specification=true)`,
+or read it alone.
+Current-spec attempt summaries are limited to three, actionable first, with totals
 and `has_more`. Page additional attempts with `list_task_attempts(states=[...],
 current_spec_only=true)`; `get_attempt(attempt_id)` retrieves one complete proof.
 Explicit proof retains its original task, workstream and specification provenance.

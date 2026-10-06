@@ -472,7 +472,8 @@ backup/rollback mechanism applies. Export v5 includes rejection and signoff hist
 
 Protocol 7 makes ordinary MCP calls compact and complete for their chosen action.
 Cards never expose partial specifications or replacement tokens. Specifications
-retain all requirements/proposals/parent context and at most three actionable-first
+retain all requirements/proposals, a parent-group reference (ID, title and summary;
+the group's own read gives its body and criteria) and at most three actionable-first
 current-spec attempt summaries; selected delivery ID is independent of that window.
 Paged attempt/member history and exact proof reads preserve provenance. Store/viewer
 full details and complete exports remain available. Every write acknowledgement

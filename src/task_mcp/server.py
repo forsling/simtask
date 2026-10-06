@@ -332,7 +332,8 @@ def create_server(
     ) -> dict[str, Any]:
         """Read 1-20 cards (include as list_tasks). specification=true adds full requirements,
         questions, concerns and the specification_etag; attempt_ids (up to 20) add exactly
-        those complete attempts in the same call.
+        those complete attempts in the same call. A parent_group gives only id, title and
+        summary: add its ID for the group's body.
         """
         return store.read_tasks(ids, specification, workstream_id, attempt_ids, include)
 
