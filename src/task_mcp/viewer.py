@@ -20,6 +20,7 @@ from task_mcp.store import Store, TaskError, default_database
 
 ASSETS = Path(__file__).with_name("viewer_assets")
 _ID = "[0-9a-f]{1,32}"
+# 96, not the 40-character creation limit: older, longer public IDs still route.
 _PUBLIC_ID = r"(?=[^/]{1,96}(?:/|$))[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
 _TASK_ID = rf"(?:id/{_PUBLIC_ID}|{_ID})"
 # Any loopback port, not only the listener's own: an SSH tunnel (./run.sh --remote)
@@ -53,6 +54,8 @@ def dispatch(store, action, data):
         "question": store.add_unresolved,
         # A quick idea becomes an inbox task held by an Idea to process item (no MCP tool).
         "idea": store.capture_idea,
+        # The ID an idea would get from its title: the Store's one short-slug rule.
+        "idea-id": store.suggest_task_id,
     }
     if action not in operations:
         raise TaskError("unknown_action")

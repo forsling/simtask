@@ -1016,6 +1016,32 @@ def test_quick_idea_rejects_invalid_title_or_details(viewer, data):
     assert any((e["action"], e["outcome"]) == ("task.idea_captured", "error") for e in events)
 
 
+def test_quick_idea_id_is_prefilled_by_the_store_rule_and_can_be_set(viewer):
+    server, store, context = viewer
+    project = context["project"]["id"]
+    title = "Count each workstream's Needs input on the server"
+    before = store.list_events(project=project)["items"]
+    status, suggestion = request(server, "/api/idea-id", {"title": title})
+    assert status == 200
+    assert suggestion == {"public_id": store_module.short_task_slug(title), "limit": 40}
+    assert store.list_events(project=project)["items"][: len(before)] == before
+    assert not any("idea" in e["action"] for e in store.list_events(project=project)["items"])
+    status, saved = request(
+        server, "/api/idea", {"project": project, "text": title, "public_id": "needs-counts"}
+    )
+    assert status == 200 and saved["id"] == "needs-counts"
+    for public_id, error in (
+        ("needs-counts", "public_id_conflict"),
+        ("n" * 41, "at most 40 characters; this one has 41"),
+        ("Needs Counts", "invalid_public_id"),
+    ):
+        status, refused = request(
+            server, "/api/idea", {"project": project, "text": title, "public_id": public_id}
+        )
+        assert status == 400 and error in refused["error"]
+    assert [row["id"] for row in store.list_tasks(project)["items"]] == ["needs-counts"]
+
+
 def test_quick_idea_is_a_viewer_operation_not_an_mcp_tool(tmp_path):
     tools = asyncio.run(create_server(Store(tmp_path / "tasks.sqlite3")).list_tools())
     assert not [t.name for t in tools if "idea" in t.name]
@@ -1033,6 +1059,7 @@ def test_shipped_idea_form_creates_one_gated_inbox_task_over_http(viewer):
     server, store, context = viewer
     script = Path(__file__).with_name("viewer_idea.test.cjs")
     project = context["project"]["id"]
+    taken = store.create_task(project, "Taken idea", public_id="taken-idea")["id"]
     result = subprocess.run(
         ["node", str(script), server.origin, server.token, project],
         capture_output=True,
@@ -1041,8 +1068,10 @@ def test_shipped_idea_form_creates_one_gated_inbox_task_over_http(viewer):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     saved = json.loads(result.stdout)
+    # Refused IDs saved nothing; the custom ID was saved as typed.
     rows = store.list_tasks(project)["items"]
-    assert len(rows) == 1 and rows[0]["id"] == saved["id"]
+    assert sorted(row["id"] for row in rows) == sorted([taken, saved["id"]])
+    assert saved["id"] == "stale-colours"
     task = store.get_tasks([saved["id"]])["items"][0]
     assert task["title"] == "Colour-code stale workstreams"
     assert task["body"] == "After a week.\n\n  Keep indentation.  "
@@ -1055,6 +1084,12 @@ def test_shipped_idea_form_creates_one_gated_inbox_task_over_http(viewer):
         if e["action"] == "task.idea_captured" and e["outcome"] == "ok"
     ]
     assert len(writes) == 1
+    refused = [
+        e
+        for e in store.list_events(project=project, limit=100, include_details=True)["items"]
+        if e["action"] == "task.idea_captured" and e["outcome"] == "error"
+    ]
+    assert len(refused) == 4  # Over-long details, then three refused IDs.
     assert store.get_next_action(context["workstream"]["id"])["task"] is None
 
 

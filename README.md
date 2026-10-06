@@ -104,9 +104,10 @@ defer, resume or drop tasks (Drop asks for confirmation; reasons are optional
 except when bringing back a dropped task). A task waiting for sign-off offers
 **Sign off with an agent**, which copies a ready prompt to paste into your
 agent: sign-off is a walkthrough with an agent, not a browser form. **+ Idea**
-saves a thought before it is lost: one line plus an optional sentence becomes
+saves a thought before it is lost: one line plus an optional sentence, under a
+short ID that is prefilled from the line and editable, becomes
 an inbox task held by an "Idea to process" item, shown under Needs input until
-you ask an agent to "go through my ideas" (the capture skill turns each into a
+you ask an agent to "go through my ideas" (the task-capture skill turns each into a
 brief or task with you, splits it, or drops it). Apart from these quick ideas,
 the browser does not create or edit tasks, answer questions, record reviews or
 sign off.
@@ -398,16 +399,31 @@ next action is picked.
 
 ## Task identity
 
-New tasks and groups have permanent descriptive public IDs, for example
+New tasks and groups have permanent, short public IDs, for example
 `readable-task-ids`. Pass `public_id` to `create_task` (including `kind=group`), or in each
 `decompose_task` member. These IDs are accepted anywhere a task/group reference
 is needed, including prerequisites, scope expressions, reads, edits and sign-off.
-Use up to 96 lowercase ASCII letters, digits and single hyphens, beginning with a
-letter. IDs are globally unique across projects and groups, and remain reserved
-for done/dropped tasks. An explicit collision returns `public_id_conflict`: choose
-a more specific name and retry. Creation is atomic, including concurrent collisions
-and decomposition. Omission derives a title slug with numeric suffixes for duplicate
-names; browser ideas use the same rule. IDs never change with titles/specifications.
+Use up to 40 lowercase ASCII letters, digits and single hyphens, beginning with a
+letter; a longer ID is refused with `invalid_public_id`, which states the limit and
+the submitted length, and nothing is saved. IDs are globally unique across projects
+and groups, and remain reserved for done/dropped tasks. An explicit collision returns
+`public_id_conflict`: choose a more specific name and retry. Creation is atomic,
+including concurrent collisions and decomposition. IDs never change with
+titles/specifications, and IDs created before the 40-character limit (up to 96
+characters) stay valid.
+
+An omitted `public_id` becomes a short slug of the title (`Store.short_task_slug`):
+the title is folded to lowercase ASCII, apostrophes are removed and everything else
+that is not a letter or digit separates words. Filler words (articles, most
+prepositions and conjunctions, pronouns and auxiliary verbs such as *the*, *of*,
+*on*, *each*, *instead*, *is*, *my*) are dropped unless every word is one. The slug
+keeps at most five words, in order, while it stays within 30 characters; the first
+word is always kept and cut at 30 if it alone is longer. A slug starting with a digit
+gets a leading `task` word, and an empty one is `task`. Duplicates get `-2`, `-3`, …,
+never exceeding 40 characters. For example, "Count each workstream's Needs input on
+the server instead of re-reading every card list" becomes
+`count-workstreams-needs-input`. Browser ideas prefill their **ID** field with this
+rule, asked from the server, and use it when the field is left as prefilled.
 
 Existing tasks retain their exact `tsk_…` IDs and all existing references/history.
 Private UUIDs are stored separately and never appear in tools, exports or the
@@ -670,12 +686,13 @@ with active design gates; membership starts no implementation.
 Say **"add a design task for X"** or ask to save an exploratory idea to use
 `task-capture`. The agent does bounded preliminary research and saves a
 specification in the layout the MCP server instructions set, with its material
-open questions. You do not need to answer all
+open questions and a short public ID of a few words. You do not need to answer all
 of those questions during capture. Create the brief in the inbox, add a
 `Feature design required (task-design): ...` gate, then add user-requested work
 to the current workstream. The gate keeps it from implementation selection.
 Briefs saved before the rename say `(feature-design)`; task-design treats them
-the same.
+the same. Say **"go through my ideas"** to process ideas saved with **+ Idea**:
+`task-capture` takes them one at a time with you, never unattended.
 
 Say **"let's design X"**, **"review design tasks"**, or **"designrev"** to use
 `task-design`. First decide whether the work is worth doing, then research

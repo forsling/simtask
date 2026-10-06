@@ -174,6 +174,44 @@ IDEA_ITEM = "Idea to process: turn into a proper brief or task with the user"
 IDEA_TITLE_LIMIT = 200
 IDEA_NOTE_LIMIT = 500
 
+# Public task/group IDs: a new explicit or automatic ID has at most PUBLIC_ID_LIMIT
+# characters. Older, longer IDs stay valid and resolvable (up to LEGACY_PUBLIC_ID_LIMIT).
+PUBLIC_ID_LIMIT = 40
+LEGACY_PUBLIC_ID_LIMIT = 96
+PUBLIC_ID_PATTERN = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
+# An omitted ID becomes a short slug of the title's first meaningful words: at most
+# AUTO_ID_WORDS words, cut on a word boundary at AUTO_ID_TARGET characters.
+AUTO_ID_TARGET = 30
+AUTO_ID_WORDS = 5
+ID_FILLER_WORDS = frozenset(
+    """a an the and or but nor of to for in on at by with from into onto as via per is are
+    was were be been being it its this that these those each every all any some instead so
+    than then when while which who whom whose what will should can could would may might
+    must shall there their them they we our us you your i me my""".split()
+)
+
+
+def short_task_slug(title):
+    """The automatic public ID for a title, before any numeric suffix for duplicates.
+
+    ASCII-fold and lowercase the title, drop apostrophes, split on anything else that is
+    not a letter or digit, and drop filler words (unless every word is one). Keep words
+    in order while the slug stays within AUTO_ID_TARGET characters and AUTO_ID_WORDS
+    words; the first word is always kept, cut if it alone is too long. A slug that would
+    start with a digit gets a leading "task" word; an empty one is "task".
+    """
+    ascii_title = unicodedata.normalize("NFKD", str(title)).encode("ascii", "ignore").decode()
+    words = re.sub(r"[^a-z0-9]+", " ", ascii_title.lower().replace("'", "")).split()
+    words = [w for w in words if w not in ID_FILLER_WORDS] or words
+    if not words or not words[0][0].isalpha():
+        words = ["task", *words]
+    slug = words[0][:AUTO_ID_TARGET]
+    for word in words[1:AUTO_ID_WORDS]:
+        if len(slug) + 1 + len(word) > AUTO_ID_TARGET:
+            break
+        slug += "-" + word
+    return slug
+
 
 class TaskError(ValueError):
     """An actionable domain error safe to show to the caller."""
@@ -3181,8 +3219,8 @@ class Store:
                 if (
                     kind != "group"
                     or not isinstance(prefix, str)
-                    or len(prefix) > 96
-                    or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", prefix)
+                    or len(prefix) > LEGACY_PUBLIC_ID_LIMIT
+                    or not re.fullmatch(PUBLIC_ID_PATTERN, prefix)
                 ):
                     raise TaskError("invalid_public_id: use a complete public group ID")
                 row = db.execute(
@@ -3211,14 +3249,16 @@ class Store:
     def _public_task_id(db, title, public_id=None):
         """Choose once under the writer lock; explicit names never silently change."""
         if public_id is not None:
-            if (
-                not isinstance(public_id, str)
-                or len(public_id) > 96
-                or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", public_id)
-            ):
+            if isinstance(public_id, str) and len(public_id) > PUBLIC_ID_LIMIT:
                 raise TaskError(
-                    "invalid_public_id: use up to 96 lowercase letters, digits and single "
-                    "hyphens, beginning with a letter (for example readable-task-ids)"
+                    f"invalid_public_id: an ID has at most {PUBLIC_ID_LIMIT} characters; "
+                    f"this one has {len(public_id)}. Choose a shorter ID"
+                )
+            if not isinstance(public_id, str) or not re.fullmatch(PUBLIC_ID_PATTERN, public_id):
+                raise TaskError(
+                    f"invalid_public_id: use up to {PUBLIC_ID_LIMIT} lowercase letters, digits "
+                    "and single hyphens, beginning with a letter (for example readable-task-ids). "
+                    "Choose another ID"
                 )
             if db.execute("SELECT 1 FROM tasks WHERE id=?", (public_id,)).fetchone():
                 raise TaskError(
@@ -3226,18 +3266,26 @@ class Store:
                     "descriptive public_id and retry (closed task IDs cannot be reused)"
                 )
             return public_id
-        # Compatibility callers and browser ideas have no ID field. Derive a readable
-        # name, with a deterministic numeric suffix for duplicate titles.
-        ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
-        base = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
-        if not base or not base[0].isalpha():
-            base = "task-" + base if base else "task"
-        base = base[:88].rstrip("-")
+        return Store._free_task_slug(db, title)
+
+    @staticmethod
+    def _free_task_slug(db, title):
+        """The title's short slug, with a numeric suffix if that ID is already reserved."""
+        base = short_task_slug(title)
         candidate, suffix = base, 2
         while db.execute("SELECT 1 FROM tasks WHERE id=?", (candidate,)).fetchone():
-            candidate = f"{base}-{suffix}"
+            ending = f"-{suffix}"
+            candidate = base[: PUBLIC_ID_LIMIT - len(ending)].rstrip("-") + ending
             suffix += 1
         return candidate
+
+    def suggest_task_id(self, title):
+        """The ID an omitted public_id would get now (viewer prefill; no audit, no write)."""
+        if not isinstance(title, str):
+            raise TaskError("invalid_title: the title must be text")
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            public_id = self._free_task_slug(db, title[:IDEA_TITLE_LIMIT])
+        return {"public_id": public_id, "limit": PUBLIC_ID_LIMIT}
 
     @staticmethod
     def _register_task_identity(db, public_id):
@@ -3627,13 +3675,16 @@ class Store:
 
         return self._run("task.created", request, operation)
 
-    def capture_idea(self, project, text, note=""):
+    def capture_idea(self, project, text, note="", public_id=None):
         """A quick idea from the browser: one inbox task held by an Idea to process item.
 
         The task and its item are written together at revision 1, so no state exists in
         which the idea is buildable as is. Reached only through the viewer, not MCP.
+        public_id follows create_task's rules; omitted, the title's short slug is used.
         """
         request = dict(project=project, text=text, note=note)
+        if public_id is not None:
+            request["public_id"] = public_id
 
         def operation(db, scope):
             project_id = self._project(db, project, scope)["id"]
@@ -3652,6 +3703,7 @@ class Store:
                 "",
                 source="user",
                 user_request=text + ("\n\n" + note if details else ""),
+                public_id=public_id,
             )
             item = [{"id": _id("unr_"), "text": IDEA_ITEM}]
             db.execute("UPDATE tasks SET unresolved_json=? WHERE id=?", (_json(item), task_id))

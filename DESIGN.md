@@ -24,11 +24,17 @@ online backup/transaction rollback mechanism. Keeping the existing public-key
 relationships avoids rewriting immutable history. UUIDs never join public task
 payloads, traces, navigation or exports.
 
-New task/group creation accepts an optional descriptive `public_id` (lowercase ASCII
-letters/digits separated by single hyphens, first character a letter, maximum 96).
-Explicit names fail atomically on collision, including names reserved by closed
-work. Omitted names derive from normalized title text with numeric suffixes, for
-compatibility callers and browser ideas. All allocation occurs under `BEGIN IMMEDIATE`
+New task/group creation accepts an optional short `public_id` (lowercase ASCII
+letters/digits separated by single hyphens, first character a letter, maximum 40).
+The limit applies only to creation: IDs created earlier with up to 96 characters stay
+valid in reads, edits, routes and exact group resolution. Explicit names fail
+atomically on collision, including names reserved by closed work, and an over-long
+name fails with the limit and its length. Omitted names are short word-boundary
+slugs of the title (at most five words after dropping filler words, within 30
+characters; README "Task identity" states the rule), with numeric suffixes that never
+take an ID past 40 characters, for compatibility callers and browser ideas. One
+function, `short_task_slug`, is the rule: the viewer's idea dialog asks the server
+for its suggestion (an unaudited read-only lookup) rather than deriving its own. All allocation occurs under `BEGIN IMMEDIATE`
 and the existing unique public primary key; decomposition rolls back on any member
 collision. A title/specification edit never changes the reference. Protocol 15
 exposes the optional creation input. GUI cards and headers show full selectable

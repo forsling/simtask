@@ -81,6 +81,7 @@ def create_server(
             "Call init first for the checkout and branch, and read the notes it returns.\n"
             "Workflows are skills read with get_default_skills: superdevloop, task-signoff, "
             "task-capture, task-design, proposal-review and init.\n"
+            'For "go through my ideas", read task-capture.\n'
             "Basic loop: pick up a task (get_next_action), implement it, record_result, "
             "independent review (record_review), then the user's sign-off (signoff_task).\n"
             "Pass the last revision each write returned; no confirming read is needed.\n"
@@ -272,9 +273,9 @@ def create_server(
         kind: Literal["task", "group"] = "task",
     ) -> dict[str, Any]:
         """Create a task or kind=group. workstream_id adds membership; omission leaves it
-        in the inbox. group_id requires group_expected_revision. public_id is a stable,
-        globally unique descriptive ID; conflict needs another name, omission derives
-        a title slug. source/user_request record origin.
+        in the inbox. group_id requires group_expected_revision. Pass a short public_id:
+        a permanent, globally unique ID of at most 40 characters; a conflict needs another
+        name. source/user_request record origin.
         """
         return store.compact_call(
             "create_task",
@@ -487,8 +488,8 @@ def create_server(
     ) -> dict[str, Any]:
         """Turn an open task without attempts, questions or a parent into a group and
         create members in its workstreams with its prerequisites atomically. Members
-        take title/body/acceptance_criteria and optional unique public_id; omission
-        derives title slugs, and any conflict rolls back all members.
+        take title/body/acceptance_criteria and a short unique public_id (at most 40
+        characters); any conflict rolls back all members.
         """
         return store.compact_call("decompose_task", task_id, expected_revision, members)
 

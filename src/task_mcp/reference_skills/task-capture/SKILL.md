@@ -1,6 +1,6 @@
 ---
 name: task-capture
-description: Save a task, bug or researched feature brief with its open design questions. Use in projects using Task MCP for "add a task", "add a design task" or an idea that needs design; use task-design for the design discussion.
+description: Save a task, bug or researched feature brief with its open design questions, or go through saved ideas. Use in projects using Task MCP for "add a task", "add a design task", an idea that needs design or "go through my ideas"; use task-design for the design discussion.
 ---
 
 # Task capture
@@ -12,7 +12,9 @@ description: Save a task, bug or researched feature brief with its open design q
    behavior, integration points and constraints. Say what you could not verify.
 
 3. Title the task with its observable outcome in about 70 characters: one main
-   fact, no internal slugs or file names.
+   fact, no internal slugs or file names. Pass a short `public_id` of about 2-4
+   words (for example `idea-ids`) on every create; it never changes. On a
+   conflict, choose another.
 
 4. Write the body as the specification only. Separate the user's decisions
    from suggestions. Acceptance criteria go in their own field; evidence
@@ -21,9 +23,6 @@ description: Save a task, bug or researched feature brief with its open design q
 
 5. For a bug, write a reproduction requirement into the task: the work must
    demonstrate the bug before changing code.
-
-   New tasks use stable descriptive public IDs; choose a different public_id if
-   creation reports a conflict. Existing tsk_ IDs stay unchanged.
 
 6. Decide placement. Tasks the user requested go to the current workstream.
    Ideas you suggested are saved only after the user confirms them, and they
@@ -45,3 +44,11 @@ description: Save a task, bug or researched feature brief with its open design q
 
 8. Report the task ID, title, findings and open questions. Capture starts no
    design discussion or implementation.
+
+## Go through my ideas
+
+Browser ideas are inbox tasks held by an `Idea to process:` item, which cards
+don't show: read `state=inbox` cards with questions using `get_tasks` with
+`specification`. On request, go one at a time with the user, never unattended:
+rewrite in place, add to a workstream only if they want it built, decompose,
+or drop by agreement. Then resolve the item.

@@ -1661,8 +1661,8 @@ function closeDrawer() {
 
 /* ---------- dialogs ---------- */
 
-// A labelled short input, or a multiline details area.
-function field(name, label, { required = true, maxLength = 500, multiline = false } = {}) {
+// A labelled short input, or a multiline details area, with an optional hint below.
+function field(name, label, { required = true, maxLength = 500, multiline = false, hint } = {}) {
   const wrap = el("div", "field");
   const l = node("label", label);
   l.htmlFor = "field-" + name;
@@ -1674,6 +1674,12 @@ function field(name, label, { required = true, maxLength = 500, multiline = fals
   i.maxLength = maxLength;
   i.autocomplete = "off";
   wrap.append(l, i);
+  if (hint) {
+    const h = node("p", hint, "field-hint");
+    h.id = "field-" + name + "-hint";
+    i.setAttribute("aria-describedby", h.id);
+    wrap.append(h);
+  }
   $("fields").append(wrap);
   return i;
 }
@@ -1801,6 +1807,10 @@ function resumeTask(t) {
 // A quick idea goes to the open project's inbox, never a workstream, held by an "Idea
 // to process" item so nothing is built from it until an agent goes through it with the
 // user. Saving shows it in All tasks, under Design.
+// Its permanent ID is prefilled from the title by the server's one short-slug rule
+// ("idea-id"), never a rule of the viewer's own. Until the user edits the ID, saving
+// sends none, so the server derives it from the final title by that same rule.
+const ID_REFUSALS = /^(invalid_public_id|public_id_conflict): /;
 function captureIdea() {
   const project = state.project;
   if (!project || state.groups) return;
@@ -1808,12 +1818,47 @@ function captureIdea() {
   openDialog("Save an idea",
     `Jot it down before it's lost. It goes to the inbox of ${name}${state.stream ? ", not this workstream" : ""}, and waits under Design. Nothing is built from it until you go through it with an agent.`,
     "Save idea");
-  field("text", "Idea title (required)", { maxLength: 200 });
+  const title = field("text", "Idea title (required)", { maxLength: 200 });
+  const id = field("public_id", "ID", { required: false, maxLength: 100,
+    hint: "A few short words in lowercase, joined by hyphens. It is filled in from the title; you can change it. It never changes after saving." });
+  id.spellcheck = false;
+  id.setAttribute("autocapitalize", "none");
   field("note", "Details (optional)", { required: false, maxLength: 500, multiline: true });
+  let edited = false, asked = 0, timer = null;
+  id.oninput = () => { edited = id.value !== ""; };
+  title.oninput = () => {
+    if (edited) return;
+    clearTimeout(timer);
+    const turn = ++asked;
+    timer = setTimeout(async () => {
+      let suggested = "";
+      if (title.value.trim()) {
+        try {
+          suggested = (await api("idea-id", { title: title.value })).public_id;
+        } catch {
+          return; // No prefill; saving still derives the ID from the title.
+        }
+      }
+      if (turn === asked && !edited) id.value = suggested;
+    }, 200);
+  };
   submitAction = async (values) => {
     const text = values.get("text") || "", note = values.get("note") || "";
+    const custom = edited ? (values.get("public_id") || "").trim() : "";
     if (!text.trim()) throw Object.assign(new Error("Write a short idea title (up to 200 characters)."), { local: true });
-    const saved = await api("idea", { project, text, note });
+    let saved;
+    try {
+      saved = await api("idea", { project, text, note, ...(custom ? { public_id: custom } : {}) });
+    } catch (e) {
+      const refusal = ID_REFUSALS.exec(e.message);
+      if (!refusal) throw e;
+      // Nothing was saved: ask for another ID in plain words.
+      id.focus();
+      const plain = refusal[1] === "public_id_conflict" && custom
+        ? `The ID “${custom}” is already taken; IDs stay reserved even after a task closes. Choose another ID.`
+        : e.message.slice(refusal[0].length).replace(/^./, (c) => c.toUpperCase()) + ".";
+      throw Object.assign(new Error(plain), { local: true });
+    }
     return { afterSave: () => showIdea(saved) };
   };
 }

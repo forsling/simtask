@@ -12,7 +12,7 @@ import pytest
 
 from task_mcp import store as store_module
 from task_mcp.server import create_server
-from task_mcp.store import Store, TaskError
+from task_mcp.store import Store, TaskError, short_task_slug
 
 
 @pytest.fixture
@@ -153,7 +153,7 @@ def test_invalid_ids_roll_back(context, public_id):
 
 @pytest.mark.parametrize("kind", ["task", "group"])
 @pytest.mark.parametrize("explicit", [True, False])
-@pytest.mark.parametrize("public_id", ["a", "e1e1e1e1", "a" * 32])
+@pytest.mark.parametrize("public_id", ["a", "e1e1e1e1", "a" * 30, "a" * 32])
 def test_hex_public_ids_coexist_with_legacy_bookmarks(
     context, monkeypatch, kind, explicit, public_id
 ):
@@ -170,19 +170,21 @@ def test_hex_public_ids_coexist_with_legacy_bookmarks(
         else:
             create(context)
     legacy = store.get_tasks([legacy_id])["items"][0]
+    # A derived ID is the title's short slug: a 32-character title is cut to 30.
+    expected = public_id if explicit else short_task_slug(public_id)
     if kind == "group":
         bookmark = store.resolve_prefix("group", public_id)
         new = store.create_group(ws, public_id, public_id=public_id if explicit else None)
         assert store.resolve_prefix("group", public_id) == bookmark
         assert bookmark["items"][0]["id"] == legacy_id
-        exact = store.resolve_prefix("group", public_id, match="public_id")
-        assert exact["items"][0]["id"] == public_id
+        exact = store.resolve_prefix("group", expected, match="public_id")
+        assert exact["items"][0]["id"] == expected
     else:
         new = store.create_task(
             project, public_id, workstream_id=ws, public_id=public_id if explicit else None
         )
-    assert new["id"] == public_id
-    assert store.get_tasks([public_id])["items"][0]["id"] == public_id
+    assert new["id"] == expected
+    assert store.get_tasks([expected])["items"][0]["id"] == expected
     assert store.get_tasks([legacy_id])["items"][0] == legacy
 
 
@@ -228,6 +230,124 @@ def test_derived_names_ideas_and_decomposition(context):
         store.resolve_prefix("group", "reference-redesign-missing", match="public_id")["items"]
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "title, slug",
+    [
+        (
+            "Count each workstream's Needs input on the server instead of re-reading "
+            "every card list",
+            "count-workstreams-needs-input",
+        ),
+        (
+            'Cap task IDs at 40 characters, let ideas set short IDs, restore "go through my ideas"',
+            "cap-task-ids-40-characters",
+        ),
+        ("Readable task IDs", "readable-task-ids"),
+        ("Show the current task\u2019s title in the browser tab", "show-current-tasks-title"),
+        ("Café crème brûlée", "cafe-creme-brulee"),
+        ("2FA for the viewer", "task-2fa-viewer"),
+        ("The", "the"),
+        ("東京", "task"),
+        ("x" * 50 + " more words", "x" * 30),
+        ("one two three four five six seven", "one-two-three-four-five"),
+    ],
+)
+def test_automatic_ids_are_short_word_boundary_slugs(title, slug):
+    """Filler words go; at most five words, cut on a word boundary at 30 characters."""
+    assert short_task_slug(title) == slug
+    assert len(slug) <= store_module.AUTO_ID_TARGET
+
+
+def test_automatic_ids_with_suffix_never_exceed_the_limit(context, monkeypatch):
+    store, project, _ = context
+    assert create(context, None)["id"] == "readable-task-ids"
+    assert create(context, None)["id"] == "readable-task-ids-2"
+    # Even a base at the full limit keeps every suffixed ID within 40 characters.
+    monkeypatch.setattr(store_module, "short_task_slug", lambda title: "b" * 40)
+    ids = [store.create_task(project, "Long base")["id"] for _ in range(3)]
+    assert ids == ["b" * 40, "b" * 38 + "-2", "b" * 38 + "-3"]
+    assert all(len(task_id) <= store_module.PUBLIC_ID_LIMIT for task_id in ids)
+
+
+@pytest.mark.parametrize("kind", ["task", "group", "member", "idea"])
+def test_explicit_ids_over_40_characters_are_refused_and_save_nothing(context, kind):
+    store, project, ws = context
+    parent = create(context, "parent-task") if kind == "member" else None
+    with closing(sqlite3.connect(store.path)) as db:
+        before = snapshot(db)
+    too_long = "a" + "-b" * 20  # 41 characters
+    attempts = {
+        "task": lambda: store.create_task(project, "Too long", public_id=too_long),
+        "group": lambda: store.create_group(ws, "Too long", public_id=too_long),
+        "member": lambda: store.decompose_task(
+            parent["id"], 1, [{"title": "Too long", "public_id": too_long}]
+        ),
+        "idea": lambda: store.capture_idea(project, "Too long", public_id=too_long),
+    }
+    with pytest.raises(TaskError, match="invalid_public_id: .*at most 40 characters.* has 41"):
+        attempts[kind]()
+    with closing(sqlite3.connect(store.path)) as db:
+        after = snapshot(db)
+        after.pop("events"), before.pop("events")
+        assert after == before
+    assert store.create_task(project, "Exactly 40", public_id="c" * 40)["id"] == "c" * 40
+
+
+def test_existing_longer_ids_stay_valid_and_resolvable(context, monkeypatch):
+    store, project, ws = context
+    long_task, long_group = "t" + "-long" * 15, "g" + "-long" * 15  # 76 characters
+    for title, public_id in (("Old task", long_task), ("Old group", long_group)):
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                Store,
+                "_public_task_id",
+                staticmethod(lambda db, title, public_id=None, value=public_id: value),
+            )
+            if title == "Old group":
+                store.create_group(ws, title)
+            else:
+                store.create_task(project, title, workstream_id=ws)
+    assert store.get_tasks([long_task])["items"][0]["title"] == "Old task"
+    assert store.get_tasks([long_group])["items"][0]["object_type"] == "group"
+    exact = store.resolve_prefix("group", long_group, match="public_id")
+    assert exact["items"][0]["id"] == long_group
+    assert store.update_task(long_task, 1, {"title": "Renamed"})["id"] == long_task
+
+
+def test_suggested_id_matches_what_creation_assigns_without_an_audit(context):
+    store, project, _ = context
+    title = "Count each workstream's Needs input on the server"
+
+    def events():
+        with closing(sqlite3.connect(store.path)) as db:
+            return db.execute("SELECT count(*) FROM events").fetchone()[0]
+
+    before = events()
+    assert store.suggest_task_id(title) == {
+        "public_id": "count-workstreams-needs-input",
+        "limit": 40,
+    }
+    assert events() == before
+    assert store.capture_idea(project, title)["id"] == "count-workstreams-needs-input"
+    suggested = store.suggest_task_id(title)["public_id"]
+    assert suggested == "count-workstreams-needs-input-2"
+    assert store.create_task(project, title)["id"] == suggested
+    assert events() == before + 2
+    with pytest.raises(TaskError, match="invalid_title"):
+        store.suggest_task_id(None)
+
+
+def test_ideas_take_an_optional_custom_id(context):
+    store, project, _ = context
+    idea = store.capture_idea(project, "Dark mode for the viewer", public_id="dark-mode")
+    assert idea["id"] == "dark-mode"
+    with pytest.raises(TaskError, match="public_id_conflict"):
+        store.capture_idea(project, "Dark mode again", public_id="dark-mode")
+    with pytest.raises(TaskError, match="invalid_public_id: use up to 40"):
+        store.capture_idea(project, "Bad", public_id="Dark Mode")
+    assert [row["id"] for row in store.list_tasks(project)["items"]] == ["dark-mode"]
 
 
 def snapshot(db):

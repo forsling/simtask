@@ -150,8 +150,14 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   history: yours, or a plain stand-in such as “Deferred in the browser.”
   Workstreams, details and results are kept through every status change.
 - **+ Idea** (beside Refresh, in All tasks and workstream views) saves a thought
-  before it is lost: **Idea title (required)** (one line, up to 200 characters) and a
-  multiline **Details (optional)** area (up to 500). Saving creates, in one audited
+  before it is lost: **Idea title (required)** (one line, up to 200 characters), an
+  **ID** and a multiline **Details (optional)** area (up to 500). The ID is filled in
+  as you type the title, with the server's short-slug rule (README, Task identity),
+  and you can change it; until you do, saving lets the server derive it from the
+  final title by the same rule. A changed ID follows the `public_id` rules (lowercase
+  letters, digits and single hyphens, starting with a letter, up to 40 characters); an
+  invalid, over-long or taken ID is refused with a plain message asking for another,
+  and nothing is saved. The ID is permanent. Saving creates, in one audited
   Store step, a task in the project's inbox (no workstream, even when opened
   from one): the short title and details as description, source user and
   the exact text as its request, held by one open item, “Idea to process: turn
@@ -159,7 +165,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   in **All tasks** under **Design** with an orange dot. No
   agent picks it up as is. Its next step, **Go through it with an agent**,
   copies a prompt (`Go through my ideas, starting with <public-id> — <title>`);
-  the capture skill then goes through your ideas one at a time with you,
+  the task-capture skill then goes through your ideas one at a time with you,
   rewriting each into a proper brief or task (added to a workstream when you
   want it built), splitting it, or dropping it with your agreement, and
   resolves the idea item. This is a viewer operation only; there is no MCP tool

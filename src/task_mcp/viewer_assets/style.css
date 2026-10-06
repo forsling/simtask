@@ -1316,6 +1316,14 @@ dialog h2 {
   resize: vertical;
   min-height: 6em;
 }
+#field-public_id {
+  font-family: var(--mono);
+}
+.field-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
 .check {
   display: flex;
   gap: 8px;
