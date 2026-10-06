@@ -83,7 +83,17 @@ def create_server(
             "task-capture, task-design, proposal-review and init.\n"
             "Basic loop: pick up a task (get_next_action), implement it, record_result, "
             "independent review (record_review), then the user's sign-off (signoff_task).\n"
-            "Pass the last revision each write returned; no confirming read is needed."
+            "Pass the last revision each write returned; no confirming read is needed.\n"
+            "Write task specifications using ASD-STE100 sentence and structure principles. "
+            "Use short sentences, explicit subjects, active voice, and consistent technical "
+            "terms. Put conditions before the behavior they control. State one requirement or "
+            "instruction per sentence. Separate context, requirements, procedures, boundaries, "
+            "and acceptance criteria. Preserve every exception and unresolved question. Retain "
+            "exact technical identifiers and UI labels.\n"
+            "This applies when you create or deliberately rewrite a task or group "
+            "specification. Write the body as plain labelled Context, Requirements, "
+            "Procedures and Boundaries sections, in that order, and omit a section that has "
+            "no content. Put acceptance criteria in the acceptance_criteria field."
         ),
         lifespan=lifespan,
     )

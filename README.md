@@ -668,9 +668,9 @@ user confirmation. User-requested design briefs belong in the current workstream
 with active design gates; membership starts no implementation.
 
 Say **"add a design task for X"** or ask to save an exploratory idea to use
-`task-capture`. The agent does bounded preliminary research and saves the
-desired outcome, motivation, current context, tentative scope, assumptions,
-possible directions and material open questions. You do not need to answer all
+`task-capture`. The agent does bounded preliminary research and saves a
+specification in the layout the MCP server instructions set, with its material
+open questions. You do not need to answer all
 of those questions during capture. Create the brief in the inbox, add a
 `Feature design required (task-design): ...` gate, then add user-requested work
 to the current workstream. The gate keeps it from implementation selection.

@@ -14,12 +14,10 @@ description: Save a task, bug or researched feature brief with its open design q
 3. Title the task with its observable outcome in about 70 characters: one main
    fact, no internal slugs or file names.
 
-4. Write the body as the specification only: desired outcome, motivation,
-   current behavior, scope and exclusions, constraints, possible approaches and
-   material open questions. Separate the user's decisions from suggestions.
-   Acceptance criteria go in their own field; evidence belongs in attempts.
-   Pass ordinary text with actual line breaks through your JSON serializer;
-   do not pre-escape the specification.
+4. Write the body as the specification only. Separate the user's decisions
+   from suggestions. Acceptance criteria go in their own field; evidence
+   belongs in attempts. Pass ordinary text with actual line breaks through
+   your JSON serializer; do not pre-escape the specification.
 
 5. For a bug, write a reproduction requirement into the task: the work must
    demonstrate the bug before changing code.
