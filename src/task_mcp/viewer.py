@@ -20,14 +20,17 @@ from task_mcp.store import Store, TaskError, default_database
 
 ASSETS = Path(__file__).with_name("viewer_assets")
 _ID = "[0-9a-f]{1,32}"
-# Location URLs the app page is served for: /p/<id>[/t/<id> | /g[/<id>]],
-# /w/<id>[/t/<id>], /g/<id> and /sg[/<id>]. IDs are hex prefixes; no query strings.
+_PUBLIC_ID = r"(?=[^/]{1,96}(?:/|$))[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
+_TASK_ID = rf"(?:id/{_PUBLIC_ID}|{_ID})"
 # Any loopback port, not only the listener's own: an SSH tunnel (./run.sh --remote)
 # forwards a different laptop port. A literal 127.0.0.1 still defeats DNS rebinding,
 # and Origin must still match this Host exactly.
 LOOPBACK_HOST = re.compile(r"127\.0\.0\.1:[1-9][0-9]{0,4}")
+# Location URLs the app page is served for: /p/<id>[/t/<id> | /g[/<id>]],
+# /w/<id>[/t/<id>], /g/<id> and /sg[/<id>].
+# Full public task/group IDs follow /id/; legacy hex prefixes stay unmarked.
 APP_PATH = re.compile(
-    rf"/(?:p/{_ID}(?:/t/{_ID}|/g(?:/{_ID})?)?|w/{_ID}(?:/t/{_ID})?|g/{_ID}|sg(?:/{_ID})?)"
+    rf"/(?:p/{_ID}(?:/t/{_TASK_ID}|/g(?:/{_TASK_ID})?)?|w/{_ID}(?:/t/{_TASK_ID})?|g/{_TASK_ID}|sg(?:/{_TASK_ID})?)"
 )
 
 
@@ -42,6 +45,7 @@ def dispatch(store, action, data):
         "details": store.get_tasks,
         "resolve-prefix": store.resolve_prefix,
         "events": store.list_events,
+        "notes": store.read_notes,
         "reorder": store.reorder_tasks,
         "add-to-workstream": store.add_to_workstream,
         "remove-from-workstream": store.remove_from_workstream,
@@ -54,6 +58,9 @@ def dispatch(store, action, data):
         raise TaskError("unknown_action")
     if action == "question":
         data = {**data, "handling": "user"}
+    if action == "tasks":
+        # The board shows every section, closed ones included, from unabridged cards.
+        data = {**data, "include_inactive": True, "full_cards": True}
     return operations[action](**data)
 
 

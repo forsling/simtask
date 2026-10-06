@@ -280,6 +280,28 @@ kbd {
   min-width: 18px;
   text-align: right;
 }
+.tag-archived {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--muted-bg);
+  border-radius: 9px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.list-title h1 .tag-archived {
+  flex: none;
+  align-self: center;
+  margin-left: 8px;
+  font-weight: 500;
+}
+.nav-item.archived .branch {
+  color: var(--text-3);
+}
+.nav-item.nav-toggle {
+  font-size: 12px;
+  color: var(--text-3);
+  min-height: 26px;
+}
 .count.attention {
   color: var(--ask);
   background: var(--ask-bg);
@@ -342,6 +364,60 @@ kbd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.notes {
+  margin: 0 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.note {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 12.5px;
+}
+.note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-2);
+  min-width: 0;
+}
+.note-head::-webkit-details-marker {
+  display: none;
+}
+.note-head .i {
+  flex: none;
+  color: var(--text-3);
+  transition: transform 0.15s;
+}
+.note[open] .note-head .i {
+  transform: rotate(90deg);
+}
+.note-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.note-meta {
+  margin-left: auto;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.note-text {
+  padding: 0 10px 8px;
+  max-height: 9.5em;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  line-height: 1.45;
 }
 .search {
   margin: 0 16px 8px;
@@ -1345,4 +1421,26 @@ dialog footer {
   -webkit-box-orient: vertical;
   overflow: hidden;
   font-weight: normal;
+}
+
+/* Permanent task references wrap in full and can be selected on cards and details. */
+.task-id {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  user-select: text;
+  cursor: text;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.task-id-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.task-id-header .task-id {
+  flex: 1 1 180px;
 }

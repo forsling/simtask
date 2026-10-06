@@ -115,9 +115,9 @@ def test_concerns_persist_and_pass_review_clears_prerequisite(context):
         restarted.get_tasks([task["id"]])["items"][0]["attempts"][0]["concerns"]
         == proof["concerns"]
     )
-    cards = restarted.list_tasks(project, ws)["items"]
-    assert cards[0]["view"] == "signoff" and cards[0]["concern_count"] == 2
-    assert cards[1]["view"] == "ready" and cards[1]["prerequisites"][0]["satisfied"]
+    cards = restarted.list_tasks(project, ws, include=["blockers"])["items"]
+    assert cards[0]["state"] == "signoff" and cards[0]["concern_count"] == 2
+    assert cards[1]["state"] == "ready" and cards[1]["prerequisites"][0]["satisfied"]
     assert restarted.get_next_action(ws)["task"]["id"] == dependent["id"]
     export = restarted.export_workstream(ws)["content"]
     for concern in proof["concerns"]:
@@ -160,8 +160,11 @@ def assert_legacy_concern_projections(store, task, ws, attempt_id, legacy, conce
     assert store.get_tasks([task["id"]])["items"][0]["attempts"][0] == proof
     assert store.list_task_attempts(task["id"])["items"][0]["concern_count"] == len(concerns)
     card = store.list_tasks(task["project_id"], ws)["items"][0]
+    assert card.get("concern_count", 0) == len(concerns)
+    card = store.list_tasks(task["project_id"], ws, include=["concerns"])["items"][0]
     assert card["concern_count"] == len(concerns)
     assert card["concern_attempt_total"] == bool(concerns)
+    assert [c["text"] for c in card["concerns"]] == [c["text"] for c in concerns]
     full = store.read_tasks([task["id"]], True, ws)["items"][0]
     assert full["concern_count"] == len(concerns)
     assert [c["text"] for c in full["concerns"]] == [c["text"] for c in concerns]
@@ -412,7 +415,7 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
     async def exercise():
         async with Client(parameters, read_timeout_seconds=30) as client:
             tools = (await client.list_tools()).tools
-            assert len(tools) == 42
+            assert len(tools) == 28
             for name in ("record_result", "record_review"):
                 descriptor = next(t for t in tools if t.name == name)
                 schema = descriptor.input_schema
@@ -421,21 +424,28 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
                     "value",
                     "design",
                 ]
-                assert (
-                    "cannot be" in descriptor.description
-                    and "changing what the task says" in descriptor.description
-                )
                 assert "rare" not in descriptor.description
+            described = {t.name: t.description for t in tools}
+            assert "not fixable without changing the task" in described["record_result"]
+            assert "never affect gates" in described["record_result"]
+            assert "as in record_result" in described["record_review"]
+            # The artifact format is stated in the description and enforced by the schema.
+            assert "[{kind: artifact|commit, reference}]" in described["record_result"]
+            schema = next(t for t in tools if t.name == "record_result").input_schema
+            artifact = schema["$defs"]["ArtifactInput"]
+            assert artifact["properties"]["kind"]["enum"] == ["artifact", "commit"]
+            assert set(artifact["required"]) == {"kind", "reference"}
+            assert artifact["additionalProperties"] is False
 
             async def call(name, **arguments):
                 response = await client.call_tool(name, arguments)
                 assert not response.is_error, response.content
                 return response.structured_content
 
-            runtime = await call("runtime_info")
+            runtime = (await call("init", path=str(tmp_path / "probe"), branch="main"))["runtime"]
             assert runtime["package_path"] == str(root / "src/task_mcp")
-            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 14
-            assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 10
+            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 16
+            assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 11
             ctx = await call(
                 "init",
                 path=str(tmp_path / "repo"),
@@ -463,6 +473,16 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
                 "record_result", {**proof, "concerns": [{"kind": "wrong", "text": "Invalid"}]}
             )
             assert invalid.is_error
+            # Guessed artifact shapes fail with errors naming the expected keys and kinds.
+            for artifacts, expected in (
+                ([{"path": "synthetic.txt"}], ("artifacts.0.kind", "artifacts.0.reference")),
+                ([{"type": "commit", "ref": "abc123"}], ("artifacts.0.kind", "reference")),
+                ([{"kind": "file", "reference": "x"}], ("'artifact' or 'commit'",)),
+                ([], ("{kind, reference}", "artifact or commit")),
+            ):
+                guessed = await client.call_tool("record_result", {**proof, "artifacts": artifacts})
+                assert guessed.is_error
+                assert all(text in guessed.content[0].text for text in expected), artifacts
             ack = await call(
                 "record_result",
                 **proof,
@@ -516,9 +536,10 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
             assert selected["attempt"] == legacy_read and selected["task"]["concern_count"] == 0
             status = await call("workstream_status", workstream_id=ws)
             assert status["concern_tasks"]["total"] == 1
-            exported = await call("export_workstream", workstream_id=ws)
+            # Export is a CLI/Store surface, no longer an MCP tool.
+            exported = Store(database).export_workstream(ws)
             assert "> " + ATTRIBUTED_LEGACY_LOOKALIKE.replace("\n", "\n> ") in exported["content"]
-            assert "Value concern — reviewer historical" not in exported["content"]
+            assert "Worth-doing concern — reviewer historical" not in exported["content"]
             legacy_reviewed = await call(
                 "record_review",
                 attempt_id=legacy_ack["id"],

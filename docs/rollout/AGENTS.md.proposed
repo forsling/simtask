@@ -1,0 +1,13 @@
+# Task MCP dogfooding
+
+This project uses Task MCP for its task state; follow the server's
+instructions and skills.
+
+- Project: `/path/to/task-mcp`, branch `main`.
+- Server: `/path/to/task-mcp/.venv/bin/task-mcp`.
+- Database: `~/.local/share/task-mcp/tasks.sqlite3`.
+- Track work in Task MCP, not in TASKS.md, BACKLOG.md or ARCHIVE.md.
+- If the tools are unavailable, report the connection problem.
+- `DESIGN.md` sets the prototype's boundaries; `README.md` covers tool usage.
+
+This file is a local reminder, excluded from Git through `.git/info/exclude`.

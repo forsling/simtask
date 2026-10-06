@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from task_mcp.store import Store, TaskError, default_database
+from task_mcp.store import INACTIVE_STATUSES, STATE_WORDS, Store, TaskError, default_database
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ def test_session_init_new_branch_attach_rebind_and_rollback(store, tmp_path):
     assert unknown["state"] == "unregistered_checkout"
     assert {"create_project", "attach_workstream", "rebind_workstream"} == set(unknown["choices"])
     assert unknown["workstream_candidates"]
-    with pytest.raises(TaskError, match="unknown_scope_base"):
+    with pytest.raises(TaskError, match=r"unknown_scope_base: .*none.*\+/-task or group"):
         store.init(
             checkout,
             branch="release",
@@ -242,9 +242,15 @@ def test_status_active_gates_suspend_and_resume(store, tmp_path):
     active = ["unresolved_items", "prerequisites"]
 
     def check_status(view, gates):
-        status = store.workstream_status(ws)
-        assert status["items"][0]["view"] == view
-        assert status["items"][0]["gate_diagnostics"] == gates
+        status = store.workstream_status(ws, include_inactive=True)
+        assert status["items"][0]["state"] == STATE_WORDS.get(view, view)
+        board = store.list_tasks(project, ws, include_inactive=True, include=["blockers"])
+        assert board["items"][0]["gate_diagnostics"] == gates
+        if view in INACTIVE_STATUSES:
+            default = store.workstream_status(ws)
+            assert default["items"] == [] and default["total"] == 0
+            assert default["hidden"] == {view: 1}
+            assert store.init(path, branch="main")["queue_hidden"] == {view: 1}
         summary = status["status"]
         assert summary["recorded_state"] == "registered"
         assert summary["agent_liveness"] == "not_tracked"
@@ -260,7 +266,7 @@ def test_status_active_gates_suspend_and_resume(store, tmp_path):
             )
         }
         assert store.init(path, branch="main")["status"] == summary
-        assert store.init(path, branch="main")["queue"] == status["items"]
+        assert store.init(path, branch="main", include_inactive=True)["queue"] == status["items"]
         assert store.list_workstreams(project)["items"][0]["status"] == summary
         return summary
 
@@ -310,7 +316,9 @@ def test_inactive_attempts_are_history_not_status_gates(store, tmp_path, disposi
         specification_etag=store.get_tasks([work["id"]])["items"][0]["specification_etag"],
     )
     status = store.workstream_status(ws)
-    assert status["items"][0]["gate_diagnostics"] == ["signoff"]
+    assert status["items"][0]["state"] == "signoff"
+    board = store.list_tasks(project, ws, include=["blockers"])
+    assert board["items"][0]["gate_diagnostics"] == ["signoff"]
     assert status["status"]["overlapping_gate_diagnostics"]["signoff"] == 1
     assert store.workstream_status(other)["items"] == []
     if disposition == "done":
@@ -320,8 +328,11 @@ def test_inactive_attempts_are_history_not_status_gates(store, tmp_path, disposi
     else:
         store.set_disposition(work["id"], 3, disposition, "User decision")
     status = store.workstream_status(ws)
-    assert status["items"][0]["view"] == disposition
-    assert status["items"][0]["gate_diagnostics"] == []
+    assert status["items"] == [] and status["hidden"] == {disposition: 1}
+    status = store.workstream_status(ws, include_inactive=True)
+    assert status["items"][0]["state"] == disposition and "hidden" not in status
+    board = store.list_tasks(project, ws, include_inactive=True, include=["blockers"])
+    assert board["items"][0]["gate_diagnostics"] == []
     assert status["status"]["counts"][disposition] == 1
     assert not any(status["status"]["overlapping_gate_diagnostics"].values())
     assert store.workstream_status(other)["items"] == []
@@ -359,7 +370,10 @@ def test_inactive_status_does_not_hide_prerequisite_from_signoff(store, tmp_path
     blocker = task(store, project, ws, "Still needed")
     gated = store.add_prerequisite(work["id"], 2, blocker["id"])
     inactive = store.set_disposition(work["id"], gated["revision"], disposition, "Later")
-    assert store.workstream_status(ws)["items"][0]["gate_diagnostics"] == []
+    board = store.list_tasks(project, ws, include_inactive=True, include=["blockers"])
+    card = next(item for item in board["items"] if item["id"] == work["id"])
+    assert card["gate_diagnostics"] == [] and "blockers" not in card
+    assert card["prerequisites"][0]["blocking"]
     with pytest.raises(TaskError, match="invalid_signoff_target"):
         store.signoff_task(
             work["id"],
@@ -379,17 +393,32 @@ def test_explicit_init_and_attachment_do_not_write_checkouts(store, tmp_path):
     with pytest.raises(TaskError, match="confirmation_required"):
         store.init_project(str(path), branch="main")
     project, ws, canonical = setup(store, tmp_path)
-    assert store.preflight(project, canonical, branch="main")["workstream"]["id"] == ws
+    assert store.init(canonical, branch="main", workstream_id=ws)["state"] == "ready"
     assert list(path.iterdir()) == []
     other = tmp_path / "other"
     other.mkdir()
     with pytest.raises(TaskError, match="checkout_not_attached"):
         store.init_workstream(project, str(other), branch="feature", confirmed=True)
-    store.attach_checkout(project, str(other), confirmed=True)
-    feature = store.init_workstream(project, str(other), branch="feature", confirmed=True)
-    assert feature["members"] == []
-    with pytest.raises(TaskError, match="workstream_mismatch"):
-        store.preflight(project, canonical, branch="feature", workstream_id=ws)
+    feature = store.init(
+        str(other), branch="feature", action="attach_workstream", project=project, confirmed=True
+    )
+    assert feature["state"] == "ready" and feature["queue"] == []
+    # The checkout/branch match check: a bound workstream elsewhere is a clear mismatch.
+    moved = store.init(canonical, branch="feature", workstream_id=ws)
+    assert moved["state"] == "mismatch" and "another checkout" in moved["message"]
+    other_branch = store.init(canonical, branch="release", workstream_id=ws)
+    assert other_branch["state"] == "mismatch"
+    assert other_branch["workstream"]["id"] == ws
+    assert "'main'" in other_branch["message"] and "'release'" in other_branch["message"]
+    assert other_branch["choices"] == ["rebind_workstream", "new_workstream"]
+    # An unregistered checkout is checked within the named workstream's project: 'main' is
+    # bound there already, so attaching a second 'main' (which would fail) is not offered.
+    unattached = store.init(str(tmp_path / "elsewhere"), branch="main", workstream_id=ws)
+    assert unattached["state"] == "mismatch" and "another checkout" in unattached["message"]
+    assert unattached["workstream"]["id"] == ws
+    assert unattached["choices"] == ["rebind_workstream", "init_requested_binding"]
+    loose = store.init(str(tmp_path / "elsewhere"), branch="topic", workstream_id=ws)
+    assert loose["choices"] == ["rebind_workstream", "attach_workstream"]
     assert list(other.iterdir()) == []
 
 
@@ -397,27 +426,34 @@ def test_workstream_rebinding_and_named_non_git_context(store, tmp_path):
     project, ws, path = setup(store, tmp_path)
     with pytest.raises(TaskError, match="workstream_name_required"):
         store.init_workstream(project, path, confirmed=True)
-    renamed = store.rebind_workstream(ws, 1, path, branch="renamed", confirmed=True)
+    renamed = store.init(
+        path,
+        branch="renamed",
+        action="rebind_workstream",
+        workstream_id=ws,
+        expected_revision=1,
+        confirmed=True,
+    )["workstream"]
     assert renamed["id"] == ws and renamed["revision"] == 2
-    assert store.preflight(project, path, branch="renamed")["workstream"]["id"] == ws
-    with pytest.raises(TaskError, match="workstream_not_initialized"):
-        store.preflight(project, path, branch="main")
+    assert store.init(path, branch="renamed", workstream_id=ws)["workstream"]["id"] == ws
+    stale = store.init(path, branch="main", workstream_id=ws)
+    assert stale["state"] == "mismatch" and "'renamed'" in stale["message"]
+    assert store.init(path, branch="main")["state"] == "new_branch"
     named = store.init_workstream(project, path, name="detached", confirmed=True)
-    assert (
-        store.preflight(project, path, workstream_id=named["workstream"]["id"])["workstream"][
-            "name"
-        ]
-        == "detached"
-    )
+    resumed = store.init(path, workstream_name="detached", workstream_id=named["workstream"]["id"])
+    assert resumed["state"] == "ready" and resumed["workstream"]["name"] == "detached"
 
 
-def test_prerequisites_and_observer_gate_proposals(store, tmp_path):
+def test_prerequisites_block_and_observer_handling_is_gone(store, tmp_path):
     project, ws, _ = setup(store, tmp_path)
     first = task(store, project, ws, "First")
     second = task(store, project, ws, "Second")
-    observer = store.add_unresolved(first["id"], 1, "Possible issue", handling="observer")
+    with pytest.raises(TaskError, match="invalid_handling"):
+        store.add_unresolved(first["id"], 1, "Possible issue", handling="observer")
+    with pytest.raises(TaskError, match="invalid_handling"):
+        store.add_prerequisite(first["id"], 1, second["id"], handling="observer")
     assert store.get_next_action(ws)["task"]["id"] == first["id"]
-    activated = store.accept_gate_proposal(observer["id"], 1)
+    activated = store.add_unresolved(first["id"], 1, "Possible issue")
     assert activated["unresolved_items"]
     blocked = store.add_prerequisite(second["id"], 1, first["id"])
     assert blocked["blocked_by"] == [first["id"]]
@@ -426,82 +462,20 @@ def test_prerequisites_and_observer_gate_proposals(store, tmp_path):
         store.add_prerequisite(first["id"], 2, second["id"])
 
 
-def test_cyclic_gate_proposal_can_be_dismissed_before_decomposition(store, tmp_path):
+def test_legacy_gate_proposal_rows_stay_readable_and_do_not_block_decomposition(store, tmp_path):
     project, ws, _ = setup(store, tmp_path)
     first = task(store, project, ws, "First")
     second = task(store, project, ws, "Second")
-    store.add_prerequisite(second["id"], 1, first["id"])
-    proposal = store.add_prerequisite(first["id"], 1, second["id"], handling="observer")
-    with pytest.raises(TaskError, match="prerequisite_cycle"):
-        store.accept_gate_proposal(proposal["id"], 1)
-    with pytest.raises(TaskError, match="gate_proposals"):
-        store.decompose_task(first["id"], 1, [{"title": "Member"}])
-    with pytest.raises(TaskError, match="decision_note_required"):
-        store.dismiss_gate_proposal(proposal["id"], 1, " ")
-    with pytest.raises(TaskError, match="revision_conflict"):
-        store.dismiss_gate_proposal(proposal["id"], 0, "Stale decision")
-    dismissed = store.dismiss_gate_proposal(
-        proposal["id"], 1, "Cyclic dependency cannot be activated"
-    )
-    assert dismissed["revision"] == 2
-    assert dismissed["gate_proposals"] == [] and dismissed["blocked_by"] == []
-    with pytest.raises(TaskError, match="unknown_gate_proposal"):
-        store.dismiss_gate_proposal(proposal["id"], 2, "Already resolved")
-    events = store.list_events(project, first["id"], include_details=True)["items"]
-    decision = next(
-        event
-        for event in events
-        if event["action"] == "gate.proposal_dismissed" and event["outcome"] == "ok"
-    )
-    assert decision["actor"] == "test-coordinator"
-    assert decision["request"]["note"] == "Cyclic dependency cannot be activated"
-    assert decision["before"]["proposal"]["id"] == proposal["id"]
-    assert decision["before"]["proposal"]["detail"] == second["id"]
-    assert decision["after"]["task"]["revision"] == 2
-    assert store.decompose_task(first["id"], 2, [{"title": "Member"}])["members"]
-
-
-def test_gate_proposal_can_be_dismissed_after_target_is_dropped(store, tmp_path):
-    project, ws, _ = setup(store, tmp_path)
-    owner = task(store, project, ws, "Owner")
-    target = task(store, project, ws, "Target")
-    proposal = store.add_prerequisite(owner["id"], 1, target["id"], handling="observer")
-    store.set_disposition(target["id"], 1, "dropped", "No longer needed")
-    with pytest.raises(TaskError, match="invalid_prerequisite"):
-        store.accept_gate_proposal(proposal["id"], 1)
-    dismissed = store.dismiss_gate_proposal(proposal["id"], 1, "Target was dropped")
-    assert dismissed["revision"] == 2 and dismissed["gate_proposals"] == []
-    assert store.get_tasks([target["id"]])["items"][0]["status"] == "dropped"
-
-
-def test_completed_task_gate_proposals_cannot_be_dismissed(store, tmp_path):
-    project, ws, _ = setup(store, tmp_path)
-    owner = task(store, project, ws, "Owner")
-    proposal = store.add_unresolved(owner["id"], 1, "Possible issue", handling="observer")
-    completed = complete(store, owner["id"], ws, 1)
-    with pytest.raises(TaskError, match="completed_task_immutable"):
-        store.dismiss_gate_proposal(proposal["id"], completed["revision"], "Too late")
-
-
-def test_pending_prerequisite_proposal_is_atomic_and_disposition_preserves_acceptance(
-    store, tmp_path
-):
-    project, ws, _ = setup(store, tmp_path)
-    parent = task(store, project, ws)
-    added = store.propose_prerequisite(
-        parent["id"], 1, "Research dependency", "Scope stays pending", workstream_id=ws
-    )
-    proposal = added["proposal"]
-    assert proposal["workstream_ids"] == [ws]
-    assert proposal["id"] in added["task"]["blocked_by"]
-    assert proposal["id"] in store.list_workstreams(project)["items"][0]["scope"]
-    deferred = store.set_disposition(parent["id"], 2, "deferred", "Wait for research")
-    assert deferred["workstream_ids"] == [ws] and deferred["status"] == "deferred"
-    resumed = store.set_disposition(parent["id"], 3, "open", "Research resumed")
-    assert (
-        resumed["workstream_ids"] == [ws]
-        and store.get_tasks([parent["id"]])["items"][0]["body"] == parent["body"]
-    )
+    with sqlite3.connect(store.path) as db:
+        db.execute(
+            "INSERT INTO gate_proposals (id,task_id,gate_type,detail,proposer,created_at) "
+            "VALUES ('gat_legacy',?,'prerequisite',?,'older-server','2026-01-01T00:00:00Z')",
+            (first["id"], second["id"]),
+        )
+    assert store.get_tasks([first["id"]])["items"][0]["gate_proposals"][0]["id"] == "gat_legacy"
+    assert store.decompose_task(first["id"], 1, [{"title": "Member"}])["members"]
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT count(*) FROM gate_proposals").fetchone()[0] == 1
 
 
 def test_group_dependency_unblocks_when_all_members_complete(store, tmp_path):
@@ -562,11 +536,12 @@ def test_group_has_no_execution_gates_and_requires_resolved_decomposition(store,
     group = store.decompose_task(parent["id"], resolved["revision"], [{"title": "A"}])
     assert group["unresolved_items"] == []
     assert group["blocked_by"] == [] and group["attempts"] == []
+    # A group ID names scope inclusion; the decomposed group is already included here.
+    included = store.add_to_workstream(parent["id"], ws, group["revision"])
+    assert not included["changed"] and included["included"]
     for action in (
-        lambda: store.add_to_workstream(parent["id"], ws, group["revision"]),
         lambda: store.set_disposition(parent["id"], group["revision"], "deferred", "Wait"),
         lambda: store.add_unresolved(parent["id"], group["revision"], "Gate"),
-        lambda: store.propose_prerequisite(parent["id"], group["revision"], "New task"),
         lambda: store.record_result(
             parent["id"],
             ws,
@@ -591,9 +566,6 @@ def test_effective_cycle_detection_includes_group_member_edges(store, tmp_path):
     store.add_prerequisite(member, 1, other["id"])
     with pytest.raises(TaskError, match="prerequisite_cycle"):
         store.add_prerequisite(other["id"], 1, parent["id"])
-    proposed = store.add_prerequisite(other["id"], 1, parent["id"], handling="observer")
-    with pytest.raises(TaskError, match="prerequisite_cycle"):
-        store.accept_gate_proposal(proposed["id"], 1)
     with pytest.raises(TaskError, match="prerequisite_cycle"):
         store.add_prerequisite(member, 2, parent["id"])
 
@@ -631,8 +603,8 @@ def test_scope_noops_keep_revision_and_changes_bump_atomically(store, tmp_path):
     assert store.list_workstreams(project)["items"][0]["revision"] == 2
     store.decompose_task(included["id"], 1, [{"title": "Child"}])
     assert store.list_workstreams(project)["items"][0]["revision"] == 3
-    child = store.get_tasks([included["id"]])["items"][0]["members"][0]
-    store.propose_prerequisite(child, 1, "Needed", workstream_id=ws)
+    assert store.get_tasks([included["id"]])["items"][0]["members"]
+    store.create_task(project, "Needed", workstream_id=ws)
     assert store.list_workstreams(project)["items"][0]["revision"] == 4
     with pytest.raises(TaskError, match="revision_conflict"):
         store.set_scope(ws, 3, "none")
@@ -664,7 +636,6 @@ def test_completed_tasks_and_attempts_are_immutable(store, tmp_path):
         lambda: store.set_disposition(done["id"], done["revision"], "open", "Reopen"),
         lambda: store.add_unresolved(done["id"], done["revision"], "New gate"),
         lambda: store.add_prerequisite(done["id"], done["revision"], other["id"]),
-        lambda: store.propose_prerequisite(done["id"], done["revision"], "New task"),
         lambda: store.record_result(
             done["id"],
             ws,
@@ -702,9 +673,14 @@ def test_attempt_review_human_review_and_signoff_rework_vs_revise(store, tmp_pat
     )
     with pytest.raises(TaskError, match="independent_review_required"):
         store.record_review(result["id"], 1, "worker", "pass", "Looks good")
-    with pytest.raises(TaskError, match="review_required"):
+    for decision in ("rework", "revise", "drop"):
+        with pytest.raises(TaskError, match="review_required"):
+            store.signoff_task(
+                created["id"], 2, decision, "Reasons", result["id"], expected_attempt_revision=1
+            )
+    with pytest.raises(TaskError, match="reasons_required"):
         store.signoff_task(
-            created["id"], 2, "approve", "Approved", result["id"], expected_attempt_revision=2
+            created["id"], 2, "approve", " ", result["id"], expected_attempt_revision=1
         )
     reviewed = store.record_review(result["id"], 1, "reviewer", "pass", "Checked diff")
     assert reviewed["state"] == "passed"

@@ -41,7 +41,7 @@ async def exercise(database):
                 "excludes host wrapper/schema text. Refreshed host verification awaits rollout."
             ),
         }
-        assert len(catalog.tools) == 42
+        assert len(catalog.tools) == 28
 
         async def call(tool_name, **args):
             result = await client.call_tool(tool_name, args)
@@ -119,15 +119,11 @@ async def exercise(database):
         )
         token, revision = changed["specification_etag"], changed["revision"]
         card_before = (await ok("get_tasks", ids=[task["id"]], workstream_id=ws))["items"][0]
-        assert card_before["attempt_reference"] is None and "specification_etag" not in card_before
-        # Pending proposals remain complete on explicit spec reads and compact on writes.
-        proposal = await ok(
-            "add_unresolved",
-            task_id=task["id"],
-            expected_revision=revision,
-            text="Proposed detailed concern.\n" * 200,
-            handling="observer",
-        )
+        assert "specification_etag" not in card_before
+        attempt_before = (
+            await ok("get_tasks", ids=[task["id"]], workstream_id=ws, include=["attempt"])
+        )["items"][0]
+        assert attempt_before["attempt"] is None
         spec = (
             await ok(
                 "get_tasks",
@@ -142,14 +138,6 @@ async def exercise(database):
             spec["attempts"][0]["spec_revision"] == 1
             and spec["attempts"][0]["workstream_id"] == other
         )
-        assert spec["gate_proposals"][0]["detail"] == "Proposed detailed concern.\n" * 200
-        dismissed = await ok(
-            "dismiss_gate_proposal",
-            proposal_id=proposal["proposal_id"],
-            expected_revision=proposal["task_revision"],
-            note="Synthetic proposal resolved",
-        )
-        revision = dismissed["revision"]
         noop = await ok(
             "update_task",
             task_id=task["id"],
@@ -247,8 +235,10 @@ async def exercise(database):
         assert abs(len(json.dumps(zero_history)) - len(json.dumps(card_before))) < 10
         assert len(json.dumps(card_after)) < 1500 and proof not in json.dumps(card_after)
         start = len(trace)
-        queue = await ok("list_tasks", project=project, workstream_id=ws, state="signoff")
-        ref = queue["items"][0]["attempt_reference"]
+        queue = await ok(
+            "list_tasks", project=project, workstream_id=ws, state="signoff", include=["attempt"]
+        )
+        ref = queue["items"][0]["attempt"]
         informed = (
             await ok(
                 "get_tasks",
@@ -293,7 +283,9 @@ async def exercise(database):
         }
         assert len(trace) - start == 3
         group = await ok(
-            "create_group",
+            "create_task",
+            project=project,
+            kind="group",
             workstream_id=ws,
             title="Many members",
             body="Full group context",
@@ -317,11 +309,13 @@ async def exercise(database):
             and len(group_spec["members"]) == 3
             and group_spec["member_total"] == 24
         )
-        page = await ok("list_group_members", group_id=group["id"])
-        rest = await ok("list_group_members", group_id=group["id"], cursor=page["next_cursor"])
+        page = await ok("list_tasks", group_id=group["id"])
+        rest = await ok("list_tasks", group_id=group["id"], offset=page["next_offset"])
         assert len(page["items"]) == 20 and len(rest["items"]) == 4
         init = await ok("init", path=str(database.parent / "repo"), branch="main")
-        assert len(init["queue"]) == 10 and init["queue_total"] == 25
+        # The signed-off task is counted, not listed.
+        assert len(init["queue"]) == 10 and init["queue_total"] == 24
+        assert init["queue_hidden"] == {"done": 1}
         history = await ok(
             "list_task_attempts", task_id=task["id"], current_spec_only=False, limit=3
         )
@@ -332,8 +326,8 @@ async def exercise(database):
         assert len(events["items"]) == 20 and "request" not in events["items"][0]
         index = await ok("get_default_skills")
         assert all("content" not in s for s in index["items"])
-        named = await ok("get_default_skills", name="signoff")
-        metadata = next(item for item in index["items"] if item["name"] == "signoff")
+        named = await ok("get_default_skills", name="task-signoff")
+        metadata = next(item for item in index["items"] if item["name"] == "task-signoff")
         assert named["items"][0]["sha256"] == metadata["sha256"]
         assert named["items"][0]["content"]
         report["fixture"] = {
@@ -386,37 +380,43 @@ async def exercise(database):
             assert bool(ack["unresolved_id"]) == (decision == "revise")
             assert proof not in json.dumps(ack) and body not in json.dumps(ack)
             report["signoff_acknowledgements"].append(ack)
-        # A prerequisite insertion returns order continuation for a direct move.
+        # A new prerequisite returns order continuation for a direct move.
         start = len(trace)
-        proposed = await ok(
-            "propose_prerequisite",
-            task_id=member["id"],
-            expected_revision=member["revision"],
+        created = await ok(
+            "create_task",
+            project=project,
             title="Synthetic prerequisite",
             body=body,
             workstream_id=ws,
         )
+        linked = await ok(
+            "add_prerequisite",
+            task_id=member["id"],
+            expected_revision=member["revision"],
+            blocked_by_id=created["id"],
+        )
         moved = await ok(
             "reorder_tasks",
             workstream_id=ws,
-            task_ids=[proposed["proposal"]["id"]],
-            expected_order_revision=proposed["workstream_order_revision"],
+            task_ids=[created["id"]],
+            expected_order_revision=created["workstream_order_revision"],
         )
         assert (
             moved["changed"]
-            and moved["workstream_order_revision"] == proposed["workstream_order_revision"] + 1
+            and moved["workstream_order_revision"] == created["workstream_order_revision"] + 1
         )
         report["prerequisite_order_continuation"] = {
             "call_count": len(trace) - start,
             "calls": trace[start:],
             "confirmation_reads": 0,
-            "proposal": proposed,
+            "prerequisite": created,
+            "link": linked,
             "move": moved,
         }
         report["proof_write_sizes"] = [
             row
             for row in trace
-            if row["tool"] in ("record_result", "record_review", "human_review", "signoff_task")
+            if row["tool"] in ("record_result", "record_review", "signoff_task")
         ]
     return report
 

@@ -99,24 +99,29 @@ async function test() {
     if (n.classList.contains("section-head")) sections.push({title: n.children[n.children.length - 2].textContent, rows: []});
     else if (n.classList.contains("row")) sections.at(-1).rows.push(n);
   }
-  assert.deepEqual(sections.map(s => s.title), ["Signoff", "Design", "In progress", "Open", "Later", "Done"]);
+  assert.deepEqual(sections.map(s => s.title), ["Signoff", "In progress", "Open", "Design", "Later", "Done"]);
   const ids = s => sections.find(x => x.title === s).rows.map(r => r.dataset.id);
   assert.deepEqual(ids("Signoff"), ["reworked", "human", "signoff"], "canonical relative order within Signoff");
   assert.deepEqual(ids("Design"), ["brief", "revised"], "canonical relative order within Design");
-  assert.deepEqual(Array.from(run("orderedRows().map(r => r.id)")), ["reworked", "human", "signoff", "brief", "revised", "fixing", "review", "blocked", "ready", "deferred"]);
+  assert.deepEqual(Array.from(run("orderedRows().map(r => r.id)")), ["reworked", "human", "signoff", "fixing", "review", "blocked", "ready", "brief", "revised", "deferred"]);
   assert.deepEqual(Array.from(run("state.rows.map(r => r.id)")), context.board.map(r => r.id), "grouping changes no stored order");
   assert.deepEqual(ids("In progress"), ["fixing", "review"]);
   assert.deepEqual(ids("Open"), ["blocked", "ready"]);
   assert.deepEqual(ids("Later"), ["deferred"]);
   assert.deepEqual(ids("Done"), [], "Done starts collapsed");
 
-  // j/k follows the displayed Signoff -> Design order, including search results.
+  // j/k follows the displayed section order, including search results.
   run(`selectTask = async id => { state.selected = id; }; state.selected = "signoff";`);
   const press = key => listeners.get("keydown")({key, target: {tagName: "BODY"}, preventDefault() {}});
   press("j");
-  assert.equal(run("state.selected"), "brief");
+  assert.equal(run("state.selected"), "fixing");
   press("k");
   assert.equal(run("state.selected"), "signoff");
+  run(`state.selected = "ready";`);
+  press("j");
+  assert.equal(run("state.selected"), "brief", "Design follows Open");
+  press("k");
+  assert.equal(run("state.selected"), "ready");
   get("search").value = "Design brief";
   run("renderList()");
   assert.deepEqual(kids(get("list")).filter(n => n.classList.contains("row")).map(n => n.dataset.id), ["brief"]);
@@ -200,6 +205,31 @@ async function test() {
   const held = descendants(run('nextStep(task, "decision")')).map(n => n.textContent).join(" ");
   assert.match(held, /An unresolved item needs your answer/);
   assert.doesNotMatch(held, /Sign off with an agent|Answer/);
+
+  // Picked up: a recent pick (the server reports only live ones) is In progress before
+  // any result; without it the task is Open again. Questions still come first.
+  assert.equal(run("standingOf")(card("p", "Picked", {picked: {workstream_id: "w", action: "implement", picked_at: "2026-10-05T09:00:00Z"}})), "progress");
+  assert.equal(run("standingOf")({status: "open", unresolved_count: 0, aggregate_attempt_counts: counts(), picked: {workstream_id: "x"}}), "progress");
+  assert.equal(run("standingOf")(card("q", "Picked with a question", {unresolved_count: 1, picked: {workstream_id: "w"}})), "decision");
+  const picked = new Date(Date.now() - 12 * 60000).toISOString();
+  run(`state.stream = "w";`);
+  context.task = {...context.task, unresolved_items: [], attempts: [], latest_rejection: null,
+    picks: [{workstream_id: "w", action: "implement", picked_at: picked}]};
+  assert.equal(run("taskStanding(task)"), "progress");
+  const working = descendants(run('nextStep(task, "progress")')).map(n => n.textContent).join(" ");
+  assert.match(working, /An agent picked this up 12 minutes ago\. No result is recorded yet\./);
+  context.task.attempts = [{id: "att_r", state: "review", spec_revision: 1, workstream_id: "w", revision: 1, created_at: "2026-10-05T09:00:00.000000Z"}];
+  context.task.picks = [{workstream_id: "w", action: "review", picked_at: picked}];
+  assert.match(descendants(run('nextStep(task, "progress")')).map(n => n.textContent).join(" "),
+    /with the agents for independent review\. A reviewer picked it up 12 minutes ago\./);
+  context.task.attempts = [];
+  context.task.picks = [{workstream_id: "other", action: "implement", picked_at: picked}];
+  assert.equal(run("taskStanding(task)"), "open", "another workstream's pick does not count on this board");
+  run(`state.stream = null;`);
+  assert.equal(run("taskStanding(task)"), "progress", "project boards count any workstream's pick");
+  context.task.picks = [];
+  assert.equal(run("taskStanding(task)"), "open");
+  assert.equal(run("pickedAgo")(new Date(Date.now() - 61 * 60000).toISOString()), "1 hour ago");
 }
 
 // Every workstream's sidebar count equals its Signoff and Design sections, also for
@@ -260,17 +290,17 @@ async function sidebar() {
   assert.equal(run('needsYou(state.streams[1])'), 2, "question + result under review counts as needing input");
   assert.deepEqual(navCount("side"), {count: "2", attention: true});
   assert.deepEqual(navCount("main"), {count: "2", attention: false}, "nothing needs input in main");
-  assert.deepEqual([...requests].sort(), ["tasks:s", "tasks:w", "workstreams:"],
+  assert.deepEqual([...requests].sort(), ["notes:w", "tasks:s", "tasks:w", "workstreams:"],
     "one card read for each other workstream; the open board is not read twice");
   // From All tasks: every workstream is read once.
   await visit(null);
   assert.deepEqual(navCount("side"), {count: "2", attention: true});
-  assert.deepEqual([...requests].sort(), ["tasks:", "tasks:s", "tasks:w", "workstreams:"]);
+  assert.deepEqual([...requests].sort(), ["notes:", "tasks:", "tasks:s", "tasks:w", "workstreams:"]);
   // Opening side: both input sections total exactly the sidebar count.
   await visit("s");
   assert.equal(inputRows(), 2);
   assert.deepEqual(navCount("side"), {count: "2", attention: true});
-  assert.deepEqual([...requests].sort(), ["tasks:s", "tasks:w", "workstreams:"]);
+  assert.deepEqual([...requests].sort(), ["notes:s", "tasks:s", "tasks:w", "workstreams:"]);
   // A group board keeps counts already read instead of reading every workstream again.
   requests.length = 0;
   run(`state.groups = "project"; state.stream = null;`);

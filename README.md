@@ -32,8 +32,7 @@ configuration; Task MCP does not install its connection.
 
 ## Runtime identity and reconnecting
 
-`runtime_info()` is a read-only diagnostic that writes no task state or audit
-event. Every successful `init` response also includes the same identity under
+Every successful `init` response includes the server's runtime identity under
 `runtime`. It reports package version, a startup-frozen SHA-256 source identifier,
 Task MCP protocol/schema revision, process startup timestamp and PID, interpreter
 and package paths, and the database's persisted schema revision. Use it after a
@@ -77,8 +76,8 @@ a host without the checkout and `.venv` is an error, with no local fallback, and
 `TASK_MCP_DB` cannot be combined with `--remote`.
 
 Open the private link printed by the command. The address bar then shows a
-short, token-free location path such as `/w/1c4684b6/t/a5dfba02` (workstream and
-task by 8-character ID prefix; see [docs/viewer.md](docs/viewer.md#location-urls)),
+token-free location path such as `/w/1c4684b6/t/id/readable-task-ids` (workstream
+by 8-character ID prefix and task by its public ID; see [docs/viewer.md](docs/viewer.md#location-urls)),
 so reload, back/forward and bookmarks keep your place in a tab that holds the
 token. Repeated launches reuse the live
 viewer for that database. The explicit `open_task_viewer` MCP tool returns the
@@ -89,7 +88,9 @@ There is no automatic startup or installed OS service. The current launcher
 uses POSIX file locking (Linux/macOS).
 
 Browse projects and workstreams, search/filter task titles, and read
-specifications, evidence and audit history. Each project's **Task groups** page shows
+specifications, evidence and audit history. The project note and, in a
+workstream, its workstream note appear read-only above the task list. Archived
+workstreams are hidden from navigation until **Show archived**. Each project's **Task groups** page shows
 its discoverable groups, including shared groups and empty groups included in
 that project's scope. **Shared task groups** shows only groups with task members in
 more than one project. Both show whole-group progress and project counts;
@@ -183,11 +184,32 @@ project or persistent session entity. Repeating either call returns its own
 
 An exact existing path/branch binding returns `ready` with project and
 workstream identities, revision, binding and compact scoped queue. No confirmation
-or separate preflight is needed for ordinary resume. A known checkout on an
+is needed for ordinary resume. Passing a known `workstream_id` also checks that it
+is bound to this checkout and branch; otherwise `mismatch` reports the requested
+workstream's own binding (or its other project), any workstream already bound
+here as `bound_workstream`, and the choices (`rebind_workstream` only for a
+workstream of the same project, since rebinding never crosses projects); an unknown ID is an
+`unknown_workstream` error. An unknown checkout naming a `workstream_id` is checked
+within that workstream's project. A known checkout on an
 unbound branch returns `new_branch` and that project's registered workstream
 candidates. An unknown checkout returns `unregistered_checkout` with project and
 workstream candidates and the choices `create_project`, `attach_workstream`, and
-`rebind_workstream`. A branch bound to another checkout returns `mismatch`.
+`rebind_workstream`; with `project`, it is checked within that project (its
+workstream candidates only, no `create_project`, and `attach_workstream` withheld
+when the name is taken). A branch bound to another checkout returns `mismatch`; when
+another `workstream_id` is requested, it reports that workstream and the branch's
+binding as `bound_workstream` separately. A `project` other than the one the
+checkout is attached to is a `mismatch` naming both. Every `mismatch` carries a
+`choices` list, and each offered choice works when followed:
+`use_bound_workstream` (init here without `workstream_id`), `init_requested_binding`
+(init `workstream` at its own checkout and branch), `use_attached_project` (init
+without `project`), `rebind_workstream` / `rebind_bound_workstream` (confirm a rebind
+of `workstream` / `bound_workstream` here), and `new_workstream` /
+`attach_workstream`. A rebind or new workstream whose name (`workstream_name` or
+the branch) is already used in the project is not offered; the message names the
+workstream holding it. Each message says which `init` arguments follow each offered
+choice. Archived workstreams add one state and a flag; see
+[Archived workstreams](#archived-workstreams).
 Candidates are recorded bindings, not scanned Git refs or running agents. The
 initial call may append an audit event but changes no project, task, scope or
 workstream state.
@@ -196,23 +218,27 @@ After choosing setup, call `init` again with `confirmed=true` and `action`:
 `create_project` creates a project and its first workstream;
 `new_workstream` creates a branch/name in the already attached checkout;
 `attach_workstream` atomically attaches an unknown checkout to the specified
-existing project and creates its workstream; `rebind_workstream` moves a selected
+existing project and creates its workstream (these creating actions reject a
+`workstream_id`, `workstream_id_not_used`, unless it already is this exact binding, and
+`create_project` rejects a `project`, `project_not_used`); `rebind_workstream` moves a selected
 durable workstream binding to this path/branch, preserving scope and history.
 Rebind requires `workstream_id` and its last read `expected_revision`. Failed
 setup calls roll back attachment and workstream changes together. An exact
 binding reached by retry returns `ready` without duplicating state. New
 workstreams take an explicit `scope_expression` (default `none`); no project
 relationship or scope is inferred from directory/branch names. `list_projects`
-is a global administrative catalog, not a current-project selector. The old
-setup primitives and `preflight` remain for compatibility.
+is a global administrative catalog, not a current-project selector.
 When a new workstream snapshots an existing workstream as its first scope
 expression term, pass that source's last read revision as `expected_revision`.
 
-`list_workstreams(project?, limit?, offset?)` lists registered workstreams
+`list_workstreams(project?, limit?, offset?, include_archived?)` lists registered workstreams
 globally or within one project, with binding, revision and derived scoped task
-counts. `workstream_status(workstream_id, limit?, offset?)` returns that
-workstream's compact scoped queue and count diagnostics without init or rebind.
-Init returns at most ten queue cards with total/next-page information. Task/group
+counts; archived ones are only counted (`archived_hidden`) unless
+`include_archived=true`. `workstream_status(workstream_id, limit?, offset?, include_inactive?)` returns that
+workstream's active slim cards (see [Boards and cards](#boards-and-cards)) and count
+diagnostics without init or rebind; its `concern_tasks` page follows the same
+active-only default. Init returns at most ten active queue cards with
+total/next-page information and `queue_hidden` counts. Task/group
 lists and status queues default to twenty; events default to twenty metadata entries.
 Workstream scope/group references are bounded; `workstream_status(include_scope=true)`
 pages explicit members, group references and exclusions using limit/offset.
@@ -223,14 +249,14 @@ sum. `groups` and `referenced_groups` identify explicitly included groups and
 their whole-group progress separately, even when this project has no members.
 The separate
 `overlapping_gate_diagnostics` counts active gates on open/rework tasks and can overlap
-for tasks with several gates. Queue `gate_diagnostics` uses the same active-gate
-meaning: done, dropped and deferred tasks have an empty list. Deferred tasks'
-gates become active again when resumed. Explicit `get_tasks(specification=true)` retains full requirements/gates;
+for tasks with several gates. Card `gate_diagnostics` (include group `blockers`)
+uses the same active-gate meaning: done, dropped and deferred tasks have an empty
+list. Deferred tasks' gates become active again when resumed. Explicit `get_tasks(specification=true)` retains full requirements/gates;
 `get_attempt`, paged `list_task_attempts` and audit events retain proof/history; retained
 history does not create actionable gates on inactive tasks.
-The single `view` shown in `list_tasks` and status drill-down prioritizes
+The single card `state` shown in `list_tasks` and status drill-down prioritizes
 terminal disposition, then inbox, review/sign-off and unresolved/
-prerequisite gates; use diagnostics to see every simultaneous gate.
+prerequisite gates; use `include=["blockers"]` diagnostics to see every simultaneous gate.
 `recorded_state=registered` means only that the binding exists;
 `agent_liveness=not_tracked` means the service intentionally does not observe
 agents, run heartbeats or maintain leases; it is not a failed observation. Recorded
@@ -249,10 +275,147 @@ review. Completed proof stays immutable; later integration needs a new task.
 See [continuation and integration guidance](docs/continuation.md).
 
 Workstreams contain ordered lists of shared tasks. A task can be included in
-several workstreams concurrently. `set_scope` retains live group references,
-local concrete membership and exclusions; a base copies that expression, and
-future local group members enter unless excluded. No scope change transfers tasks
+several workstreams concurrently. `add_to_workstream` with a group ID includes
+that group, so its present and future local members enter unless excluded;
+`remove_from_workstream` with a group ID removes the inclusion, and with a member
+ID excludes just that member while its group stays included. Completed groups can
+still be included or removed; that scope-only change leaves the group's revision
+unchanged. A new workstream's
+scope expression copies another workstream's references and exclusions. No scope change transfers tasks
 from another workstream. Remote members stay outside the local task list.
+
+## Project and workstream notes
+
+Each project and each workstream can hold one personal, uncommitted, plain-text
+note of at most 2,000 characters. Use the project note for your own rules for
+that repository and the workstream note for that branch's current situation and
+rules, such as what is deployed and how to roll it back. Rules about the code
+belong in committed repository files, personal rules for every repository in
+user-level files, and Task MCP workflow rules in the skills.
+
+A ready `init` response includes `notes.project` and `notes.workstream`, each with
+`text`, `revision`, `updated_at` and `updated_by` (the configured actor); empty
+notes are omitted. Read them before working.
+
+```text
+set_note(kind="workstream", target_id=workstream_id,
+         expected_revision=notes.workstream.revision,  # 0 when init shows none
+         text="Staging runs build 41; roll back with deploy.sh 40.")
+```
+
+`kind` is `project` (target a project ID or path) or `workstream` (a workstream
+ID). The text replaces the whole note; empty text clears it. A save over the
+limit fails with `note_too_long`, stating the limit and the submitted length.
+A stale `expected_revision` fails with `revision_conflict`; re-read with `init`
+and reconcile. Identical text is a no-op. Every save, failed or not, is audited
+as `note.set` with the before/after text. Update the workstream note when the
+live state it describes changes (for example on deploy or rollback) and when the
+user asks; keep it within the limit by replacing outdated content, not appending.
+The browser viewer shows both notes above the task list.
+
+Notes live in their own `notes` table. The original schema10-only notes rollout
+was additive and compatible with older servers. This combined development
+version also migrates task identity to schema11: startup takes a verified
+`*.pre-schema-11.*.sqlite3` backup, and all processes must use the newer code
+before reopening that database. A schema10 server already running can continue
+its existing operations, but cannot restart on schema11. Rollback to schema10
+requires restoring the pre-migration backup; writes made after it are not included.
+At schema11, a missing notes table alone still gets a verified backup named after
+the missing tables, such as `*.pre-notes.*.sqlite3`.
+
+## Archived workstreams
+
+A workstream bound to a stale checkout, such as an archived snapshot folder,
+misleads new sessions that discover it by path, branch or name. Archive it:
+
+```text
+archive_workstream(workstream_id, expected_revision=0, reason="Inactive snapshot")
+archive_workstream(workstream_id, expected_revision=1, reason="Back in use",
+                   archived=false)   # unarchive
+```
+
+`expected_revision` is the workstream's `archive.revision` (0 when it shows no
+`archive` block); a stale one fails with `revision_conflict`. The reason is
+required, at most 200 characters. Repeating the current state is a no-op that
+keeps the earlier reason. Every call is audited as `workstream.archived` or
+`workstream.unarchived` with the before/after archive state. Only discovery
+changes: tasks, memberships (including the same tasks in other workstreams),
+order, attempts, reviews, history, notes and the workstream's own revision are
+untouched, and the binding keeps its branch and name.
+
+Once archived, a workstream is left out unless a call passes
+`include_archived=true`:
+
+- `list_workstreams` omits it and counts it in `archived_hidden`.
+- `init` leaves it out of `new_branch` candidates and `unregistered_checkout`
+  workstream candidates (`archived_hidden` counts them). At its own checkout and
+  branch, with or without its `workstream_id`, `init` returns
+  `state=archived` instead of resuming, with the archive reason and the choices
+  `include_archived` (init again with `include_archived=true`; the ready result
+  keeps its `archive` block and says it is archived) and `unarchive_workstream`
+  (the `archive_workstream` call to make, then init again).
+- `init action=rebind_workstream` refuses to move it (`workstream_archived`).
+- `workstream_status` returns its header and counts with
+  `listing_skipped="archived"` but no task cards, concern list or scope pages.
+- `get_next_action` selects nothing (`diagnostics.workstream_archived`).
+
+Mismatch reports name an archived workstream as archived, and each offered choice
+that would resume or move one includes `include_archived=true`, so it still works
+when followed. An archived workstream still holds its branch and name in the
+project, so a new workstream cannot take them; rebind or unarchive it instead.
+Its `archive` block (`archived`, `reason`, `revision`, `updated_at`,
+`updated_by`) appears wherever the workstream does once it was ever archived.
+The viewer hides archived workstreams from navigation until **Show archived**.
+
+Archive state lives in its own `workstream_archive` table. Its original
+schema10-only rollout was additive; the combined schema11 rollout follows the
+migration and restart requirements described under notes. An existing schema11
+database lacking only this table gets a verified
+`*.pre-workstream_archive.*.sqlite3` backup first.
+
+## Picked tasks
+
+When `get_next_action` hands out an implement or review action it also records a
+picked marker for that task in that workstream (task, workstream, action, time),
+at no extra call. A new pick of the same task there replaces the marker. The
+marker is information only: `get_next_action` does not skip or lock picked tasks,
+and nothing requires an agent to act on it. It counts for 4 hours, and stops
+counting as soon as a result or review is recorded for that task in that
+workstream after the pick. While it counts, full `get_tasks` reads show it as
+`picks` (`workstream_id`, `action`, `picked_at`), the `attempt` include group of
+`list_tasks`/`get_tasks` shows it as `picked`, and the viewer lists the task
+under **In progress** with "An agent picked this up 12 minutes ago". Afterwards
+an unfinished task is **Open** again. Side effect: a coordinator that only asks
+for the next action, without working on it, marks that task picked for up to 4
+hours.
+
+Markers live in their own `task_picks` table. Older already-running servers
+ignore it and keep selecting and recording; a result they record still ends the
+marker. Restart compatibility follows the schema11 requirements under notes.
+An existing schema11 database lacking only this table gets a verified
+`*.pre-task_picks.*.sqlite3` backup first; expired markers are pruned when the
+next action is picked.
+
+## Task identity
+
+New tasks and groups have permanent descriptive public IDs, for example
+`readable-task-ids`. Pass `public_id` to `create_task` (including `kind=group`), or in each
+`decompose_task` member. These IDs are accepted anywhere a task/group reference
+is needed, including prerequisites, scope expressions, reads, edits and sign-off.
+Use up to 96 lowercase ASCII letters, digits and single hyphens, beginning with a
+letter. IDs are globally unique across projects and groups, and remain reserved
+for done/dropped tasks. An explicit collision returns `public_id_conflict`: choose
+a more specific name and retry. Creation is atomic, including concurrent collisions
+and decomposition. Omission derives a title slug with numeric suffixes for duplicate
+names; browser ideas use the same rule. IDs never change with titles/specifications.
+
+Existing tasks retain their exact `tsk_…` IDs and all existing references/history.
+Private UUIDs are stored separately and never appear in tools, exports or the
+viewer. Cards and detail headers display the complete public ID; details offer
+**Copy ID**, and task search includes IDs. Project/workstream/attempt IDs retain
+their existing format.
+New task/group locations put the complete public ID after `/id/`, keeping them
+distinct from existing shortened legacy URLs even for hexadecimal-only names.
 
 ## Task lifecycle
 
@@ -265,17 +428,60 @@ revision and leave old proof historical; summary corrections/no-op edits retain
 spec revision. Workstream membership, active disposition, clear questions and
 prerequisites and this workstream's current-spec attempts govern readiness.
 
-`get_tasks(ids=[...])` returns bounded cards: title, optional summary, revisions,
-workstream membership/disposition, gate counts and references. Cards contain no body preview,
-acceptance criteria or replacement token. Scoped cards expose a current-spec local
-attempt reference; unscoped cards label aggregate counts and imply no branch readiness.
+`get_tasks(ids=[...], workstream_id?, include?)` returns the same slim cards as
+boards (see [Boards and cards](#boards-and-cards)). Cards contain no body preview,
+acceptance criteria or replacement token. With `workstream_id`, state and the
+`attempt` include group use that workstream's current-spec local attempts; without
+it they reflect current results in any workstream and imply no branch readiness.
 Call `get_tasks(ids=[...], specification=true, workstream_id=..., attempt_ids=[...])`
 when you need complete current requirements and exactly chosen proof together.
-No preliminary card read is needed. Pending proposals and parent context are complete;
+No preliminary card read is needed. Parent context is complete;
 current-spec attempt summaries are limited to three, actionable first, with totals
 and `has_more`. Page additional attempts with `list_task_attempts(states=[...],
 current_spec_only=true)`; `get_attempt(attempt_id)` retrieves one complete proof.
 Explicit proof retains its original task, workstream and specification provenance.
+
+### Boards and cards
+
+`list_tasks`, `workstream_status` and the `init` queue show active work only: open
+and rework tasks, including those awaiting review or sign-off. Done, deferred and
+dropped tasks are omitted and counted per status in `hidden` (`queue_hidden` on
+init), for example `{"done": 217, "deferred": 150}`. Pass `include_inactive=true`
+to list them too (history or backlog); `list_tasks(state="done"|"deferred"|"dropped")`
+lists exactly that status. `hidden` is omitted whenever `include_inactive=true` or
+any `state` filter is set: a filtered page counts only its own matches. Positions
+keep the whole workstream order, so hidden tasks leave gaps rather than
+renumbering the board.
+
+A slim card carries `id`, `title`, `summary`, `state`, `revision`, `position` (in the
+named workstream's order), `blockers` (unsatisfied prerequisite IDs), `question_count`,
+`concern_count` and `rejected` (a review or sign-off rejection awaits a newer
+recorded result). Empty, zero and false fields are omitted, as is `position`
+without a workstream. Closed cards keep `question_count` (a deferred task keeps
+its open questions) but have no `blockers`; the `blockers` group still lists
+their prerequisites. `state` is one word: `ready`, `rework`, `blocked`,
+`question`, `review`, `signoff`, `inbox`, `out_of_scope`, or the closed status
+`done`/`deferred`/`dropped`. Groups have `state="group"` with `progress`,
+`complete` and `project_count`. The `state` filter accepts these words and the
+older view names `prerequisites` and `unresolved_items`; `ready` also matches
+`rework`. Any other value, such as `sign-off`, is rejected with `invalid_state`
+and the list of accepted values.
+
+`list_tasks` and `get_tasks` accept `include=[...]` groups that restore what slim
+cards leave out, without a full specification read:
+
+| Group | Adds |
+| --- | --- |
+| `blockers` | `prerequisites` (every link with title, state, milestone, satisfied/blocking), `gate_diagnostics` |
+| `attempt` | `attempt` (current result: state/review status, implementer, summary, revision), `attempt_counts`, `alternative_attempt_count`, `attempt_scope`, `selected_attempt_id`, `latest_rejection` (without reasons) |
+| `concerns` | `concerns` (text, kind, source, author and attempt provenance for up to three concerned attempts), `concern_count`, `concern_attempt_total`, `concern_attempt_references`, `concern_attempts_has_more` |
+| `workstreams` | `workstreams` (every membership with its position), `adopted`, `in_scope` |
+| `ids` | `project_id`, `object_type`, `status`, `spec_revision`, `summary_spec_revision`, `summary_stale`, `order_key`, `parent_group_id`, `specification_complete`, `view`, `workstream_id`, and `origin_project_id` for groups |
+
+Unknown group names are rejected. With `specification=true` the full specification
+is returned as before; include groups only add fields it lacks (for example
+`workstreams` positions). The browser viewer reads unabridged cards, including
+closed tasks, through `Store`.
 
 Body and criteria are whole-field replacements. Use the `specification_etag` from
 that full read or from a create acknowledgement for the complete specification you
@@ -307,25 +513,27 @@ Use `decompose_task` to turn a task into a first-class group while retaining its
 ID, description and audit history. The call atomically
 creates required members in the parent queue, or inbox members from an inbox parent. Groups cannot nest, have no implementation
 attempts or execution gates, and derive completion from all members being
-complete. An empty group is incomplete and mutable. `create_group(workstream_id,
-title, ...)` creates the same kind of group directly, without selecting a home
-project; it is included in that workstream's explicit group scope. The group has
-one global ID and can hold concrete tasks from several projects. `list_groups`
-discovers it globally or through any member/scoped project; `get_tasks(specification=true)` on its ID
-shows whole-group progress and at most three member references; `list_group_members`
-pages every member's card. All public group details
+complete. An empty group is incomplete and mutable. `create_task(kind="group",
+workstream_id=..., title=...)` creates the same kind of group directly, without
+selecting a home project; it is included in that workstream's explicit group scope.
+The group has one global ID and can hold concrete tasks from several projects.
+`list_tasks(state="group")` discovers groups globally, through any member/scoped
+project, or in one workstream's scope; `get_tasks(specification=true)` on its ID
+shows whole-group progress and at most three member references;
+`list_tasks(group_id=...)` pages every member's card (optionally within a project
+or workstream). All public group details
 show `project_id=null`; `origin_project_id` is optional legacy provenance for
 groups created before this storage change, not an ownership boundary.
 
 Pass `group_id` and the group's last read `group_expected_revision` to
-`create_task` to create a new member in its own project, or call
-`add_group_member` with both the group and existing task revisions. Membership
+`create_task` to create a new member in its own project, or pass them to
+`update_task` with the existing task's revision to attach it. Membership
 changes are atomic. Existing members keep their independent specifications,
 implementation, review and sign-off. A group becomes complete only when it has
 at least one member and every member is signed off; pending, deferred or dropped
 members keep it incomplete. Completed groups cannot gain members or be edited.
 A concrete task may depend on a canonical task or group in any project, without
-shared-group membership. `add_prerequisite` and `propose_prerequisite` default
+shared-group membership. `add_prerequisite` defaults
 to `milestone="review"`, satisfied by done or any current-spec passed/human-reviewed
 attempt, including another workstream. Use `milestone="signoff"` only as a rare
 exception when proceeding before the user's verdict would very likely waste work;
@@ -336,7 +544,7 @@ again; existing dependent results are retained. A canonical milestone does not
 prove that another branch's code was integrated. Links never expand workstream
 scope or transfer attempts, reviews or code. Self-edges and cycles through prerequisites
 and implicit group-to-member completion edges fail atomically, including during
-observer-proposal acceptance and membership changes. Linking changes the
+membership changes. Linking changes the
 dependent task revision, leaving both specifications and workstream membership intact.
 Use `remove_prerequisite(task_id, expected_revision, blocked_by_id, note)` for a
 mistaken or obsolete link, with the dependent task's last revision and the actual
@@ -345,13 +553,11 @@ the gate, and audits the configured actor, note and removed link. A real deletio
 advances the dependent revision once; an absent link returns `changed=false`
 without advancing it. Stale revisions still fail, and completed tasks are immutable.
 Removal preserves specifications, workstream membership, attempts, reviews and other links.
-Resolve unresolved items and proposed gates before decomposition;
-existing prerequisites move to the concrete members. Use related
-pending proposals for optional work. A session actively handling a task may add
-an unresolved item or prerequisite. An observer can submit a nonblocking gate
-proposal for an active session or the user to accept. `propose_prerequisite`
-atomically creates and links a pending prerequisite in the current scope or
-project inbox. The service records the asserted handling role but does not
+Resolve unresolved items before decomposition;
+existing prerequisites move to the concrete members. A session actively handling
+a task may add an unresolved item or prerequisite; a new prerequisite is created
+with `create_task` and linked with `add_prerequisite`. `handling` accepts
+`active` or `user`. The service records the asserted handling role but does not
 authenticate agent identity.
 
 Full task reads, workstream task lists and project lists include compact `prerequisites`
@@ -369,12 +575,9 @@ prose gate: add the real links first, then resolve the old unresolved item.
 There is no automatic prose parsing. Review milestone satisfaction does not
 expand execution scope or inherit review proof into a local attempt.
 
-An active-session coordinator can accept a gate proposal, or dismiss it with a
-decision note when the proposal is stale or unwanted. Dismissal removes the
-pending proposal without applying its gate, advances the task revision, and
-preserves the proposal and decision in the audit history. It remains possible
-after a proposed prerequisite target is dropped. A completed task is immutable,
-including its pending proposals.
+Nonblocking observer gate proposals are retired. Proposal rows written by an
+older server stay in the database, readable on full task reads and in exports,
+and no longer block decomposition.
 
 Reading or selecting a task does not create an attempt. The implementer calls
 `record_result` only on leaving or recovering an actual durable result. Read the
@@ -393,26 +596,32 @@ legacy text proof unchanged and no schema migration. Dispatch review actions to 
 fresh independent reviewer and implementation actions to an implementer. Other
 workstreams can produce independent attempts
 on the same task. An independent reviewer named differently from the implementer
-returns a verdict; the coordinator records it with `record_review`. A recorded
-`human_review` can satisfy the review gate when the user actually reviews the
-result or explicitly directs that further review is unnecessary. Agents must
-not self-issue it. Implementers follow the specification, record design/value
-concerns and carry on, or save an unexpected blocker and move on. Independent
-review judges Build: unattended fixes within the specification are rework;
-problems requiring a different specification are concerns. A sound Build passes
-with serious concerns, and optional extra features are new ideas. Use the task's
-`latest_rejection` reasons when implementing/reviewing.
+returns a verdict; the coordinator records it with `record_review`. Only the
+user's explicit approval can skip independent review: `signoff_task` approve then
+accepts a current-spec result still awaiting review, its reasons must say so, and
+the attempt records that human review. Agents must not self-issue it.
+Implementers follow the specification, record worth-doing or approach concerns
+and carry on, or save an unexpected blocker and move on. Independent review
+judges "Built well?" within the agreed approach: unattended fixes within the
+specification are rework; problems requiring a different specification are
+concerns. Well-built work passes with serious concerns, and optional extra
+features are new ideas. Use the task's `latest_rejection` reasons when
+implementing/reviewing.
 
 "Sign off X" requests asked/built/verified presentation followed by the user's
 verdict; explicit "approve X" is valid without a walkthrough. Address every
-recorded concern and judge Value, then Design, then Build independently, never
-using an earlier judgment as a premise. Recommend approval only when all three
-hold. Generic rejection with reasons needs a confirmed mapping: Build rework,
-substantially different Design revise, Value/obsolete work drop. Only the user
-approves. One `signoff_task` decision selects the exact reviewed attempt.
+recorded concern and answer "Worth doing?", "Right approach?" and "Built well?"
+in that order, each independently, never using an earlier judgment as a
+premise. Recommend approval only when all three hold. Generic rejection with
+reasons needs a confirmed mapping: "Built well?" failures are rework, a
+different approach is revise, and work not worth doing (or obsolete) is drop.
+Only the user approves. Before recording an approval, show any still-open
+prerequisite and ask whether it affects the verdict.
+One `signoff_task` decision selects the exact reviewed attempt.
 `approve` completes it; `rework` requests repair and fresh review; `revise` returns
 to design with the reasons as an open question; `drop` closes without approval.
-When dropped delivered code must be removed, queue a removal task in the same step.
+When dropped delivered code must be removed, add a removal task to the current
+workstream in the same step.
 The single `reasons` field is required for rework/revise and optional for
 approve/drop. Workstream membership and factual history survive every verdict.
 Deferral is an ordinary status change. The service stores the actual verdict and
@@ -423,8 +632,8 @@ reviewer independence or the actual human verdict. Workflows must obtain and
 record them truthfully.
 
 Implementers and independent reviewers may supply `concerns=[{kind: "value"|"design", text: ...}]`
-to `record_result` and `record_review`. A concern is a value or design doubt that
-cannot be fixed without changing what the task says. Concerns never change gates,
+to `record_result` and `record_review`. A concern is a worth-doing (`value`) or
+approach (`design`) doubt that cannot be fixed without changing what the task says. Concerns never change gates,
 review verdicts or prerequisite satisfaction. Omission preserves all existing
 contributions; reviewer additions retain the implementer's concerns and label
 both sources/authors. The write ACK returns a count, without concern prose.
@@ -442,39 +651,42 @@ labelled attempt history.
 The ordinary path is:
 
 ```text
-init → proposal/unresolved review → superdevloop → human sign-off
+init → proposal-review → superdevloop → task-signoff
 ```
 
 For a feature whose design is still open, use the two-phase path:
 
 ```text
-init → feature-capture → feature-design → queued implementation → review → human sign-off
+init → task-capture → task-design → implementation → review → task-signoff
 ```
 
 An ordinary **"add a task to do X"** request can authorize a concrete specification
-without another confirmation. Create it with the intended `workstream_id` to queue
-it there, or call `add_to_workstream` for an existing task. Queueing starts no implementation.
-Explicit placement instructions take precedence. Agent-suggested additions
-go to the inbox after user confirmation. User-requested design briefs belong on
-the current branch with active design gates; queueing starts no implementation.
+without another confirmation. Create it with the intended `workstream_id` to add
+it there, or call `add_to_workstream` for an existing task. Explicit placement
+instructions take precedence. Agent-suggested additions go to the inbox after
+user confirmation. User-requested design briefs belong in the current workstream
+with active design gates; membership starts no implementation.
 
 Say **"add a design task for X"** or ask to save an exploratory idea to use
-`feature-capture`. The agent does bounded preliminary research and saves the
+`task-capture`. The agent does bounded preliminary research and saves the
 desired outcome, motivation, current context, tentative scope, assumptions,
 possible directions and material open questions. You do not need to answer all
 of those questions during capture. Create the brief in the inbox, add a
-`Feature design required (feature-design): ...` gate, then queue user-requested
-work on the current branch. The gate keeps it from implementation selection.
+`Feature design required (task-design): ...` gate, then add user-requested work
+to the current workstream. The gate keeps it from implementation selection.
+Briefs saved before the rename say `(feature-design)`; task-design treats them
+the same.
 
 Say **"let's design X"**, **"review design tasks"**, or **"designrev"** to use
-`feature-design`. First decide whether the work is worth doing, then research
+`task-design`. First decide whether the work is worth doing, then research
 current behavior, compare approaches and work through decisions. Save the
 resulting specification and acceptance
 criteria, preserving unsettled questions. Larger features can become a group of
-concrete implementation tasks. Queue user-requested results where the user is
-working, after adding member gates. Keep unsettled questions blocking and respect
-explicit placement instructions. Queueing and design discussion start no
-implementation; membership changes need no separate scope step.
+concrete implementation tasks. Add user-requested results to the workstream
+where the user is working, after adding member gates. Keep unsettled questions
+blocking and respect explicit placement instructions. Membership and design
+discussion start no implementation; membership changes need no separate scope
+step.
 
 "Design task" is conversational shorthand for this workflow, not a stored task
 type. The design-gate prefix is a readable skill convention, not parsed server
@@ -484,9 +696,12 @@ Ordinary proposals and unrelated blockers still use `proposal-review`.
 
 The canonical reference skill files are packaged under
 `src/task_mcp/reference_skills/`. `get_default_skills()` returns a names/versions/hashes/descriptions index;
-`get_default_skills(name="feature-design")` returns that complete skill in one call. MCP startup instructions and the catalog tool route
-these phrases to the matching skill, so a fresh connected session can fetch and
-follow it without prior chat history or installing client skills. Existing
+`get_default_skills(name="task-design")` returns that complete skill in one call.
+The skills are `init`, `task-capture`, `task-design`, `proposal-review`,
+`superdevloop` and `task-signoff`. MCP startup instructions name them and each
+description routes request phrases to it, so a fresh connected session can fetch
+and follow one without prior chat history or installing client skills. Tool
+descriptions hold tool mechanics; skills hold workflow and judgment. Existing
 connections may need to reconnect to receive changed server instructions.
 Agents may also use the primitives directly. Copying
 them to a client's native skill location requires explicit user authorization;
@@ -498,13 +713,13 @@ those rare workflows are deferred.
 
 | Area | Tools |
 | --- | --- |
-| Project and workstream | `init`, `list_projects`, `list_workstreams`, `workstream_status`; compatibility: `init_project`, `attach_checkout`, `init_workstream`, `rebind_workstream`, `preflight` |
-| Scope and queue | `add_to_workstream`, `remove_from_workstream`, `set_scope`, `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
-| Groups | `create_group`, `list_groups`, `list_group_members`, `add_group_member`, `decompose_task` |
-| Specification and gates | `create_task`, `update_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `propose_prerequisite`, `accept_gate_proposal`, `dismiss_gate_proposal`, `decompose_task` |
-| Delivery | `record_result`, `record_review`, `human_review`, `signoff_task` |
-| Inspection | `list_events`, `export_workstream`, `get_default_skills`, `runtime_info` |
-| Local browser | `open_task_viewer` (explicit loopback viewer launch) |
+| Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity; notes), `set_note`, `archive_workstream`, `list_projects`, `list_workstreams`, `workstream_status` (archived workstreams hidden unless `include_archived`) |
+| Scope and order | `add_to_workstream`, `remove_from_workstream` (task or group IDs), `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
+| Groups | `create_task(kind="group")`, `update_task(group_id=...)`, `list_tasks(state="group")`, `list_tasks(group_id=...)`, `decompose_task` |
+| Specification and gates | `create_task`, `update_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `decompose_task` |
+| Delivery | `record_result`, `record_review`, `signoff_task` |
+| Inspection | `list_events`, `get_default_skills` (exports are a CLI surface) |
+| Local browser | `open_task_viewer` (explicit loopback listener/editor launch) |
 
 Mutations that change a task or workstream use the last returned entity revision, checked atomically; user pauses do not invalidate it.
 Workstream board/action/init/status responses expose `workstream_order_revision`.
@@ -530,7 +745,7 @@ members keep their positions. Removal affects only that list; re-adding appends.
 Live group inclusions and exclusions retain their existing scope semantics.
 Initial schema 10 migration preserves each effective list's prior project order
 at revision 0. Scoped boards, next-action selection, status and exports use local
-order; scoped cards include `workstream_order_key`. Project-wide lists report
+order; scoped cards include `position`. Project-wide lists report
 `ordering=project_baseline` and remain deterministic without a reorder surface.
 In the viewer, drag a task onto the upper or lower half of another task in a
 named workstream's list to place it before or after that task. The drop line and
@@ -553,14 +768,15 @@ Use the sidebar and named membership actions to inspect the resulting behavior.
 Concurrent writes to one revision permit one winner and return
 `revision_conflict` to the other. Task creation is not deduplicated: inspect the
 board before retrying an uncertain response. Every handler call except the
-static skill catalog and runtime diagnostic appends a local audit event, including
+static skill catalog appends a local audit event, including
 reads and domain errors. Task mutations retain before/after snapshots. The configured actor label
 is not authenticated. `list_events` supports a stable pagination ceiling.
 
 ## Text exports
 
-`export_workstream(workstream_id, include_closed=true, format="markdown")`
-returns a human-readable Markdown snapshot (`task-mcp/v5`) and its SHA-256 hash.
+Exports are a CLI surface, not an MCP tool. `task-mcp --export-workstream
+WORKSTREAM_ID` prints a human-readable Markdown snapshot (`task-mcp/v5`); the
+underlying Store export also returns its SHA-256 hash.
 It starts with project/checkout identity and an ordered workflow overview, then
 shows specifications, acceptance criteria, questions, prerequisites, evidence
 and review history in text. Workflow labels match `list_tasks` for that
@@ -568,7 +784,7 @@ workstream: "Awaiting sign-off" is distinct from the stored "open" disposition.
 Shared-group progress is global; detailed task entries stay in the local scope.
 
 The output is deterministic for unchanged state and is export-only: editing it
-does not update the service. The CLI prints exactly the same content to stdout:
+does not update the service.
 
 ```sh
 .venv/bin/task-mcp --export-workstream wst_your_workstream_id
@@ -576,9 +792,9 @@ does not update the service. The CLI prints exactly the same content to stdout:
 .venv/bin/task-mcp --export-workstream wst_your_workstream_id --export-format legacy
 ```
 
-`include_closed=false` / `--exclude-closed` omits done and dropped tasks, not
-deferred tasks. The previous embedded-JSON layout remains available as
-`format="legacy"` / `--export-format legacy` (`task-mcp/v1`); consumers of that
+`--exclude-closed` omits done and dropped tasks, not deferred tasks. The previous
+embedded-JSON layout remains available as `--export-format legacy`
+(`task-mcp/v1`); consumers of that
 layout should select it explicitly. Export itself never creates a file.
 See [the format details](docs/exports.md) and a
 [synthetic example report](docs/export-example.md).
@@ -594,8 +810,8 @@ require the full `specification_etag`. Failed concurrency/audit writes roll back
 no-op additions/removals preserve revisions. A real direct change advances the
 task and named workstream revisions once.
 
-`set_scope` retains original internals: `none`, a workstream expression base, and
-+/-task/group references with exclusions. Groups expand live to future local
+A new workstream's `scope_expression` retains original internals: `none`, a
+workstream expression base, and +/-task/group references with exclusions. Groups expand live to future local
 members. A base copies references/exclusions without removing tasks elsewhere.
 Decomposition includes the parent group in every direct parent scope so all new
 members enter those workstreams. Bulk scope changes advance the named workstream
@@ -629,8 +845,16 @@ and packaged workflow guidance.
 `signoff_task` accepts exactly `approve`, `rework`, `revise` and `drop`. Send the
 actual user's `reasons`, exact reviewed `attempt_id`, and last returned task and
 attempt revisions. Reasons are required for rework/revise, optional for
-approve/drop. Current-spec passed/human-reviewed proof is required; approve also
-needs clear unresolved and prerequisite gates. Rework returns the attempt to
+approve/drop. Current-spec passed/human-reviewed proof is required, except that
+an explicit user approve may accept a current-spec result still awaiting
+independent review when its reasons say so (the decision records
+`independent_review=false`). Approve refuses while an unresolved question remains
+(`task_not_ready_for_signoff`), but not for an unsatisfied prerequisite: a reviewed
+result stays awaiting sign-off, and the user judges whether the open blocker affects
+the verdict. The approval's decision and response list the prerequisites still open
+(`open_prerequisites`: ID, title, milestone, state; empty when none), and exports
+show them in sign-off history. Dependents of the approved task follow the ordinary
+prerequisite rules. Rework returns the attempt to
 implementation and requires fresh review. Revise copies the reasons into an open
 question without inventing a specification revision. Drop closes without approval;
 creating a removal task when delivered code must go is a workflow decision.
@@ -641,8 +865,9 @@ Protocol 11/schema 7 simplify that contract and expose `latest_rejection` on ful
 task reads and `get_next_action`: source (`review`/`signoff`), verdict, reasons,
 originating attempt/workstream/specification, timestamp and decision reference.
 Each actual reviewer rework or signoff rework/revise replaces that context; later
-passes and approvals do not fabricate a new rejection. Compact cards omit the
-reasons and retain the provenance flag. Current execution/proof remains local to
+passes and approvals do not fabricate a new rejection. Slim cards show
+`rejected: true` until a newer result is recorded; `include=["attempt"]` adds the
+provenance without the reasons. Current execution/proof remains local to
 its branch. Earlier rejection rounds remain in audit/signoff history, including
 old defer decisions and judgment fields unchanged. Schema 7 adds only an indexed
 projection over factual audit records, with no business-row rewrite. Existing

@@ -4,22 +4,44 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shlex
 import sqlite3
+import unicodedata
 from collections.abc import Callable
 from contextlib import closing
 from contextvars import ContextVar
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 10
+DATABASE_SCHEMA_REVISION = 11
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
 # Concerns have explicit provenance in their own column, never in arbitrary proof text.
 CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
+# Boards show active work by default; these statuses are counted, not listed.
+INACTIVE_STATUSES = ("done", "deferred", "dropped")
+# Optional board-card detail groups, in documentation order.
+CARD_INCLUDE_GROUPS = ("blockers", "attempt", "concerns", "workstreams", "ids")
+# Slim-card state words for gate views whose internal names are longer.
+STATE_WORDS = {"unresolved_items": "question", "prerequisites": "blocked"}
+# Values the list_tasks state filter accepts: slim state words, then older view names.
+STATE_FILTERS = (
+    "ready",
+    "rework",
+    "blocked",
+    "question",
+    "review",
+    "signoff",
+    "inbox",
+    "out_of_scope",
+    *INACTIVE_STATUSES,
+    "group",
+    *STATE_WORDS,
+)
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS projects (
@@ -96,7 +118,51 @@ SCHEMA = (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id), source_schema INTEGER NOT NULL,
         task_json TEXT NOT NULL, scopes_json TEXT NOT NULL,
         unresolved_id TEXT)""",
+    # Personal project/workstream notes. An additive table that schema 10 servers never
+    # read, so it needs no schema revision bump; a cleared note keeps its row (empty text)
+    # so its revision never repeats.
+    """CREATE TABLE IF NOT EXISTS notes (
+        owner_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('project','workstream')),
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        workstream_id TEXT REFERENCES workstreams(id),
+        text TEXT NOT NULL CHECK(length(text) <= 2000),
+        revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
+        CHECK(owner_id = coalesce(workstream_id, project_id)),
+        CHECK((kind = 'workstream') = (workstream_id IS NOT NULL)))""",
+    # Workstream archive state, additive like notes: schema 10 servers never read it, so
+    # they keep listing an archived workstream as before. Unarchiving keeps the row
+    # (archived=0) so its revision never repeats; no row means never archived.
+    """CREATE TABLE IF NOT EXISTS workstream_archive (
+        workstream_id TEXT PRIMARY KEY REFERENCES workstreams(id),
+        archived INTEGER NOT NULL CHECK(archived IN (0,1)),
+        reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 200),
+        revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)""",
+    # When get_next_action last handed a task out in a workstream: information only,
+    # never a lock. Additive like notes; a newer pick replaces the row, and reads ignore
+    # it once it is older than PICK_TTL or a result/review in that workstream is newer.
+    """CREATE TABLE IF NOT EXISTS task_picks (
+        task_id TEXT NOT NULL REFERENCES tasks(id),
+        workstream_id TEXT NOT NULL REFERENCES workstreams(id),
+        action TEXT NOT NULL CHECK(action IN ('implement','review')),
+        picked_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, workstream_id))""",
+    """CREATE TABLE IF NOT EXISTS task_identities (
+        internal_uuid TEXT PRIMARY KEY NOT NULL,
+        public_id TEXT NOT NULL UNIQUE REFERENCES tasks(id))""",
 )
+# Tables added after schema 10 without a revision bump, so older servers keep opening
+# the database. An existing database missing one is backed up before it is created.
+ADDITIVE_TABLES = ("notes", "workstream_archive", "task_picks")
+# A picked marker counts as work in progress for this long without a newer result.
+PICK_TTL = timedelta(hours=4)
+# Archive reasons are a short label for why a workstream left discovery.
+ARCHIVE_REASON_LIMIT = 200
+# Archived workstreams are left out of discovery and selection SQL unless requested.
+ARCHIVED_IDS_SQL = "SELECT workstream_id FROM workstream_archive WHERE archived=1"
+# Notes are bounded so they stay a current summary rather than a growing log.
+NOTE_LIMIT = 2000
+NOTE_KINDS = ("project", "workstream")
 
 
 # A quick idea captured in the browser waits in the inbox, held by this item, until an
@@ -151,10 +217,21 @@ class Store:
                 existing = db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
                 ).fetchone()
-                if existing and version < DATABASE_SCHEMA_REVISION:
+                missing = [
+                    table
+                    for table in ADDITIVE_TABLES
+                    if not db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                    ).fetchone()
+                ]
+                if existing and (version < DATABASE_SCHEMA_REVISION or missing):
                     # The writer lock prevents a commit between this online snapshot
                     # and the migration. A separate read connection includes WAL data.
-                    self.migration_backup_path = self._backup_for_migration(version)
+                    self.migration_backup_path = (
+                        self._backup_for_migration(version)
+                        if version < DATABASE_SCHEMA_REVISION
+                        else self._backup_for_migration(version, "pre-" + "-".join(missing))
+                    )
                 self._upgrade_schema(db)
                 db.execute(f"PRAGMA user_version={DATABASE_SCHEMA_REVISION}")
                 db.commit()
@@ -218,6 +295,12 @@ class Store:
             Store._migrate_membership(db, source_version)
         if source_version < 10:
             Store._sync_orders(db, advance=False)
+        # Public IDs and every existing relationship/audit byte stay unchanged. UUIDs
+        # live in a private registry, never in task rows decoded for public payloads.
+        for row in db.execute(
+            "SELECT id FROM tasks WHERE id NOT IN (SELECT public_id FROM task_identities)"
+        ).fetchall():
+            db.execute("INSERT INTO task_identities VALUES (?,?)", (uuid4().hex, row["id"]))
         for statement in SCHEMA:
             if statement.startswith("CREATE TRIGGER"):
                 db.execute(statement)
@@ -347,11 +430,10 @@ class Store:
             db.execute("DROP TRIGGER IF EXISTS queue_member_valid_update")
             db.execute("DROP TABLE queue_members")
 
-    def _backup_for_migration(self, version: int) -> Path:
+    def _backup_for_migration(self, version: int, label: str | None = None) -> Path:
         """Create and verify a fresh SQLite online backup before changing schema."""
-        backup = self.path.with_name(
-            f"{self.path.name}.pre-schema-{DATABASE_SCHEMA_REVISION}.{uuid4().hex}.sqlite3"
-        )
+        label = label or f"pre-schema-{DATABASE_SCHEMA_REVISION}"
+        backup = self.path.with_name(f"{self.path.name}.{label}.{uuid4().hex}.sqlite3")
         # Never replace an earlier backup and keep private task contents private.
         descriptor = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
@@ -410,7 +492,7 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             try:
                 result = operation(db, scope)
-                if action in {
+                if (action == "task.updated" and result.get("group_changed")) or action in {
                     "project.initialized",
                     "session.initialized",
                     "workstream.initialized",
@@ -421,7 +503,6 @@ class Store:
                     "task.decomposed",
                     "group.member_added",
                     "group.created",
-                    "gate.prerequisite_proposed",
                 }:
                     # Persist effective membership changes with the original mutation/audit.
                     # Reads never reconcile or reorder lists.
@@ -464,9 +545,7 @@ class Store:
     def _mutation_ack(self, db, action, result, request, scope):
         if action in {
             "project.initialized",
-            "checkout.attached",
             "workstream.initialized",
-            "workstream.rebound",
             "scope.changed",
         }:
             if action == "scope.changed":
@@ -549,19 +628,6 @@ class Store:
                     )
                 ],
             }
-        if action == "gate.prerequisite_proposed":
-            ack = {
-                "task": self._task_ack(db, result["task"]),
-                "proposal": self._task_ack(db, result["proposal"]),
-                "changed": True,
-            }
-            if request["workstream_id"]:
-                ack.update(
-                    workstream_id=request["workstream_id"],
-                    workstream_revision=self._workstream(db, request["workstream_id"])["revision"],
-                    workstream_order_revision=self._order_revision(db, request["workstream_id"]),
-                )
-            return ack
         if action.startswith("gate."):
             task = self._task(db, scope["task_id"], {})
             ack = self._task_ack(db, task) | {
@@ -569,20 +635,12 @@ class Store:
                 "task_revision": task["revision"],
                 "changed": result.get("changed", True),
             }
-            if request.get("handling") == "observer":
-                ack.update(proposal_id=result["id"], gate_type=result["gate_type"])
-            if action == "gate.unresolved_added" and request.get("handling") != "observer":
+            if action == "gate.unresolved_added":
                 ack["unresolved_id"] = task["unresolved_items"][-1]["id"]
             if action == "gate.unresolved_resolved":
                 ack["resolved_id"] = request["item_id"]
             if request.get("blocked_by_id"):
                 ack["blocked_by_id"] = request["blocked_by_id"]
-            if request.get("proposal_id"):
-                ack["proposal_id"] = request["proposal_id"]
-                if action == "gate.proposal_accepted" and len(task["unresolved_items"]) > len(
-                    scope["before"]["unresolved_items"]
-                ):
-                    ack["unresolved_id"] = task["unresolved_items"][-1]["id"]
             return ack
         if action.startswith("task.") and action in {
             "task.created",
@@ -716,7 +774,9 @@ class Store:
         if len(rows) > 1:
             raise TaskError("ambiguous_project: use its stable project ID or path")
         if not rows:
-            raise TaskError("project_not_initialized: use init_project before task operations")
+            raise TaskError(
+                "project_not_initialized: use init action=create_project before task operations"
+            )
         result = dict(rows[0])
         result.pop("order_revision", None)
         scope["project_id"] = result["id"]
@@ -727,7 +787,38 @@ class Store:
         row = db.execute("SELECT * FROM workstreams WHERE id=?", (workstream_id,)).fetchone()
         if row is None or (project_id and row["project_id"] != project_id):
             raise TaskError("unknown_workstream: initialize or select a workstream")
-        return dict(row)
+        return Store._with_archive(db, row)
+
+    @staticmethod
+    def _with_archive(db, row):
+        """A workstream row plus its archive state, present once it was ever archived."""
+        if row is None:
+            return None
+        ws = dict(row)
+        archive = db.execute(
+            "SELECT * FROM workstream_archive WHERE workstream_id=?", (ws["id"],)
+        ).fetchone()
+        if archive:
+            ws["archive"] = {
+                "archived": bool(archive["archived"]),
+                "reason": archive["reason"],
+                "revision": archive["revision"],
+                "updated_at": archive["updated_at"],
+                "updated_by": archive["updated_by"],
+            }
+        return ws
+
+    @staticmethod
+    def _archived(ws):
+        return bool(ws and (ws.get("archive") or {}).get("archived"))
+
+    @staticmethod
+    def _archive_hint(ws):
+        """How to unarchive ws, with the arguments that work when followed."""
+        return (
+            f"archive_workstream workstream_id={ws['id']} archived=false "
+            f"expected_revision={ws['archive']['revision']} reason=<why>"
+        )
 
     def init_project(self, path, branch=None, workstream_name=None, confirmed=False):
         request = locals().copy()
@@ -744,7 +835,7 @@ class Store:
                     "workstream_name_required: detached HEAD and non-Git use need a name"
                 )
             if db.execute("SELECT 1 FROM project_paths WHERE path=?", (canonical,)).fetchone():
-                raise TaskError("project_initialized: use preflight or attach_checkout")
+                raise TaskError("project_initialized: use init to resume it")
             now = timestamp()
             project = dict(
                 id=_id("prj_"),
@@ -797,39 +888,24 @@ class Store:
             raise TaskError("workstream_exists: choose a distinct name and branch") from exc
         return ws
 
-    def attach_checkout(self, project, path, confirmed=False):
-        request = dict(project=project, path=path, confirmed=confirmed)
-
-        def operation(db, scope):
-            if not confirmed:
-                raise TaskError("confirmation_required: show the attachment to the user")
-            selected = self._project(db, project, scope)
-            canonical = self._canonical_path(path)
-            row = db.execute(
-                "SELECT project_id FROM project_paths WHERE path=?", (canonical,)
-            ).fetchone()
-            if row and row["project_id"] != selected["id"]:
-                raise TaskError("checkout_bound_elsewhere")
-            db.execute(
-                "INSERT OR IGNORE INTO project_paths VALUES (?, ?)", (canonical, selected["id"])
-            )
-            scope["after"] = {"path": canonical, "project_id": selected["id"]}
-            return scope["after"] | {"changed": row is None}
-
-        return self._run("checkout.attached", request, operation)
-
-    def list_workstreams(self, project=None, limit=50, offset=0):
+    def list_workstreams(self, project=None, limit=50, offset=0, include_archived=False):
         def operation(db, scope):
             self._page(limit, offset)
+            self._validate_include_archived(include_archived)
             selected = self._project(db, project, scope) if project is not None else None
+            where = (["w.project_id=?"] if selected else []) + (
+                [] if include_archived else [f"w.id NOT IN ({ARCHIVED_IDS_SQL})"]
+            )
+            where_sql = ("WHERE " + " AND ".join(where) + " ") if where else ""
+            values = (selected["id"],) if selected else ()
             rows = [
-                dict(row)
+                self._with_archive(db, row)
                 for row in db.execute(
                     "SELECT w.*, p.name AS project_name, p.canonical_path AS project_path "
                     "FROM workstreams w JOIN projects p ON p.id=w.project_id "
-                    + ("WHERE w.project_id=? " if selected else "")
+                    + where_sql
                     + "ORDER BY p.name,p.id,w.created_at,w.id LIMIT ? OFFSET ?",
-                    ((selected["id"],) if selected else ()) + (limit + 1, offset),
+                    values + (limit + 1, offset),
                 )
             ]
             for row in rows:
@@ -842,25 +918,72 @@ class Store:
                 row["groups_has_more"] = len(groups) > 3
                 row["group_total"] = len(groups)
                 row["status"] = self._status_summary(db, row["id"], all_ids)
-            return self._paged(rows, limit, offset)
+            page = self._paged(rows, limit, offset)
+            if not include_archived:
+                page["archived_hidden"] = db.execute(
+                    f"SELECT count(*) FROM workstreams WHERE id IN ({ARCHIVED_IDS_SQL})"
+                    + (" AND project_id=?" if selected else ""),
+                    values,
+                ).fetchone()[0]
+            return page
 
         return self._run(
-            "workstreams.listed", {"project": project, "limit": limit, "offset": offset}, operation
+            "workstreams.listed",
+            {
+                "project": project,
+                "limit": limit,
+                "offset": offset,
+                "include_archived": include_archived,
+            },
+            operation,
         )
 
-    def workstream_status(self, workstream_id, limit=20, offset=0, include_scope=False):
+    def workstream_status(
+        self,
+        workstream_id,
+        limit=20,
+        offset=0,
+        include_scope=False,
+        include_inactive=False,
+        include_archived=False,
+    ):
         request = dict(
-            workstream_id=workstream_id, limit=limit, offset=offset, include_scope=include_scope
+            workstream_id=workstream_id,
+            limit=limit,
+            offset=offset,
+            include_scope=include_scope,
+            include_inactive=include_inactive,
+            include_archived=include_archived,
         )
 
         def operation(db, scope):
             self._page(limit, offset)
+            self._validate_include_inactive(include_inactive)
+            self._validate_include_archived(include_archived)
             ws = self._workstream(db, workstream_id)
             project = db.execute(
                 "SELECT * FROM projects WHERE id=?", (ws["project_id"],)
             ).fetchone()
             scope["project_id"] = ws["project_id"]
+            if self._archived(ws) and not include_archived:
+                # An archived workstream reports its state and counts, never its task list.
+                return {
+                    "project": {k: project[k] for k in project.keys() if k != "order_revision"},
+                    "workstream": ws,
+                    "status": self._status_summary(db, workstream_id),
+                    "workstream_order_revision": ws["order_revision"],
+                    "listing_skipped": "archived",
+                    "message": (
+                        f"Workstream {ws['name']!r} is archived ({ws['archive']['reason']}); "
+                        "its tasks are not listed. Pass include_archived=true to list them, "
+                        f"or unarchive it with {self._archive_hint(ws)}"
+                    ),
+                }
             queue = self._scoped_queue(db, workstream_id)
+            hidden = (
+                [] if include_inactive else [c for c in queue if c["status"] in INACTIVE_STATUSES]
+            )
+            queue = [c for c in queue if include_inactive or c["status"] not in INACTIVE_STATUSES]
             # A separate page keeps concerns visible even beyond the ordinary queue page.
             concerned = [item for item in queue if item["concern_count"]]
             concerned.sort(
@@ -907,15 +1030,24 @@ class Store:
                         "total": len(rows),
                         "next_offset": offset + limit if len(rows) > offset + limit else None,
                     }
+            page = self._paged(queue[offset : offset + limit + 1], limit, offset)
+            cache = {}
+            page["items"] = [
+                self._board_card(
+                    db, self._task(db, card["id"], {}), workstream_id, full=card, cache=cache
+                )
+                for card in page["items"]
+            ]
             return {
                 "project": {key: project[key] for key in project.keys() if key != "order_revision"},
                 "workstream": ws,
                 "status": self._status_summary(db, workstream_id),
                 "workstream_order_revision": ws["order_revision"],
                 "total": len(queue),
+                **({} if include_inactive else {"hidden": self._hidden_counts(hidden)}),
                 "concern_tasks": {"total": len(concerned), **concern_page},
                 **({"scope": scope_page} if include_scope else {}),
-                **self._paged(queue[offset : offset + limit + 1], limit, offset),
+                **page,
             }
 
         return self._run("workstream.status_read", request, operation)
@@ -1027,6 +1159,8 @@ class Store:
         scope_expression="none",
         expected_revision=None,
         confirmed=False,
+        include_inactive=False,
+        include_archived=False,
     ):
         request = dict(
             path=path,
@@ -1038,9 +1172,13 @@ class Store:
             scope_expression=scope_expression,
             expected_revision=expected_revision,
             confirmed=confirmed,
+            include_inactive=include_inactive,
+            include_archived=include_archived,
         )
 
         def operation(db, scope):
+            self._validate_include_inactive(include_inactive)
+            self._validate_include_archived(include_archived)
             canonical = self._canonical_path(path)
             if not branch and not workstream_name:
                 raise TaskError("workstream_name_required: detached or non-Git use needs a name")
@@ -1058,24 +1196,55 @@ class Store:
             selected = dict(attached) if attached else None
             if selected:
                 selected.pop("order_revision", None)
+            # An unknown workstream_id is unknown_workstream before any other report.
+            requested = self._workstream(db, workstream_id) if workstream_id else None
+            if requested and action in {"create_project", "new_workstream", "attach_workstream"}:
+                # These actions create a workstream; the ID is accepted only when it already
+                # is exactly this binding (an idempotent retry that resumes it unchanged).
+                if not (
+                    selected
+                    and requested["project_id"] == selected["id"]
+                    and requested["checkout_path"] == canonical
+                    and (
+                        requested["branch"] == branch
+                        if branch
+                        else requested["branch"] is None and requested["name"] == workstream_name
+                    )
+                ):
+                    raise TaskError(
+                        f"workstream_id_not_used: action={action} creates a new workstream and "
+                        "does not use workstream_id; omit it, or confirm "
+                        f"action=rebind_workstream to move workstream {requested['name']!r} here"
+                    )
             if project is not None:
-                chosen = self._project(db, project, scope)
+                chosen = dict(self._project(db, project, scope))
+                chosen.pop("order_revision", None)
                 if selected and selected["id"] != chosen["id"]:
                     return {
                         "state": "mismatch",
-                        "message": "Checkout is attached to another project",
+                        "message": (
+                            f"Checkout is attached to another project ({selected['name']!r}, "
+                            f"{selected['id']}), not {chosen['name']!r} ({chosen['id']}); init "
+                            "without project= to use the attached project, or init the "
+                            "requested project at one of its own checkouts"
+                        ),
                         "path": canonical,
+                        "branch": branch,
                         "project": selected,
+                        "requested_project": chosen,
+                        **({"workstream": requested} if requested else {}),
+                        "choices": ["use_attached_project"],
                     }
-            else:
-                chosen = selected
-            if action == "rebind_workstream" and workstream_id and chosen is None:
-                target = self._workstream(db, workstream_id)
+            elif selected is None and requested:
+                # An unregistered checkout naming a workstream is checked within that
+                # workstream's project, so a branch already bound there is reported.
                 chosen = dict(
                     db.execute(
-                        "SELECT * FROM projects WHERE id=?", (target["project_id"],)
+                        "SELECT * FROM projects WHERE id=?", (requested["project_id"],)
                     ).fetchone()
                 )
+            else:
+                chosen = selected
             if chosen:
                 chosen.pop("order_revision", None)
             candidate = None
@@ -1091,46 +1260,266 @@ class Store:
                         "AND name=?",
                         (chosen["id"], workstream_name),
                     ).fetchone()
+                candidate = self._with_archive(db, candidate)
+            here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
+
+            # Following a choice that resumes or moves an archived workstream needs the
+            # explicit include_archived=true, so its instructions say so.
+            def archived_flag(ws):
+                return " include_archived=true" if self._archived(ws) else ""
+
+            def archived_note(ws):
+                return f" (archived: {ws['archive']['reason']})" if self._archived(ws) else ""
+
+            def archived_hidden(project_id):
+                # How many archived workstreams discovery left out, when any were.
+                count = (
+                    0
+                    if include_archived
+                    else db.execute(
+                        "SELECT count(*) FROM workstreams WHERE (? IS NULL OR project_id=?) "
+                        f"AND id IN ({ARCHIVED_IDS_SQL})",
+                        (project_id,) * 2,
+                    ).fetchone()[0]
+                )
+                return {"archived_hidden": count} if count else {}
+
+            def binding(ws_branch, ws_name, ws_path):
+                # A name-bound (detached or non-Git) binding has no branch to report.
+                if ws_branch:
+                    return f"branch {ws_branch!r} at {ws_path}"
+                return f"name {ws_name!r} (no branch) at {ws_path}"
+
+            def requested_binding(target):
+                if target["project_id"] != chosen["id"]:
+                    return (
+                        f"Workstream {target['name']!r}{archived_note(target)} belongs to "
+                        f"another project ({target['project_id']})"
+                    )
+                return (
+                    f"Workstream {target['name']!r}{archived_note(target)} is bound to "
+                    f"{binding(target['branch'], target['name'], target['checkout_path'])}"
+                )
+
+            # A rebind renames the workstream to workstream_name or branch, and a new one is
+            # inserted under that name stripped; UNIQUE(project_id, name) must still hold, so
+            # a choice that would collide is named in the message instead of being offered.
+            rebind_name = workstream_name or branch
+            insert_name = rebind_name.strip()
+
+            def name_holder(name, exclude=None):
+                row = db.execute(
+                    "SELECT * FROM workstreams WHERE project_id=? AND name=? AND id IS NOT ?",
+                    (chosen["id"], name, exclude),
+                ).fetchone()
+                return self._with_archive(db, row)
+
+            def name_taken(holder, blocked):
+                return (
+                    f"; the workstream name {holder['name']!r} is already used by workstream "
+                    f"{holder['id']}{archived_note(holder)} "
+                    f"({binding(holder['branch'], holder['name'], holder['checkout_path'])}), "
+                    f"so {blocked} would conflict: pass another workstream_name"
+                )
+
+            # Each offered choice's message says which init arguments follow it.
+            def rebind_how(target):
+                return (
+                    f"init action=rebind_workstream workstream_id={target['id']} "
+                    f"expected_revision={target['revision']} confirmed=true" + archived_flag(target)
+                )
+
+            def binding_how(target):
+                own = (
+                    f"branch={target['branch']!r}"
+                    if target["branch"]
+                    else f"workstream_name={target['name']!r}"
+                )
+                return f"init path={target['checkout_path']!r} {own}" + archived_flag(target)
+
+            def create_how(choice):
+                into = f" project={chosen['id']}" if choice == "attach_workstream" else ""
+                return f"init action={choice}{into} confirmed=true without workstream_id"
+
             if candidate and candidate["checkout_path"] == canonical and selected:
                 ws = dict(candidate)
-                if workstream_id and workstream_id != ws["id"]:
+                if requested and requested["id"] != ws["id"]:
+                    # Report the requested workstream's real binding, never the local one
+                    # in its place.
+                    use = " and with include_archived=true" if self._archived(ws) else ""
                     return {
                         "state": "mismatch",
-                        "message": "Target has another workstream binding",
+                        "message": (
+                            f"{requested_binding(requested)}; this checkout's {here} is bound "
+                            f"to workstream {ws['name']!r} ({ws['id']}){archived_note(ws)}; "
+                            f"init without workstream_id (or with {ws['id']}){use} to use it, "
+                            f"or {binding_how(requested)} for the requested workstream"
+                        ),
                         "path": canonical,
+                        "branch": branch,
+                        "project": selected,
+                        "workstream": requested,
+                        "bound_workstream": ws,
+                        "choices": ["use_bound_workstream", "init_requested_binding"],
+                    }
+                if self._archived(ws) and not include_archived:
+                    # Never silently resume an archived workstream at its own checkout.
+                    return {
+                        "state": "archived",
+                        "message": (
+                            f"This checkout's {here} is bound to workstream {ws['name']!r} "
+                            f"({ws['id']}), which is archived ({ws['archive']['reason']}; "
+                            f"{ws['archive']['updated_by']}, {ws['archive']['updated_at']}); "
+                            "it was not resumed. Init again with include_archived=true to "
+                            f"resume it as archived, or unarchive it with "
+                            f"{self._archive_hint(ws)} and init again"
+                        ),
+                        "path": canonical,
+                        "branch": branch,
                         "project": selected,
                         "workstream": ws,
+                        "choices": ["include_archived", "unarchive_workstream"],
                     }
-                return self._ready_init(db, selected, ws) | {"changed": False}
+                return self._ready_init(db, selected, ws, include_inactive) | {"changed": False}
             if candidate and not (
                 action == "rebind_workstream" and confirmed and workstream_id == candidate["id"]
             ):
+                bound = dict(candidate)
+                holder = name_holder(rebind_name, bound["id"])
+                located = (
+                    f"{here} of project {chosen['name']!r} is bound to workstream "
+                    f"{bound['name']!r} ({bound['id']}){archived_note(bound)} at another "
+                    f"checkout ({bound['checkout_path']})"
+                )
+                rebind = (
+                    name_taken(holder, "rebinding it here")
+                    if holder
+                    else f", or confirm {rebind_how(bound)} to move that workstream here"
+                )
+                if requested and requested["id"] != bound["id"]:
+                    # Another workstream is named while this branch is bound elsewhere: report
+                    # the requested workstream and the branch's actual binding, never one in
+                    # place of the other.
+                    return {
+                        "state": "mismatch",
+                        "message": (
+                            f"{requested_binding(requested)}; {located}; "
+                            f"{binding_how(requested)} for the requested workstream{rebind}"
+                        ),
+                        "path": canonical,
+                        "branch": branch,
+                        "project": chosen,
+                        "workstream": requested,
+                        "bound_workstream": bound,
+                        "choices": ([] if holder else ["rebind_bound_workstream"])
+                        + ["init_requested_binding"],
+                    }
                 return {
                     "state": "mismatch",
-                    "message": "Branch is bound to another checkout; "
-                    "choose explicit rebind_workstream",
+                    "message": (
+                        f"{located[0].upper()}{located[1:]}; {binding_how(bound)} to use it "
+                        f"at its own binding{rebind}"
+                    ),
                     "path": canonical,
+                    "branch": branch,
                     "project": chosen,
-                    "workstream": dict(candidate),
+                    "workstream": bound,
+                    "choices": ([] if holder else ["rebind_workstream"])
+                    + ["init_requested_binding"],
+                }
+            if requested and not (action and confirmed):
+                # The checkout/branch match check: a named binding must match exactly.
+                new_choice = "new_workstream" if selected else "attach_workstream"
+                new_holder = name_holder(insert_name)
+                if requested["project_id"] != chosen["id"]:
+                    # rebind_workstream cannot move a workstream across projects
+                    # (workstream_project_mismatch), so it is not offered here.
+                    message = (
+                        f"{requested_binding(requested)}, not {chosen['name']!r} "
+                        f"({chosen['id']}); choose a workstream of this project"
+                    )
+                    if new_holder:
+                        message += name_taken(new_holder, f"action={new_choice}")
+                    else:
+                        message += f", or confirm {create_how(new_choice)} to start one here"
+                    choices = [] if new_holder else [new_choice]
+                else:
+                    rebind_holder = name_holder(rebind_name, requested["id"])
+                    choices = ([] if rebind_holder else ["rebind_workstream"]) + (
+                        [] if new_holder else [new_choice]
+                    )
+                    message = (
+                        f"{requested_binding(requested)}, not "
+                        f"{binding(branch, workstream_name, canonical)}"
+                    )
+                    if choices:
+                        effect = {
+                            "rebind_workstream": f"{rebind_how(requested)} to move it here",
+                            new_choice: f"{create_how(new_choice)} for a new workstream here",
+                        }
+                        offered = " or ".join(effect[choice] for choice in choices)
+                        message += f"; confirm {offered}, or choose another workstream"
+                    holder = rebind_holder or new_holder
+                    if holder:
+                        blocked = [
+                            f"action={choice}"
+                            for choice in ("rebind_workstream", new_choice)
+                            if choice not in choices
+                        ]
+                        message += name_taken(holder, " and ".join(blocked))
+                return {
+                    "state": "mismatch",
+                    "message": message,
+                    "path": canonical,
+                    "branch": branch,
+                    "project": chosen,
+                    "workstream": requested,
+                    "choices": choices,
                 }
             if not action or not confirmed:
+                # Discovery leaves archived workstreams out unless include_archived=true.
+                unarchived = "" if include_archived else f" AND id NOT IN ({ARCHIVED_IDS_SQL})"
                 if selected:
-                    rows = db.execute(
-                        "SELECT * FROM workstreams WHERE project_id=? "
-                        "ORDER BY created_at,id LIMIT 11",
-                        (selected["id"],),
-                    ).fetchall()
+                    rows = [
+                        self._with_archive(db, row)
+                        for row in db.execute(
+                            "SELECT * FROM workstreams WHERE project_id=?"
+                            + unarchived
+                            + " ORDER BY created_at,id LIMIT 11",
+                            (selected["id"],),
+                        ).fetchall()
+                    ]
+                    message = (
+                        "Choose an initial scope or an explicit workstream rebind: confirm "
+                        f"{create_how('new_workstream')} (scope_expression optional, default "
+                        "none) for a new workstream here, or confirm init "
+                        "action=rebind_workstream with a candidate's workstream_id, its "
+                        "revision as expected_revision and confirmed=true to move it here"
+                    )
+                    choices = ["new_workstream", "rebind_workstream"]
+                    holder = name_holder(insert_name)
+                    if holder:
+                        # Only rebinding the workstream that holds this name can succeed.
+                        message = (
+                            "Choose an explicit workstream rebind"
+                            + name_taken(holder, "action=new_workstream")
+                            + f", or confirm {rebind_how(holder)} to move that workstream here"
+                        )
+                        choices = ["rebind_workstream"]
                     return {
                         "state": "new_branch",
-                        "message": "Choose an initial scope or an explicit workstream rebind",
+                        "message": message,
                         "path": canonical,
                         "project": selected,
-                        "candidates": [dict(row) for row in rows[:10]],
+                        "candidates": rows[:10],
                         "more_candidates": len(rows) > 10,
                         "candidate_total": db.execute(
-                            "SELECT count(*) FROM workstreams WHERE project_id=?", (selected["id"],)
+                            "SELECT count(*) FROM workstreams WHERE project_id=?" + unarchived,
+                            (selected["id"],),
                         ).fetchone()[0],
-                        "choices": ["new_workstream", "rebind_workstream"],
+                        **archived_hidden(selected["id"]),
+                        **({"name_holder": holder} if holder else {}),
+                        "choices": choices,
                     }
                 projects = [
                     {key: row[key] for key in row.keys() if key != "order_revision"}
@@ -1138,22 +1527,63 @@ class Store:
                         "SELECT * FROM projects ORDER BY name,id LIMIT 11"
                     ).fetchall()
                 ]
+                # With project=, candidates and choices are checked within that project.
                 workstreams = [
                     dict(row)
                     for row in db.execute(
                         "SELECT id,project_id,name,branch,checkout_path,revision "
-                        "FROM workstreams ORDER BY created_at,id LIMIT 11"
+                        "FROM workstreams WHERE (? IS NULL OR project_id=?)"
+                        + unarchived
+                        + " ORDER BY created_at,id LIMIT 11",
+                        (chosen and chosen["id"],) * 2,
                     ).fetchall()
                 ]
+                rebind_any = (
+                    "confirm init action=rebind_workstream with a workstream_id, its revision "
+                    "as expected_revision and confirmed=true to move that workstream here"
+                )
+                holder = None
+                if chosen:
+                    choices = ["attach_workstream", "rebind_workstream"]
+                    message = (
+                        f"Checkout is not registered; within project {chosen['name']!r} "
+                        f"({chosen['id']}) confirm {create_how('attach_workstream')} "
+                        "(scope_expression optional, default none) to attach it with a new "
+                        f"workstream, or {rebind_any} (one of this project's)"
+                    )
+                    holder = name_holder(insert_name)
+                    if holder:
+                        # Only rebinding the workstream that holds this name can succeed.
+                        choices = ["rebind_workstream"]
+                        message = (
+                            "Checkout is not registered"
+                            + name_taken(holder, "action=attach_workstream")
+                            + f", or confirm {rebind_how(holder)} to move that workstream here"
+                        )
+                    # create_project ignores project=, so it is offered only without it.
+                    message += "; to create a new project, init without project="
+                else:
+                    choices = ["create_project", "attach_workstream", "rebind_workstream"]
+                    message = (
+                        "Choose how this checkout relates to existing projects: confirm "
+                        f"{create_how('create_project')} for a new project, or init "
+                        "action=attach_workstream project=<project id> confirmed=true "
+                        "(scope_expression optional) to attach it to an existing project "
+                        f"with a new workstream, or {rebind_any}; init with project= and "
+                        "no action first to check names within that project"
+                    )
                 return {
                     "state": "unregistered_checkout",
-                    "message": "Choose how this checkout relates to existing projects",
+                    "message": message,
                     "path": canonical,
-                    "choices": ["create_project", "attach_workstream", "rebind_workstream"],
+                    **({"project": chosen} if chosen else {}),
+                    **({"name_holder": holder} if holder else {}),
+                    "choices": choices,
                     "project_candidates": projects[:10],
                     "more_projects": len(projects) > 10,
                     "workstream_candidates": workstreams[:10],
                     "more_workstreams": len(workstreams) > 10,
+                    **archived_hidden(chosen and chosen["id"]),
                 }
             if action not in {
                 "create_project",
@@ -1163,8 +1593,13 @@ class Store:
             }:
                 raise TaskError("invalid_init_action")
             if action == "create_project":
-                if selected or project or workstream_id:
+                if selected:
                     raise TaskError("checkout_already_registered: choose its existing project")
+                if project:
+                    raise TaskError(
+                        "project_not_used: action=create_project creates a new project; omit "
+                        "project=, or choose attach_workstream to join that project"
+                    )
                 now = timestamp()
                 selected = dict(
                     id=_id("prj_"),
@@ -1223,6 +1658,12 @@ class Store:
                     raise TaskError("workstream_project_mismatch")
                 if type(expected_revision) is not int or ws["revision"] != expected_revision:
                     raise TaskError("revision_conflict: re-read the workstream")
+                if self._archived(ws) and not include_archived:
+                    raise TaskError(
+                        f"workstream_archived: workstream {ws['name']!r} is archived "
+                        f"({ws['archive']['reason']}); pass include_archived=true to move it "
+                        f"here as archived, or unarchive it first with {self._archive_hint(ws)}"
+                    )
                 selected = dict(
                     db.execute("SELECT * FROM projects WHERE id=?", (ws["project_id"],)).fetchone()
                 )
@@ -1241,25 +1682,224 @@ class Store:
                     raise TaskError("workstream_exists: target binding conflicts") from exc
                 ws = self._workstream(db, workstream_id)
             scope.update(project_id=selected["id"], after={"project": selected, "workstream": ws})
-            return self._ready_init(db, selected, ws) | {"changed": True}
+            return self._ready_init(db, selected, ws, include_inactive) | {"changed": True}
 
         return self._run("session.initialized", request, operation)
 
-    def _ready_init(self, db, project, ws):
+    def _ready_init(self, db, project, ws, include_inactive=False):
+        queue = self._scoped_queue(db, ws["id"])
+        hidden = [] if include_inactive else [c for c in queue if c["status"] in INACTIVE_STATUSES]
+        queue = [c for c in queue if include_inactive or c["status"] not in INACTIVE_STATUSES]
+        cache = {}
         return {
             "state": "ready",
-            "message": "Workstream ready",
+            "message": (
+                f"Archived workstream resumed on request ({ws['archive']['reason']}); it "
+                f"stays out of discovery until unarchived with {self._archive_hint(ws)}"
+                if self._archived(ws)
+                else "Workstream ready"
+            ),
             "project": {key: value for key, value in project.items() if key != "order_revision"},
             "workstream": ws,
             "scope_revision": ws["revision"],
             "workstream_order_revision": ws["order_revision"],
-            "queue": self._scoped_queue(db, ws["id"])[:10],
-            "queue_total": len(self._scope_ids(db, ws["id"])),
-            "queue_next_offset": 10 if len(self._scope_ids(db, ws["id"])) > 10 else None,
+            "queue": [
+                self._board_card(
+                    db, self._task(db, card["id"], {}), ws["id"], full=card, cache=cache
+                )
+                for card in queue[:10]
+            ],
+            "queue_total": len(queue),
+            "queue_next_offset": 10 if len(queue) > 10 else None,
+            **({} if include_inactive else {"queue_hidden": self._hidden_counts(hidden)}),
             "groups": self._scope_group_ids(db, ws["id"])[:10],
             "groups_total": len(self._scope_group_ids(db, ws["id"])),
             "status": self._status_summary(db, ws["id"]),
+            **({"notes": notes} if (notes := self._notes(db, project["id"], ws["id"])) else {}),
         }
+
+    @staticmethod
+    def _notes(db, project_id, workstream_id=None):
+        """The nonempty project/workstream notes with their revision, time and author."""
+        notes = {}
+        for kind, owner_id in (("project", project_id), ("workstream", workstream_id)):
+            if owner_id is None:
+                continue
+            row = db.execute(
+                "SELECT * FROM notes WHERE owner_id=? AND kind=?", (owner_id, kind)
+            ).fetchone()
+            if row and row["text"]:
+                notes[kind] = {
+                    "text": row["text"],
+                    "revision": row["revision"],
+                    "updated_at": row["updated_at"],
+                    "updated_by": row["updated_by"],
+                }
+        return notes
+
+    def read_notes(self, project, workstream_id=None):
+        """Read a project's note and optionally one of its workstreams' (viewer display)."""
+
+        def operation(db, scope):
+            selected = self._project(db, project, scope)
+            if workstream_id is not None:
+                self._workstream(db, workstream_id, selected["id"])
+            return {"notes": self._notes(db, selected["id"], workstream_id)}
+
+        return self._run(
+            "notes.read", {"project": project, "workstream_id": workstream_id}, operation
+        )
+
+    def set_note(self, kind, target_id, expected_revision, text):
+        """Replace (or with empty text clear) one project or workstream note."""
+        request = dict(
+            kind=kind, target_id=target_id, expected_revision=expected_revision, text=text
+        )
+
+        def operation(db, scope):
+            if kind not in NOTE_KINDS:
+                raise TaskError("invalid_note_kind: use project or workstream")
+            if kind == "project":
+                project_id = self._project(db, target_id, scope)["id"]
+                workstream_id = None
+            else:
+                if not isinstance(target_id, str) or not target_id.strip():
+                    raise TaskError("workstream_id_required: provide a workstream ID")
+                ws = self._workstream(db, target_id.strip())
+                project_id, workstream_id = ws["project_id"], ws["id"]
+                scope["project_id"] = project_id
+            if not isinstance(text, str):
+                raise TaskError("invalid_note_text: provide plain text, or empty text to clear")
+            if len(text) > NOTE_LIMIT:
+                raise TaskError(
+                    f"note_too_long: a note holds at most {NOTE_LIMIT:,} characters; this "
+                    f"text has {len(text):,}. Replace outdated content instead of appending"
+                )
+            owner_id = workstream_id or project_id
+            row = db.execute("SELECT * FROM notes WHERE owner_id=?", (owner_id,)).fetchone()
+            before = dict(row) if row else None
+            current_text = before["text"] if before else ""
+            current_revision = before["revision"] if before else 0
+            # A note that init omits (empty) is saved with expected_revision 0.
+            if type(expected_revision) is not int or not (
+                expected_revision == current_revision
+                or (not current_text and expected_revision == 0)
+            ):
+                raise TaskError(
+                    f"revision_conflict: expected {expected_revision}, current "
+                    f"{current_revision if current_text else 0}; re-read the note with init "
+                    "and reconcile your text with it before saving"
+                )
+            new_text = text if text.strip() else ""
+            ack = {"kind": kind, "target_id": owner_id, "project_id": project_id}
+            if new_text == current_text:
+                return ack | {
+                    "revision": current_revision,
+                    "length": len(current_text),
+                    "limit": NOTE_LIMIT,
+                    "changed": False,
+                }
+            after = {
+                "owner_id": owner_id,
+                "kind": kind,
+                "project_id": project_id,
+                "workstream_id": workstream_id,
+                "text": new_text,
+                "revision": current_revision + 1,
+                "updated_at": timestamp(),
+                "updated_by": self.actor,
+            }
+            db.execute(
+                "INSERT INTO notes (owner_id,kind,project_id,workstream_id,text,revision,"
+                "updated_at,updated_by) VALUES (:owner_id,:kind,:project_id,:workstream_id,"
+                ":text,:revision,:updated_at,:updated_by) ON CONFLICT(owner_id) DO UPDATE SET "
+                "text=excluded.text,revision=excluded.revision,updated_at=excluded.updated_at,"
+                "updated_by=excluded.updated_by",
+                after,
+            )
+            scope.update(before=before, after=after)
+            return ack | {
+                "revision": after["revision"],
+                "length": len(new_text),
+                "limit": NOTE_LIMIT,
+                "cleared": not new_text,
+                "updated_at": after["updated_at"],
+                "updated_by": after["updated_by"],
+                "changed": True,
+            }
+
+        return self._run("note.set", request, operation)
+
+    def archive_workstream(self, workstream_id, expected_revision, reason, archived=True):
+        """Archive (or with archived=False unarchive) one workstream, with a short reason.
+
+        Only discovery changes: tasks, memberships, order, attempts and history are kept.
+        """
+        request = dict(
+            workstream_id=workstream_id,
+            expected_revision=expected_revision,
+            reason=reason,
+            archived=archived,
+        )
+
+        def operation(db, scope):
+            if not isinstance(workstream_id, str) or not workstream_id.strip():
+                raise TaskError("workstream_id_required: provide a workstream ID")
+            ws = self._workstream(db, workstream_id.strip())
+            scope["project_id"] = ws["project_id"]
+            if type(archived) is not bool:
+                raise TaskError("invalid_archived: use true to archive or false to unarchive")
+            if not isinstance(reason, str) or not reason.strip():
+                raise TaskError("archive_reason_required: give a short reason")
+            text = reason.strip()
+            if len(text) > ARCHIVE_REASON_LIMIT:
+                raise TaskError(
+                    f"archive_reason_too_long: a reason holds at most {ARCHIVE_REASON_LIMIT} "
+                    f"characters; this one has {len(text)}"
+                )
+            before = ws.get("archive")
+            current = before["revision"] if before else 0
+            if type(expected_revision) is not int or expected_revision != current:
+                raise TaskError(
+                    f"revision_conflict: expected {expected_revision}, current archive "
+                    f"revision {current}; re-read the workstream (its archive.revision, or 0 "
+                    "when it has none) before changing its archive state"
+                )
+            ack = {
+                "workstream_id": ws["id"],
+                "project_id": ws["project_id"],
+                "name": ws["name"],
+                "branch": ws["branch"],
+                "checkout_path": ws["checkout_path"],
+            }
+            if self._archived(ws) == archived:
+                return ack | {"archive": before, "changed": False}
+            after = {
+                "archived": archived,
+                "reason": text,
+                "revision": current + 1,
+                "updated_at": timestamp(),
+                "updated_by": self.actor,
+            }
+            db.execute(
+                "INSERT INTO workstream_archive (workstream_id,archived,reason,revision,"
+                "updated_at,updated_by) VALUES (?,?,?,?,?,?) ON CONFLICT(workstream_id) DO "
+                "UPDATE SET archived=excluded.archived,reason=excluded.reason,"
+                "revision=excluded.revision,updated_at=excluded.updated_at,"
+                "updated_by=excluded.updated_by",
+                (ws["id"], int(archived), text, after["revision"], after["updated_at"], self.actor),
+            )
+            scope.update(
+                before={"workstream_id": ws["id"], "archive": before},
+                after=ack | {"archive": after},
+            )
+            return ack | {"archive": after, "changed": True}
+
+        return self._run(
+            "workstream.archived" if archived is True else "workstream.unarchived",
+            request,
+            operation,
+        )
 
     def init_workstream(
         self, project, path, branch=None, name=None, scope_expression="none", confirmed=False
@@ -1282,7 +1922,7 @@ class Store:
                 "SELECT 1 FROM project_paths WHERE path=? AND project_id=?",
                 (canonical, selected["id"]),
             ).fetchone():
-                raise TaskError("checkout_not_attached: use attach_checkout")
+                raise TaskError("checkout_not_attached: use init action=attach_workstream")
             if not branch and not name:
                 raise TaskError("workstream_name_required")
             members, groups, exclusions = self._scope_expression(
@@ -1306,95 +1946,6 @@ class Store:
             return scope["after"]
 
         return self._run("workstream.initialized", request, operation)
-
-    def rebind_workstream(
-        self, workstream_id, expected_revision, path, branch=None, name=None, confirmed=False
-    ):
-        request = dict(
-            workstream_id=workstream_id,
-            expected_revision=expected_revision,
-            path=path,
-            branch=branch,
-            name=name,
-            confirmed=confirmed,
-        )
-
-        def operation(db, scope):
-            if not confirmed:
-                raise TaskError("confirmation_required: show the new binding to the user")
-            before = self._workstream(db, workstream_id)
-            if before["revision"] != expected_revision:
-                raise TaskError("revision_conflict: re-read the workstream")
-            canonical = self._canonical_path(path)
-            if not db.execute(
-                "SELECT 1 FROM project_paths WHERE path=? AND project_id=?",
-                (canonical, before["project_id"]),
-            ).fetchone():
-                raise TaskError("checkout_not_attached: use attach_checkout")
-            if not branch and not name:
-                raise TaskError("workstream_name_required")
-            changed = any(
-                before[k] != value
-                for k, value in (
-                    ("checkout_path", canonical),
-                    ("branch", branch),
-                    ("name", name or branch),
-                )
-            )
-            if not changed:
-                scope.update(project_id=before["project_id"], before=before, after=before)
-                return before | {"changed": False}
-            try:
-                db.execute(
-                    """UPDATE workstreams SET checkout_path=?, branch=?, name=?, revision=revision+1
-                    WHERE id=?""",
-                    (canonical, branch, name or branch, workstream_id),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise TaskError("workstream_exists") from exc
-            after = self._workstream(db, workstream_id)
-            scope.update(project_id=before["project_id"], before=before, after=after)
-            return after | {"changed": True}
-
-        return self._run("workstream.rebound", request, operation)
-
-    def preflight(self, project, path, branch=None, workstream_id=None):
-        request = dict(project=project, path=path, branch=branch, workstream_id=workstream_id)
-
-        def operation(db, scope):
-            selected = self._project(db, project, scope)
-            canonical = self._canonical_path(path)
-            if not db.execute(
-                "SELECT 1 FROM project_paths WHERE path=? AND project_id=?",
-                (canonical, selected["id"]),
-            ).fetchone():
-                raise TaskError("checkout_not_attached: choose attach_checkout or init_project")
-            if workstream_id:
-                ws = self._workstream(db, workstream_id, selected["id"])
-                if ws["checkout_path"] != canonical or ws["branch"] != branch:
-                    raise TaskError("workstream_mismatch: rebind or initialize a new workstream")
-            elif branch:
-                rows = db.execute(
-                    "SELECT * FROM workstreams WHERE project_id=? AND branch=?",
-                    (selected["id"], branch),
-                ).fetchall()
-                if len(rows) != 1 or rows[0]["checkout_path"] != canonical:
-                    raise TaskError(
-                        "workstream_not_initialized: choose scope before autonomous work"
-                    )
-                ws = dict(rows[0])
-            else:
-                raise TaskError("workstream_name_required: select a named workstream")
-            return {
-                "project": selected,
-                "workstream": ws,
-                "scope": self._scope_ids(db, ws["id"])[:10],
-                "scope_total": len(self._scope_ids(db, ws["id"])),
-                "groups": self._scope_group_ids(db, ws["id"])[:10],
-                "groups_total": len(self._scope_group_ids(db, ws["id"])),
-            }
-
-        return self._run("workstream.preflight", request, operation)
 
     @staticmethod
     def _scope_ids(db, workstream_id):
@@ -1492,7 +2043,10 @@ class Store:
                 (project_id, first, first),
             ).fetchall()
             if len(ws_rows) != 1:
-                raise TaskError("unknown_scope_base: use none or a workstream ID/name")
+                raise TaskError(
+                    "unknown_scope_base: start with none or a workstream ID/name, "
+                    "then +/-task or group references"
+                )
             ws_id = ws_rows[0]["id"]
             members = {
                 row["task_id"]
@@ -1584,12 +2138,64 @@ class Store:
         return self._run("scope.changed", request, operation)
 
     def add_to_workstream(self, task_id, workstream_id, expected_revision):
-        """Add effective membership here while preserving all other workstreams."""
+        """Add effective membership here while preserving all other workstreams.
+
+        A group ID includes the group, and so its live members, in this scope."""
         return self._membership_change(task_id, workstream_id, expected_revision, True)
 
     def remove_from_workstream(self, task_id, workstream_id, expected_revision):
-        """Remove only the named workstream, including inherited group membership."""
+        """Remove only the named workstream, including inherited group membership.
+
+        A group ID removes the group's inclusion here; a member ID excludes just that member."""
         return self._membership_change(task_id, workstream_id, expected_revision, False)
+
+    @staticmethod
+    def _group_included(db, workstream_id, group_id):
+        return bool(
+            db.execute(
+                "SELECT 1 FROM scope_groups s WHERE s.workstream_id=? AND s.group_id=? "
+                "AND NOT EXISTS (SELECT 1 FROM scope_exclusions e "
+                "WHERE e.workstream_id=s.workstream_id AND e.task_id=s.group_id)",
+                (workstream_id, group_id),
+            ).fetchone()
+        )
+
+    def _group_scope_change(self, db, scope, before, workstream_id, adding):
+        """Include or remove a shared group exactly as a +group/-group scope term did.
+
+        This is a scope-only change, so it is allowed for completed groups as set_scope
+        was; their row and revision stay untouched, while an open group's revision
+        still advances."""
+        group_id = before["id"]
+        completed = before["status"] == "done" or self._group_complete(db, group_id)
+        workstream = self._workstream(db, workstream_id)
+        scope["project_id"] = workstream["project_id"]
+        changed = self._group_included(db, workstream_id, group_id) != adding
+        if changed:
+            if adding:
+                db.execute(
+                    "INSERT OR IGNORE INTO scope_groups VALUES (?,?)", (workstream_id, group_id)
+                )
+                db.execute(
+                    "DELETE FROM scope_exclusions WHERE workstream_id=? AND task_id=?",
+                    (workstream_id, group_id),
+                )
+            else:
+                db.execute(
+                    "DELETE FROM scope_groups WHERE workstream_id=? AND group_id=?",
+                    (workstream_id, group_id),
+                )
+                db.execute(
+                    "INSERT OR IGNORE INTO scope_exclusions VALUES (?,?)",
+                    (workstream_id, group_id),
+                )
+            self._touch_workstream(db, workstream_id)
+            if not completed:
+                db.execute(
+                    "UPDATE tasks SET revision=revision+1,updated_at=? WHERE id=?",
+                    (timestamp(), group_id),
+                )
+        return changed
 
     def _membership_change(self, task_id, workstream_id, expected_revision, adding):
         request = dict(
@@ -1599,6 +2205,19 @@ class Store:
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            if before["object_type"] == "group":
+                changed = self._group_scope_change(db, scope, before, workstream_id, adding)
+                after = self._task(db, task_id, {})
+                scope.update(before=before, after=after)
+                return self._task_ack(db, after) | {
+                    "changed": changed,
+                    "included": self._group_included(db, workstream_id, task_id),
+                    "workstream_id": workstream_id,
+                    "workstream_revision": self._workstream(db, workstream_id)["revision"],
+                    "workstream_revisions": {
+                        workstream_id: self._workstream(db, workstream_id)["revision"]
+                    },
+                }
             self._require_mutable(db, before)
             self._workstream(db, workstream_id, before["project_id"])
             present = task_id in self._scope_ids(db, workstream_id)
@@ -1785,9 +2404,6 @@ class Store:
                 if task["latest_rejection"]
                 else None
             ),
-            pending_proposal_count=db.execute(
-                "SELECT count(*) FROM gate_proposals WHERE task_id=?", (task["id"],)
-            ).fetchone()[0],
         )
         prerequisites = Store._prerequisite_references(db, task["id"])
         card.update(
@@ -1861,7 +2477,211 @@ class Store:
                 )
             else:
                 card["aggregate_attempt_counts"] = counts
+            if picks := Store._live_picks(db, task["id"], workstream_id):
+                card["picked"] = picks[0]
         return card
+
+    @staticmethod
+    def _include_groups(include):
+        """Validate optional card detail groups; order and duplicates are irrelevant."""
+        if include is None:
+            return ()
+        choices = ", ".join(CARD_INCLUDE_GROUPS)
+        if not isinstance(include, list) or any(not isinstance(g, str) for g in include):
+            raise TaskError(f"invalid_include: pass a list of group names from {choices}")
+        unknown = [g for g in include if g not in CARD_INCLUDE_GROUPS]
+        if unknown:
+            raise TaskError(
+                f"invalid_include: unknown group {', '.join(map(repr, unknown))}; "
+                f"choose from {choices}"
+            )
+        return tuple(g for g in CARD_INCLUDE_GROUPS if g in include)
+
+    @staticmethod
+    def _validate_include_inactive(include_inactive):
+        if type(include_inactive) is not bool:
+            raise TaskError("invalid_include_inactive: use true or false")
+
+    @staticmethod
+    def _validate_include_archived(include_archived):
+        if type(include_archived) is not bool:
+            raise TaskError("invalid_include_archived: use true or false")
+
+    @staticmethod
+    def _card_view(db, task, full, workstream_id=None):
+        """Return (internal view, slim state word) for one task or group."""
+        if task["object_type"] == "group":
+            return "group", "group"
+        if workstream_id:
+            view = full["view"]
+        else:
+            # Without a workstream, review/sign-off reflect current results anywhere.
+            view = Store._status_view(task, Store._gate_reasons(db, task))
+        state = STATE_WORDS.get(view, view)
+        counts = full.get("attempt_counts") or full.get("aggregate_attempt_counts") or {}
+        if state == "ready" and (task["status"] == "rework" or counts.get("rework")):
+            state = "rework"
+        return view, state
+
+    @staticmethod
+    def _validate_state_filter(state):
+        """Reject typos such as 'sign-off' instead of silently matching nothing."""
+        if state is None or state == "":
+            return
+        if not isinstance(state, str) or state not in STATE_FILTERS:
+            raise TaskError(
+                f"invalid_state: unknown state filter {state!r}; "
+                f"use one of {', '.join(STATE_FILTERS)}"
+            )
+
+    @staticmethod
+    def _state_matches(requested, view, state):
+        """Old view names and slim state words both filter; ready includes rework."""
+        return requested in {view, state}
+
+    @staticmethod
+    def _rejection_waiting(db, task):
+        """A review/sign-off rejection with no newer recorded result for this task."""
+        rejection = task["latest_rejection"]
+        if not rejection or task["object_type"] != "task" or task["status"] in INACTIVE_STATUSES:
+            return False
+        return not db.execute(
+            "SELECT 1 FROM events WHERE task_id=? AND action='attempt.recorded' "
+            "AND outcome='ok' AND sequence>? LIMIT 1",
+            (task["id"], rejection["decision_ref"]),
+        ).fetchone()
+
+    @staticmethod
+    def _positions(db, workstream_id, cache):
+        if workstream_id not in cache:
+            cache[workstream_id] = {
+                identity: index
+                for index, identity in enumerate(Store._ordered_scope_ids(db, workstream_id), 1)
+            }
+        return cache[workstream_id]
+
+    @staticmethod
+    def _board_card(db, task, workstream_id=None, include=(), full=None, cache=None):
+        """Slim card: identity, one state word and gate/attention counts.
+
+        Fields at their empty default (no summary, blockers, questions, concerns or
+        waiting rejection) are omitted; closed tasks have no blockers. Include groups
+        restore the dropped detail.
+        """
+        cache = {} if cache is None else cache
+        full = full if full is not None else Store._card(db, task, workstream_id)
+        view, state = Store._card_view(db, task, full, workstream_id)
+        card = {"id": task["id"], "title": task["title"]}
+        if task["summary"] is not None:
+            card["summary"] = task["summary"]
+        card.update(state=state, revision=task["revision"])
+        if workstream_id and task["object_type"] == "task":
+            position = Store._positions(db, workstream_id, cache).get(task["id"])
+            if position is not None:
+                card["position"] = position
+        if task["object_type"] == "group":
+            card.update(
+                progress=full["progress"],
+                complete=full["complete"],
+                project_count=full["project_count"],
+            )
+        if task["status"] not in INACTIVE_STATUSES:
+            blockers = [
+                p["id"] for p in Store._prerequisite_references(db, task["id"]) if p["blocking"]
+            ]
+            if blockers:
+                card["blockers"] = blockers
+        # Open questions stay visible on closed cards: deferred work keeps its questions.
+        if task["unresolved_items"]:
+            card["question_count"] = len(task["unresolved_items"])
+        if full.get("concern_count"):
+            card["concern_count"] = full["concern_count"]
+        if Store._rejection_waiting(db, task):
+            card["rejected"] = True
+        for name in include:
+            card.update(Store._card_detail(db, task, full, workstream_id, name, view, cache))
+        return card
+
+    @staticmethod
+    def _card_detail(db, task, full, workstream_id, name, view, cache):
+        """One include group; together with the slim card they cover the old card."""
+        is_task = task["object_type"] == "task"
+        if name == "blockers":
+            return {
+                "prerequisites": Store._prerequisite_references(db, task["id"]),
+                "gate_diagnostics": full["gate_diagnostics"],
+            }
+        rows = Store._current_attempt_rows(db, task, workstream_id) if is_task else []
+        if name == "attempt":
+            reference = full.get(
+                "attempt_reference", Store._attempt_summary(rows[0]) if rows else None
+            )
+            return {
+                "attempt": reference,
+                "attempt_counts": {
+                    state: sum(r["state"] == state for r in rows)
+                    for state in ("review", "passed", "human_review", "rework")
+                },
+                "alternative_attempt_count": max(0, len(rows) - 1),
+                "attempt_scope": workstream_id or "cross_workstream",
+                "selected_attempt_id": task["selected_attempt_id"],
+                "latest_rejection": full["latest_rejection"],
+                **({"picked": full["picked"]} if "picked" in full else {}),
+            }
+        if name == "concerns":
+            concerned = [row for row in rows if row["concern_count"]]
+            return {
+                "concern_count": sum(row["concern_count"] for row in concerned),
+                "concerns": Store._concern_window(db, concerned[:3]),
+                "concern_attempt_total": len(concerned),
+                "concern_attempt_references": full.get("concern_attempt_references", []),
+                "concern_attempts_has_more": len(concerned) > 3,
+            }
+        if name == "workstreams":
+            if is_task:
+                memberships = [
+                    {
+                        "id": identity,
+                        "position": Store._positions(db, identity, cache).get(task["id"]),
+                    }
+                    for identity in Store._membership_ids(db, task)
+                ]
+            else:
+                # Groups are referenced by scope, not ordered as members.
+                memberships = [
+                    {"id": row["workstream_id"], "position": None}
+                    for row in db.execute(
+                        "SELECT workstream_id FROM scope_groups WHERE group_id=? "
+                        "ORDER BY workstream_id",
+                        (task["id"],),
+                    )
+                ]
+            detail = {"workstreams": memberships, "adopted": bool(is_task and memberships)}
+            if "in_scope" in full:
+                detail["in_scope"] = full["in_scope"]
+            return detail
+        detail = {
+            key: task[key]
+            for key in (
+                "project_id",
+                "object_type",
+                "status",
+                "spec_revision",
+                "summary_spec_revision",
+                "order_key",
+                "parent_group_id",
+            )
+        }
+        detail.update(
+            summary_stale=Store._summary_stale(task),
+            specification_complete=False,
+            view=view,
+        )
+        if workstream_id:
+            detail["workstream_id"] = workstream_id
+        if not is_task:
+            detail.update(project_id=None, origin_project_id=task["project_id"])
+        return detail
 
     @staticmethod
     def _specification(db, task, workstream_id=None):
@@ -1916,18 +2736,22 @@ class Store:
             )
         return concerns
 
-    def read_tasks(self, ids, specification=False, workstream_id=None, attempt_ids=None):
+    def read_tasks(
+        self, ids, specification=False, workstream_id=None, attempt_ids=None, include=None
+    ):
         """Bounded MCP projection; get_tasks retains full internal/viewer detail."""
         request = dict(
             ids=ids,
             specification=specification,
             workstream_id=workstream_id,
             attempt_ids=attempt_ids,
+            include=include,
         )
 
         def operation(db, scope):
             if not isinstance(ids, list) or not 1 <= len(ids) <= 20:
                 raise TaskError("invalid_ids: request 1–20 IDs")
+            groups = self._include_groups(include)
             if workstream_id:
                 self._workstream(db, workstream_id)
             if attempt_ids is not None and (
@@ -1940,8 +2764,26 @@ class Store:
                     "invalid_attempt_ids: specification=true and 1–20 distinct IDs required"
                 )
             tasks = [self._task(db, identity, {}) for identity in ids]
-            projection = self._specification if specification else self._card
-            items = [projection(db, task, workstream_id) for task in tasks]
+            cache = {}
+            if specification:
+                items = []
+                for task in tasks:
+                    item = self._specification(db, task, workstream_id)
+                    if groups:
+                        full = self._card(db, task, workstream_id)
+                        view, _ = self._card_view(db, task, full, workstream_id)
+                        for name in groups:
+                            # The specification already carries most groups; keep its fields.
+                            detail = self._card_detail(
+                                db, task, full, workstream_id, name, view, cache
+                            )
+                            for key, value in detail.items():
+                                item.setdefault(key, value)
+                    items.append(item)
+            else:
+                items = [
+                    self._board_card(db, task, workstream_id, groups, cache=cache) for task in tasks
+                ]
             if len(ids) == 1:
                 scope.update(task_id=ids[0], project_id=tasks[0]["project_id"])
             if attempt_ids:
@@ -2060,31 +2902,6 @@ class Store:
 
         return self._run("attempt.read", {"attempt_id": attempt_id}, operation)
 
-    def list_group_members(self, group_id, limit=20, cursor=None):
-        def operation(db, scope):
-            group = self._task(db, group_id, scope)
-            if group["object_type"] != "group":
-                raise TaskError("invalid_group")
-            rows = [
-                dict(r)
-                for r in db.execute(
-                    "SELECT id,created_at FROM tasks WHERE parent_group_id=? "
-                    "ORDER BY created_at,id",
-                    (group_id,),
-                )
-            ]
-            page, info = self._cursor_page(rows, limit, cursor, [group_id])
-            return {
-                "group_id": group_id,
-                "group_revision": group["revision"],
-                "items": [self._card(db, self._task(db, r["id"], {})) for r in page],
-                **info,
-            }
-
-        return self._run(
-            "group.members_listed", dict(group_id=group_id, limit=limit, cursor=cursor), operation
-        )
-
     @staticmethod
     def _specification_etag(task):
         """Whole-field replacement guard, independent of non-spec task revisions."""
@@ -2155,6 +2972,9 @@ class Store:
             )
         ]
         task["prerequisites"] = Store._prerequisite_references(db, task["id"])
+        if history and task["object_type"] == "task":
+            if picks := Store._live_picks(db, task["id"]):
+                task["picks"] = picks
         if history:
             task["attempts"] = [
                 Store._attempt_details(r)
@@ -2289,9 +3109,9 @@ class Store:
 
         return self._run("groups.listed", request, operation)
 
-    def resolve_prefix(self, kind, prefix):
-        """Match a short viewer-URL ID: at most two workstreams or groups whose hex starts so."""
-        request = dict(kind=kind, prefix=prefix)
+    def resolve_prefix(self, kind, prefix, match="prefix"):
+        """Resolve a legacy viewer prefix or an explicitly marked exact public group ID."""
+        request = dict(kind=kind, prefix=prefix, match=match)
 
         def operation(db, scope):
             sources = {
@@ -2300,6 +3120,20 @@ class Store:
             }
             if not isinstance(kind, str) or kind not in sources:
                 raise TaskError("invalid_kind: use workstream or group")
+            if match not in ("prefix", "public_id"):
+                raise TaskError("invalid_match: use prefix or public_id")
+            if match == "public_id":
+                if (
+                    kind != "group"
+                    or not isinstance(prefix, str)
+                    or len(prefix) > 96
+                    or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", prefix)
+                ):
+                    raise TaskError("invalid_public_id: use a complete public group ID")
+                row = db.execute(
+                    "SELECT id,project_id FROM tasks WHERE id=? AND object_type='group'", (prefix,)
+                ).fetchone()
+                return {"items": [dict(row)] if row is not None else []}
             if (
                 not isinstance(prefix, str)
                 or not 1 <= len(prefix) <= 32
@@ -2318,18 +3152,78 @@ class Store:
 
         return self._run("prefixes.read", request, operation)
 
-    def create_group(self, workstream_id, title, body="", acceptance_criteria="", summary=None):
+    @staticmethod
+    def _public_task_id(db, title, public_id=None):
+        """Choose once under the writer lock; explicit names never silently change."""
+        if public_id is not None:
+            if (
+                not isinstance(public_id, str)
+                or len(public_id) > 96
+                or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", public_id)
+            ):
+                raise TaskError(
+                    "invalid_public_id: use up to 96 lowercase letters, digits and single "
+                    "hyphens, beginning with a letter (for example readable-task-ids)"
+                )
+            if db.execute("SELECT 1 FROM tasks WHERE id=?", (public_id,)).fetchone():
+                raise TaskError(
+                    f"public_id_conflict: {public_id} is already reserved; choose a different "
+                    "descriptive public_id and retry (closed task IDs cannot be reused)"
+                )
+            return public_id
+        # Compatibility callers and browser ideas have no ID field. Derive a readable
+        # name, with a deterministic numeric suffix for duplicate titles.
+        ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+        base = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
+        if not base or not base[0].isalpha():
+            base = "task-" + base if base else "task"
+        base = base[:88].rstrip("-")
+        candidate, suffix = base, 2
+        while db.execute("SELECT 1 FROM tasks WHERE id=?", (candidate,)).fetchone():
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
+
+    @staticmethod
+    def _register_task_identity(db, public_id):
+        db.execute("INSERT INTO task_identities VALUES (?,?)", (uuid4().hex, public_id))
+
+    def create_group(
+        self,
+        workstream_id,
+        title,
+        body="",
+        acceptance_criteria="",
+        summary=None,
+        project=None,
+        source="unknown",
+        user_request="",
+        public_id=None,
+    ):
         request = dict(
+            public_id=public_id,
             workstream_id=workstream_id,
             title=title,
             body=body,
             acceptance_criteria=acceptance_criteria,
             summary=summary,
         )
+        if project is not None:
+            request.update(project=project, source=source, user_request=user_request)
 
         def operation(db, scope):
+            if project is not None:
+                if workstream_id is None:
+                    raise TaskError(
+                        "workstream_required: a group is created into a workstream's scope"
+                    )
+                self._workstream(db, workstream_id, self._project(db, project, scope)["id"])
             ws = self._workstream(db, workstream_id)
             scope["project_id"] = ws["project_id"]
+            if not isinstance(source, str) or source not in {"agent", "user", "unknown"}:
+                raise TaskError("invalid_source: agent, user or unknown")
+            if not isinstance(user_request, str):
+                raise TaskError("invalid_user_request: request must be text")
             if (
                 not isinstance(title, str)
                 or not title.strip()
@@ -2337,9 +3231,11 @@ class Store:
                 or not isinstance(acceptance_criteria, str)
             ):
                 raise TaskError("invalid_specification")
+            for field, value in (("body", body), ("acceptance_criteria", acceptance_criteria)):
+                self._validate_specification_text(value, field, creating=True)
             now = timestamp()
             self._validate_summary(summary)
-            group_id = _id("tsk_")
+            group_id = self._public_task_id(db, title, public_id)
             db.execute(
                 """INSERT INTO tasks
                 (id,project_id,title,body,acceptance_criteria,status,object_type,
@@ -2348,9 +3244,11 @@ class Store:
                 VALUES (?,NULL,?,?,?,'open','group',1,NULL,'','[]',NULL,0,NULL,1,?,?)""",
                 (group_id, title.strip(), body, acceptance_criteria, now, now),
             )
+            self._register_task_identity(db, group_id)
             db.execute(
-                "UPDATE tasks SET summary=?,summary_spec_revision=? WHERE id=?",
-                (summary, 1 if summary is not None else None, group_id),
+                "UPDATE tasks SET summary=?,summary_spec_revision=?,source=?,user_request=? "
+                "WHERE id=?",
+                (summary, 1 if summary is not None else None, source, user_request, group_id),
             )
             db.execute("INSERT INTO scope_groups VALUES (?,?)", (workstream_id, group_id))
             self._touch_workstream(db, workstream_id)
@@ -2371,16 +3269,9 @@ class Store:
         def operation(db, scope):
             group = self._task(db, group_id, scope)
             self._revision(group, expected_revision)
-            if group["object_type"] != "group":
-                raise TaskError("invalid_group")
-            self._require_mutable(db, group, concrete=False)
             member = self._task(db, task_id, {})
             self._revision(member, expected_task_revision)
-            if member["object_type"] != "task" or member["parent_group_id"]:
-                raise TaskError("invalid_member: nested groups or reassignment are unsupported")
-            self._require_mutable(db, member)
-            if self._would_cycle(db, group_id, task_id):
-                raise TaskError("prerequisite_cycle")
+            self._validate_group_member(db, group, member)
             after_group = {**group, "revision": group["revision"] + 1, "updated_at": timestamp()}
             after_member = {
                 **member,
@@ -2403,6 +3294,82 @@ class Store:
         return self._run("group.member_added", request, operation)
 
     @staticmethod
+    def _validate_group_member(db, group, member):
+        if group["object_type"] != "group":
+            raise TaskError("invalid_group")
+        Store._require_mutable(db, group, concrete=False)
+        if member["object_type"] != "task" or member["parent_group_id"]:
+            raise TaskError("invalid_member: nested groups or reassignment are unsupported")
+        Store._require_mutable(db, member)
+        if Store._would_cycle(db, group["id"], member["id"]):
+            raise TaskError("prerequisite_cycle")
+
+    @staticmethod
+    def _validate_specification_text(value, field, *, creating=False):
+        """Reject strong prose-separator signals, without decoding any input.
+
+        Code spans/blocks are examples, not prose. Look within actual lines so
+        ordinary multiline specifications and technical escape mentions stay
+        untouched. Ambiguous escapes deliberately pass this conservative guard.
+        """
+        # Strip Markdown containers before recognizing fences. Be permissive
+        # about indentation: an ambiguous example should pass, rather than risk
+        # rejecting quoted or list-nested code. Closing runs may be longer than
+        # their opener, but must use the same character and contain only spaces.
+        prose_lines = []
+        fence = None
+        for line in value.splitlines():
+            content = re.sub(r"^(?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d+[.)])[ \t]+)*", "", line)
+            content = content.lstrip(" \t")
+            marker = re.match(r"(`{3,}|~{3,})(.*)$", content)
+            if fence is not None:
+                if (
+                    marker
+                    and marker[1][0] == fence[0]
+                    and len(marker[1]) >= len(fence)
+                    and not marker[2].strip()
+                ):
+                    fence = None
+                prose_lines.append("")
+            elif marker and (marker[1][0] == "~" or "`" not in marker[2]):
+                fence = marker[1]
+                prose_lines.append("")
+            else:
+                prose_lines.append(line)
+        prose = "\n".join(prose_lines)
+        prose = re.sub(r"(`+)(?!`).*?(?<!`)\1(?!`)", " ", prose, flags=re.DOTALL)
+        escape = r"\\+n"
+        for line in prose.splitlines():
+            if len(re.findall(escape, line)) < 2:
+                continue
+            # An explicitly introduced regex can intentionally contain the same
+            # sentence/list shapes as damaged prose. Treat that context as
+            # ambiguous instead of rejecting an unquoted technical example.
+            introduction = re.split(escape, line, maxsplit=1)[0]
+            if re.search(r"\b(?:regex(?:p)?|regular expression)\b", introduction, re.IGNORECASE):
+                continue
+            # Two escaped bullet boundaries or a blank paragraph between prose
+            # are strong signals. Sentence boundaries cover single-line prose
+            # whose author escaped every line, but require repeated evidence.
+            bullets = re.findall(escape + r"[ \t]*(?:[-*+] |\d+[.)] )", line)
+            paragraphs = re.split(escape + r"[ \t]*" + escape, line)
+            paragraph_signal = any(
+                len(re.findall(r"\b[A-Za-z]+\b", left)) >= 3
+                and len(re.findall(r"\b[A-Za-z]+\b", right)) >= 3
+                and re.search(r"[.!?]$", left.rstrip())
+                and re.match(r"[ \t]*[A-Z][a-z]+\b", right)
+                for left, right in zip(paragraphs, paragraphs[1:], strict=False)
+            )
+            sentences = re.findall(r"[.!?]" + escape + r"[ \t]*[A-Z][a-z]+ ", line)
+            if len(bullets) >= 2 or paragraph_signal or len(sentences) >= 2:
+                outcome = "No task was created" if creating else "No changes were saved"
+                raise TaskError(
+                    f"likely_double_escaped_specification: {field} contains likely "
+                    "double-escaped line breaks. Submit actual line breaks through your "
+                    f"JSON serializer without pre-escaping the text. {outcome}."
+                )
+
+    @staticmethod
     def _insert_task(
         db,
         project_id,
@@ -2412,11 +3379,18 @@ class Store:
         parent_group_id=None,
         source="agent",
         user_request="",
+        public_id=None,
+        specification_creating=True,
+        specification_prefix="",
     ):
         if not isinstance(title, str) or not title.strip() or not isinstance(body, str):
             raise TaskError("invalid_specification: title and description required")
         if not isinstance(acceptance_criteria, str):
             raise TaskError("invalid_specification: acceptance criteria must be text")
+        for field, value in (("body", body), ("acceptance_criteria", acceptance_criteria)):
+            Store._validate_specification_text(
+                value, specification_prefix + field, creating=specification_creating
+            )
         if not isinstance(source, str) or source not in {"agent", "user", "unknown"}:
             raise TaskError("invalid_source: agent, user or unknown")
         if not isinstance(user_request, str):
@@ -2427,7 +3401,7 @@ class Store:
             "WHERE project_id=? AND object_type='task'",
             (project_id,),
         ).fetchone()[0]
-        task_id = _id("tsk_")
+        task_id = Store._public_task_id(db, title, public_id)
         db.execute(
             """INSERT INTO tasks
             (id,project_id,title,body,acceptance_criteria,status,object_type,spec_revision,
@@ -2457,6 +3431,7 @@ class Store:
                 "unknown",
             ),
         )
+        Store._register_task_identity(db, task_id)
         return task_id
 
     @staticmethod
@@ -2502,8 +3477,27 @@ class Store:
         group_id=None,
         group_expected_revision=None,
         summary=None,
+        kind="task",
+        public_id=None,
     ):
+        if kind == "group":
+            if group_id is not None or group_expected_revision is not None:
+                raise TaskError("invalid_group: nested groups are not supported")
+            return self.create_group(
+                workstream_id,
+                title,
+                body,
+                acceptance_criteria,
+                summary,
+                project=project,
+                source=source,
+                user_request=user_request,
+                public_id=public_id,
+            )
+        if kind != "task":
+            raise TaskError("invalid_kind: use task or group")
         request = dict(
+            public_id=public_id,
             summary=summary,
             project=project,
             title=title,
@@ -2537,6 +3531,7 @@ class Store:
                 group_id,
                 source,
                 user_request,
+                public_id,
             )
             self._validate_summary(summary)
             db.execute(
@@ -2615,17 +3610,39 @@ class Store:
 
         return self._run("task.idea_captured", request, operation)
 
-    def update_task(self, task_id, expected_revision, changes, specification_etag=None):
+    def update_task(
+        self,
+        task_id,
+        expected_revision,
+        changes=None,
+        specification_etag=None,
+        group_id=None,
+        group_expected_revision=None,
+    ):
+        """Edit a task; group_id also attaches it to that shared group atomically."""
+        changes = {} if changes is None else changes
         request = dict(
             task_id=task_id,
             expected_revision=expected_revision,
             changes=changes,
             specification_etag=specification_etag,
         )
+        if group_id is not None:
+            request.update(group_id=group_id, group_expected_revision=group_expected_revision)
 
         def operation(db, scope):
             before = self._task(db, task_id, scope)
             self._revision(before, expected_revision)
+            group = None
+            if group_id is not None:
+                group = self._task(db, group_id, {})
+                if group_expected_revision is None:
+                    raise TaskError("group_revision_required: use the group's last revision")
+                self._revision(group, group_expected_revision)
+                if before["parent_group_id"] == group_id:
+                    group = None  # Already a member: membership is unchanged.
+                else:
+                    self._validate_group_member(db, group, before)
             allowed = {"title", "body", "acceptance_criteria", "summary"}
             if not isinstance(changes, dict) or set(changes) - allowed:
                 raise TaskError("invalid_patch: edit title, body, acceptance_criteria or summary")
@@ -2647,6 +3664,9 @@ class Store:
                 or any(not isinstance(after[k], str) for k in ("body", "acceptance_criteria"))
             ):
                 raise TaskError("invalid_specification")
+            for field in ("body", "acceptance_criteria"):
+                if field in changes:
+                    self._validate_specification_text(changes[field], field)
             spec_changed = any(before[k] != after[k] for k in allowed - {"summary"})
             if spec_changed:
                 after["spec_revision"] = before["spec_revision"] + 1
@@ -2658,7 +3678,11 @@ class Store:
                 before[k] != after[k] for k in ("summary", "summary_spec_revision")
             )
             after["summary_stale"] = self._summary_stale(after)
-            changed = spec_changed or summary_changed
+            if group is not None:
+                after["parent_group_id"] = group_id
+                group = {**group, "revision": group["revision"] + 1, "updated_at": timestamp()}
+                self._save_task(db, group)
+            changed = spec_changed or summary_changed or group is not None
             if changed:
                 after.update(
                     revision=before["revision"] + 1,
@@ -2666,6 +3690,13 @@ class Store:
                 )
                 self._save_task(db, after)
             scope.update(before=before, after=after)
+            membership = {}
+            if group_id is not None:
+                membership = {
+                    "group_id": group_id,
+                    "group_revision": self._task(db, group_id, {})["revision"],
+                    "group_changed": group is not None,
+                }
             token = (
                 {"specification_etag": self._specification_etag(after)}
                 if specification_etag == self._specification_etag(before)
@@ -2679,6 +3710,7 @@ class Store:
                     "summary_changed": summary_changed,
                     "spec_changed": spec_changed,
                 }
+                | membership
             )
 
         return self._run("task.updated", request, operation)
@@ -2722,53 +3754,6 @@ class Store:
 
         return self._run("task.disposition_changed", request, operation)
 
-    def propose_prerequisite(
-        self,
-        task_id,
-        expected_revision,
-        title,
-        body="",
-        acceptance_criteria="",
-        workstream_id=None,
-        milestone="review",
-    ):
-        """Atomically create and link a pending prerequisite in this scope or inbox."""
-        request = dict(
-            task_id=task_id,
-            expected_revision=expected_revision,
-            title=title,
-            body=body,
-            acceptance_criteria=acceptance_criteria,
-            workstream_id=workstream_id,
-            milestone=milestone,
-        )
-
-        def operation(db, scope):
-            self._validate_prerequisite_milestone(milestone)
-            before = self._task(db, task_id, scope)
-            self._revision(before, expected_revision)
-            self._require_mutable(db, before)
-            if workstream_id is not None:
-                self._workstream(db, workstream_id, before["project_id"])
-                if task_id not in self._scope_ids(db, workstream_id):
-                    raise TaskError("task_out_of_scope")
-            proposed_id = self._insert_task(
-                db, before["project_id"], title, body, acceptance_criteria
-            )
-            self._insert_prerequisite(db, task_id, proposed_id, milestone)
-            if workstream_id:
-                db.execute("INSERT INTO scope_members VALUES (?, ?)", (workstream_id, proposed_id))
-                self._touch_workstream(db, workstream_id)
-            after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
-            self._save_task(db, after)
-            scope.update(before=before, after={"task": after, "proposal_id": proposed_id})
-            return {
-                "task": self._details(db, after),
-                "proposal": self._details(db, self._task(db, proposed_id, {})),
-            }
-
-        return self._run("gate.prerequisite_proposed", request, operation)
-
     def add_unresolved(self, task_id, expected_revision, text, handling="active"):
         request = dict(
             task_id=task_id, expected_revision=expected_revision, text=text, handling=handling
@@ -2780,25 +3765,8 @@ class Store:
             self._require_mutable(db, before)
             if not isinstance(text, str) or not text.strip():
                 raise TaskError("invalid_unresolved_item")
-            if handling == "observer":
-                proposal = dict(
-                    id=_id("gat_"),
-                    task_id=task_id,
-                    gate_type="unresolved",
-                    detail=text,
-                    proposer=self.actor,
-                    created_at=timestamp(),
-                )
-                db.execute(
-                    "INSERT INTO gate_proposals "
-                    "(id,task_id,gate_type,detail,proposer,created_at) VALUES "
-                    "(:id,:task_id,:gate_type,:detail,:proposer,:created_at)",
-                    proposal,
-                )
-                scope["after"] = proposal
-                return proposal
             if handling not in {"active", "user"}:
-                raise TaskError("invalid_handling")
+                raise TaskError("invalid_handling: use active or user")
             after = {
                 **before,
                 "unresolved_items": before["unresolved_items"]
@@ -2862,26 +3830,8 @@ class Store:
                 raise TaskError("invalid_prerequisite")
             if dependency["status"] == "dropped":
                 raise TaskError("invalid_prerequisite: dropped work cannot satisfy a dependency")
-            if handling == "observer":
-                proposal = dict(
-                    id=_id("gat_"),
-                    task_id=task_id,
-                    gate_type="prerequisite",
-                    detail=blocked_by_id,
-                    proposer=self.actor,
-                    created_at=timestamp(),
-                    milestone=milestone,
-                )
-                db.execute(
-                    "INSERT INTO gate_proposals "
-                    "(id,task_id,gate_type,detail,proposer,created_at,milestone) VALUES "
-                    "(:id,:task_id,:gate_type,:detail,:proposer,:created_at,:milestone)",
-                    proposal,
-                )
-                scope["after"] = proposal
-                return proposal
             if handling not in {"active", "user"}:
-                raise TaskError("invalid_handling")
+                raise TaskError("invalid_handling: use active or user")
             if self._would_cycle(db, task_id, blocked_by_id):
                 raise TaskError("prerequisite_cycle")
             changed = self._insert_prerequisite(db, task_id, blocked_by_id, milestone)
@@ -2941,63 +3891,6 @@ class Store:
             return self._details(db, after) | {"changed": changed}
 
         return self._run("gate.prerequisite_removed", request, operation)
-
-    def accept_gate_proposal(self, proposal_id, expected_revision):
-        request = dict(proposal_id=proposal_id, expected_revision=expected_revision)
-
-        def operation(db, scope):
-            row = db.execute("SELECT * FROM gate_proposals WHERE id=?", (proposal_id,)).fetchone()
-            if not row:
-                raise TaskError("unknown_gate_proposal")
-            before = self._task(db, row["task_id"], scope)
-            self._revision(before, expected_revision)
-            self._require_mutable(db, before)
-            if row["gate_type"] == "unresolved":
-                after = {
-                    **before,
-                    "unresolved_items": before["unresolved_items"]
-                    + [{"id": _id("unr_"), "text": row["detail"]}],
-                }
-            else:
-                dependency = self._task(db, row["detail"], {})
-                if dependency["status"] == "dropped":
-                    raise TaskError("invalid_prerequisite")
-                if self._would_cycle(db, row["task_id"], row["detail"]):
-                    raise TaskError("prerequisite_cycle")
-                self._insert_prerequisite(db, row["task_id"], row["detail"], row["milestone"])
-                after = dict(before)
-            after.update(revision=before["revision"] + 1, updated_at=timestamp())
-            self._save_task(db, after)
-            db.execute("DELETE FROM gate_proposals WHERE id=?", (proposal_id,))
-            scope.update(before=before, after=after)
-            return self._details(db, after)
-
-        return self._run("gate.proposal_accepted", request, operation)
-
-    def dismiss_gate_proposal(self, proposal_id, expected_revision, note):
-        """Resolve a pending observer proposal without activating its gate."""
-        request = dict(proposal_id=proposal_id, expected_revision=expected_revision, note=note)
-
-        def operation(db, scope):
-            row = db.execute("SELECT * FROM gate_proposals WHERE id=?", (proposal_id,)).fetchone()
-            if not row:
-                raise TaskError("unknown_gate_proposal")
-            before = self._task(db, row["task_id"], scope)
-            self._revision(before, expected_revision)
-            self._require_mutable(db, before)
-            if not isinstance(note, str) or not note.strip():
-                raise TaskError("decision_note_required")
-            proposal = dict(row)
-            after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
-            self._save_task(db, after)
-            db.execute("DELETE FROM gate_proposals WHERE id=?", (proposal_id,))
-            scope.update(
-                before={"task": before, "proposal": proposal},
-                after={"task": after, "dismissed_proposal": proposal, "note": note.strip()},
-            )
-            return self._details(db, after)
-
-        return self._run("gate.proposal_dismissed", request, operation)
 
     @staticmethod
     def _validate_prerequisite_milestone(milestone):
@@ -3073,8 +3966,6 @@ class Store:
                 raise TaskError("invalid_group: resume the task before decomposition")
             if before["unresolved_items"]:
                 raise TaskError("unresolved_items: settle them before decomposition")
-            if db.execute("SELECT 1 FROM gate_proposals WHERE task_id=?", (task_id,)).fetchone():
-                raise TaskError("gate_proposals: resolve proposed gates before decomposition")
             if db.execute("SELECT 1 FROM attempts WHERE task_id=?", (task_id,)).fetchone():
                 raise TaskError("attempt_exists: cannot decompose after implementation")
             if not isinstance(members, list) or not 1 <= len(members) <= 20:
@@ -3096,7 +3987,7 @@ class Store:
             ).fetchall():
                 self._touch_workstream(db, row["workstream_id"])
             children = []
-            for member in members:
+            for index, member in enumerate(members):
                 child_id = self._insert_task(
                     db,
                     before["project_id"],
@@ -3104,6 +3995,9 @@ class Store:
                     member.get("body", ""),
                     member.get("acceptance_criteria", ""),
                     task_id,
+                    public_id=member.get("public_id"),
+                    specification_creating=False,
+                    specification_prefix=f"members[{index}].",
                 )
                 self._copy_prerequisites(db, child_id, task_id)
                 children.append(child_id)
@@ -3327,10 +4221,32 @@ class Store:
             reasons.append("signoff")
         return reasons
 
-    def get_next_action(self, workstream_id):
+    @staticmethod
+    def _pick_cutoff():
+        """Picks at or after this time are recent enough to count as work in progress."""
+        return (
+            (datetime.now(UTC) - PICK_TTL).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        )
+
+    @staticmethod
+    def _live_picks(db, task_id, workstream_id=None):
+        """Recent picks of a task with no result or review in that workstream since."""
+        rows = db.execute(
+            "SELECT p.workstream_id, p.action, p.picked_at FROM task_picks p "
+            "WHERE p.task_id=? AND p.picked_at>=? "
+            + ("AND p.workstream_id=? " if workstream_id else "")
+            + "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.task_id=p.task_id "
+            "AND a.workstream_id=p.workstream_id AND a.updated_at>=p.picked_at) "
+            "ORDER BY p.picked_at DESC, p.workstream_id",
+            (task_id, Store._pick_cutoff()) + ((workstream_id,) if workstream_id else ()),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_next_action(self, workstream_id, include_archived=False):
         """One autonomous action in workstream order; selected proof is local/current only."""
 
         def operation(db, scope):
+            self._validate_include_archived(include_archived)
             ws = self._workstream(db, workstream_id)
             scope["project_id"] = ws["project_id"]
             ids = self._ordered_scope_ids(db, workstream_id)
@@ -3340,7 +4256,18 @@ class Store:
                 "attempt": None,
                 "workstream_order_revision": ws["order_revision"],
                 "diagnostics": {"scope_empty": not ids, "scoped": len(ids)},
+                **({"archive": ws["archive"]} if self._archived(ws) else {}),
             }
+            if self._archived(ws) and not include_archived:
+                # An archived workstream offers no action unless explicitly included.
+                return result | {
+                    "diagnostics": result["diagnostics"] | {"workstream_archived": True},
+                    "message": (
+                        f"Workstream {ws['name']!r} is archived ({ws['archive']['reason']}); "
+                        "no action is selected. Pass include_archived=true to select one "
+                        f"anyway, or unarchive it with {self._archive_hint(ws)}"
+                    ),
+                }
             counts = dict.fromkeys(
                 (
                     "inbox",
@@ -3369,16 +4296,26 @@ class Store:
                             selected["concerns"] = [
                                 c for c in selected["concerns"] if c["attempt_id"] != proof["id"]
                             ]
-                        return result | {
-                            "action": "review" if pending else "implement",
-                            "task": selected,
-                            "attempt": proof,
-                        }
+                        action = "review" if pending else "implement"
+                        # Information only: nothing skips or locks a picked task.
+                        db.execute(
+                            "DELETE FROM task_picks WHERE picked_at<?", (self._pick_cutoff(),)
+                        )
+                        db.execute(
+                            "INSERT OR REPLACE INTO task_picks "
+                            "(task_id,workstream_id,action,picked_at) VALUES (?,?,?,?)",
+                            (task["id"], workstream_id, action, timestamp()),
+                        )
+                        return result | {"action": action, "task": selected, "attempt": proof}
                 for reason in reasons:
                     counts[reason] += 1
             return result | {"diagnostics": result["diagnostics"] | counts}
 
-        return self._run("task.next_action_read", {"workstream_id": workstream_id}, operation)
+        return self._run(
+            "task.next_action_read",
+            {"workstream_id": workstream_id, "include_archived": include_archived},
+            operation,
+        )
 
     @staticmethod
     def _local_attempt(db, task, workstream_id, state):
@@ -3444,7 +4381,10 @@ class Store:
                     for ref in artifacts
                 )
             ):
-                raise TaskError("durable_artifacts_required: concrete artifact/commit references")
+                raise TaskError(
+                    "durable_artifacts_required: a non-empty list of {kind, reference} where "
+                    "kind is artifact or commit and reference is a non-empty path, URL or hash"
+                )
             recorded_concerns = self._validate_concerns(concerns, "implementer", implementer)
             now = timestamp()
             attempt = dict(
@@ -3649,13 +4589,21 @@ class Store:
             row = db.execute(
                 "SELECT * FROM attempts WHERE id=? AND task_id=?", (attempt_id, task_id)
             ).fetchone()
+            # An explicit user approval may accept a result awaiting independent review.
+            unreviewed = decision == "approve" and row is not None and row["state"] == "review"
             if (
                 not row
-                or row["state"] not in {"passed", "human_review"}
+                or (row["state"] not in {"passed", "human_review"} and not unreviewed)
                 or row["spec_revision"] != before["spec_revision"]
             ):
                 raise TaskError(
-                    "review_required: select a current-spec passed or human-reviewed attempt"
+                    "review_required: select a current-spec passed or human-reviewed attempt "
+                    "(approve alone also accepts one awaiting independent review)"
+                )
+            if unreviewed and (not reasons or not reasons.strip()):
+                raise TaskError(
+                    "reasons_required: approving without independent review needs reasons "
+                    "stating the user's explicit approval"
                 )
             attempt = dict(row)
             if (
@@ -3664,11 +4612,28 @@ class Store:
             ):
                 raise TaskError("revision_conflict: re-read the selected attempt")
             after = {**before, "revision": before["revision"] + 1, "updated_at": timestamp()}
-            unresolved_id = None
+            unresolved_id = open_prerequisites = None
             if decision == "approve":
-                if before["unresolved_items"] or self._unsatisfied_prerequisite(db, before["id"]):
-                    raise TaskError("task_not_ready_for_signoff")
+                if before["unresolved_items"]:
+                    raise TaskError(
+                        "task_not_ready_for_signoff: answer the open questions first, "
+                        "or choose rework, revise or drop"
+                    )
+                # The user judges whether an unsatisfied prerequisite affects the verdict;
+                # the decision records which ones were still open.
+                open_prerequisites = [
+                    {k: ref[k] for k in ("id", "title", "milestone", "state")}
+                    for ref in self._prerequisite_references(db, before["id"])
+                    if ref["blocking"]
+                ]
                 after.update(status="done", selected_attempt_id=attempt_id)
+                if unreviewed:
+                    # The user's explicit approval is the review of record for this result.
+                    db.execute(
+                        "UPDATE attempts SET state='human_review', human_review_note=?, "
+                        "revision=revision+1, updated_at=? WHERE id=?",
+                        (reasons, after["updated_at"], attempt_id),
+                    )
             elif decision == "rework":
                 after["status"] = "rework"
                 db.execute(
@@ -3694,40 +4659,110 @@ class Store:
                 "reasons": reasons,
                 "disposition": after["status"],
                 "resulting_task_revision": after["revision"],
-                "resulting_attempt_revision": attempt["revision"] + (decision == "rework"),
+                "resulting_attempt_revision": attempt["revision"]
+                + (decision == "rework" or unreviewed),
                 "unresolved_id": unresolved_id,
+                "independent_review": row["state"] == "passed",
             }
+            if open_prerequisites is not None:
+                recorded["open_prerequisites"] = open_prerequisites
             self._save_task(db, after)
             scope.update(before=before, after={**after, "signoff_decision": recorded})
-            return self._task_ack(db, after) | {
+            ack = self._task_ack(db, after) | {
                 "attempt_id": attempt_id,
                 "attempt_revision": recorded["resulting_attempt_revision"],
-                "attempt_state": "rework" if decision == "rework" else attempt["state"],
+                "attempt_state": "rework"
+                if decision == "rework"
+                else "human_review"
+                if unreviewed
+                else attempt["state"],
+                "independent_review": row["state"] == "passed",
                 "selected_attempt_id": after["selected_attempt_id"],
                 "decision": decision,
                 "unresolved_id": unresolved_id,
             }
+            if open_prerequisites is not None:
+                ack["open_prerequisites"] = open_prerequisites
+            return ack
 
         return self._run("task.signoff", request, operation)
 
-    def list_tasks(self, project, workstream_id=None, state=None, limit=20, offset=0):
+    @staticmethod
+    def _hidden_counts(tasks):
+        counts = {status: 0 for status in INACTIVE_STATUSES}
+        for task in tasks:
+            counts[task["status"]] += 1
+        return {status: count for status, count in counts.items() if count}
+
+    def list_tasks(
+        self,
+        project=None,
+        workstream_id=None,
+        state=None,
+        limit=20,
+        offset=0,
+        include_inactive=False,
+        include=None,
+        full_cards=False,
+        group_id=None,
+    ):
+        """Board of active work; full_cards is the viewer's internal unabridged projection.
+
+        state="group" lists shared groups instead of tasks (those in the workstream's scope,
+        or related to the project, or all); group_id lists that group's members.
+        """
         request = dict(
-            project=project, workstream_id=workstream_id, state=state, limit=limit, offset=offset
+            project=project,
+            workstream_id=workstream_id,
+            state=state,
+            limit=limit,
+            offset=offset,
+            include_inactive=include_inactive,
+            include=include,
         )
+        if full_cards:
+            request["full_cards"] = True
+        if group_id is not None:
+            request["group_id"] = group_id
 
         def operation(db, scope):
             self._page(limit, offset)
-            project_id = self._project(db, project, scope)["id"]
+            self._validate_include_inactive(include_inactive)
+            self._validate_state_filter(state)
+            groups = self._include_groups(include)
+            if group_id is not None:
+                group = self._task(db, group_id, {})
+                if group["object_type"] != "group":
+                    raise TaskError("invalid_group")
+                if state == "group":
+                    raise TaskError("invalid_state: groups have no group members")
+            if project is None and group_id is None and state != "group":
+                raise TaskError("project_required: name the project, or pass group_id")
+            project_id = self._project(db, project, scope)["id"] if project is not None else None
+            if state == "group":
+                result = self._group_listing(db, project_id, workstream_id, limit, offset, groups)
+                scope["project_id"] = result["project_id"]
+                return result
             if workstream_id is not None:
-                self._workstream(db, workstream_id, project_id)
-                cards = self._scoped_queue(db, workstream_id)
+                project_id = self._workstream(db, workstream_id, project_id)["project_id"]
+                identities = self._ordered_scope_ids(db, workstream_id)
                 ordering = {
                     "workstream_id": workstream_id,
                     "workstream_order_revision": self._order_revision(db, workstream_id),
                 }
+            elif project_id is None:
+                # Shared group members across projects, in creation order.
+                identities = [
+                    row["id"]
+                    for row in db.execute(
+                        "SELECT id FROM tasks WHERE parent_group_id=? ORDER BY created_at,id",
+                        (group_id,),
+                    )
+                ]
+                ordering = {"ordering": "group_creation"}
             else:
-                cards = [
-                    self._card(db, self._task(db, row["id"], {}))
+                identities = [
+                    row["id"]
                     for row in db.execute(
                         "SELECT id FROM tasks WHERE project_id=? AND object_type='task' "
                         "ORDER BY order_key,id",
@@ -3735,20 +4770,89 @@ class Store:
                     )
                 ]
                 ordering = {"ordering": "project_baseline"}
-            result = [
-                card
-                for card in cards
-                if not state
-                or state == card.get("view", self._status_view(card, card["gate_diagnostics"]))
-            ]
+            tasks = [self._task(db, identity, {}) for identity in identities]
+            positions = {task["id"]: index for index, task in enumerate(tasks, 1)}
+            if group_id is not None:
+                tasks = [t for t in tasks if t["parent_group_id"] == group_id]
+                ordering["group_id"] = group_id
+            # An explicit closed state filter is itself the request to list closed work.
+            show_inactive = include_inactive or state in INACTIVE_STATUSES
+            hidden = [] if show_inactive else [t for t in tasks if t["status"] in INACTIVE_STATUSES]
+            tasks = [t for t in tasks if show_inactive or t["status"] not in INACTIVE_STATUSES]
+            fulls = {}
+            if state:
+                selected = []
+                for task in tasks:
+                    full = fulls[task["id"]] = self._card(db, task, workstream_id)
+                    view, word = self._card_view(db, task, full, workstream_id)
+                    if self._state_matches(state, view, word):
+                        selected.append(task)
+            else:
+                selected = tasks
+            page = self._paged(selected[offset : offset + limit + 1], limit, offset)
+            cache = {workstream_id: positions} if workstream_id else {}
+            items = []
+            for task in page["items"]:
+                full = fulls.get(task["id"]) or self._card(db, task, workstream_id)
+                if full_cards:
+                    items.append(
+                        full | {"workstream_order_key": positions[task["id"]]}
+                        if workstream_id
+                        else full
+                    )
+                else:
+                    items.append(
+                        self._board_card(db, task, workstream_id, groups, full=full, cache=cache)
+                    )
             return {
                 "project_id": project_id,
                 **ordering,
-                "total": len(result),
-                **self._paged(result[offset : offset + limit + 1], limit, offset),
+                "total": len(selected),
+                **({} if show_inactive or state else {"hidden": self._hidden_counts(hidden)}),
+                **page,
+                "items": items,
             }
 
         return self._run("tasks.listed", request, operation)
+
+    def _group_listing(self, db, project_id, workstream_id, limit, offset, include):
+        """Shared groups as slim cards: in scope, related to a project, or all."""
+        if workstream_id is not None:
+            project_id = self._workstream(db, workstream_id, project_id)["project_id"]
+            rows = db.execute(
+                "SELECT g.id FROM tasks g JOIN scope_groups s ON s.group_id=g.id "
+                "WHERE s.workstream_id=? AND g.object_type='group' AND NOT EXISTS "
+                "(SELECT 1 FROM scope_exclusions e WHERE e.workstream_id=s.workstream_id "
+                "AND e.task_id=g.id) ORDER BY g.created_at,g.id",
+                (workstream_id,),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT g.id FROM tasks g WHERE g.object_type='group' "
+                + (
+                    "AND (g.project_id=? OR EXISTS (SELECT 1 FROM tasks child "
+                    "WHERE child.parent_group_id=g.id AND child.project_id=?) "
+                    "OR EXISTS (SELECT 1 FROM scope_groups s JOIN workstreams w "
+                    "ON w.id=s.workstream_id WHERE s.group_id=g.id AND w.project_id=?)) "
+                    if project_id
+                    else ""
+                )
+                + "ORDER BY g.created_at,g.id",
+                (project_id,) * 3 if project_id else (),
+            ).fetchall()
+        identities = [row["id"] for row in rows]
+        page = self._paged(identities[offset : offset + limit + 1], limit, offset)
+        return {
+            "project_id": project_id,
+            **({"workstream_id": workstream_id} if workstream_id else {}),
+            "ordering": "group_creation",
+            "total": len(identities),
+            **page,
+            "items": [
+                self._board_card(db, self._task(db, identity, {}), workstream_id, include)
+                for identity in page["items"]
+            ],
+        }
 
     def _markdown_export(self, db, project, ws, ids, include_closed):
         tasks = []

@@ -150,12 +150,8 @@ def test_shared_group_live_exclusion_membership_revision_and_cycle(tmp_path):
     current = store.get_tasks([group_id])["items"][0]
     next_member = local_task(store, b, "Next", group_id, current["revision"])
     assert store.workstream_status(ws_b)["items"][0]["id"] == next_member["id"]
-    assert (
-        existing["id"]
-        not in store.preflight(b["project"]["id"], str(tmp_path / "beta"), branch="feature")[
-            "scope"
-        ]
-    )
+    scoped = store.list_tasks(b["project"]["id"], ws_b, include_inactive=True)["items"]
+    assert existing["id"] not in {card["id"] for card in scoped}
     blocked = store.add_prerequisite(
         other["id"], store.get_tasks([other["id"]])["items"][0]["revision"], group_id
     )
@@ -234,13 +230,12 @@ def test_group_membership_and_last_signoff_are_serialized(tmp_path):
     assert detail["progress"]["done"] == 1
 
 
-def test_group_prerequisite_proposal_and_nested_group_rejection(tmp_path):
+def test_group_prerequisite_and_nested_group_rejection(tmp_path):
     store = Store(tmp_path / "tasks.sqlite3")
     a, b, _ = contexts(store, tmp_path)
     group = store.create_group(a["workstream"]["id"], "Shared gate")
     target = local_task(store, b, "Target")
-    proposal = store.add_prerequisite(target["id"], 1, group["id"], handling="observer")
-    accepted = store.accept_gate_proposal(proposal["id"], 1)
+    accepted = store.add_prerequisite(target["id"], 1, group["id"])
     assert accepted["blocked_by"] == [group["id"]]
     with pytest.raises(TaskError, match="invalid_member"):
         store.add_group_member(group["id"], group["revision"], group["id"], group["revision"])
@@ -346,7 +341,9 @@ def test_legacy_populated_database_migrates_without_losing_ids(tmp_path):
     assert detail[0]["members"] == [child_id]
     assert detail[1]["attempts"][0]["id"] == "att_legacy"
     assert detail[1]["workstream_ids"] == []
-    assert child_id not in store.preflight("prj_legacy", "/legacy", branch="main")["scope"]
+    legacy_ws = store.init("/legacy", "main")["workstream"]["id"]
+    scoped = store.list_tasks("prj_legacy", legacy_ws, include_inactive=True)["items"]
+    assert child_id not in {card["id"] for card in scoped}
     assert store.get_tasks([blocker_id])["items"][0]["blocked_by"] == [group_id]
     assert store.list_events("prj_legacy", child_id)["items"][0]["action"] == "test"
     with sqlite3.connect(database) as check:

@@ -31,6 +31,8 @@ def create(context, title, shared=True, **kwargs):
 
 
 def board(context, ws=None, **kwargs):
+    # Ordering covers every member; closed tasks keep their positions.
+    kwargs.setdefault("include_inactive", True)
     return context[0].list_tasks(context[1], workstream_id=ws or context[2], **kwargs)
 
 
@@ -134,10 +136,18 @@ def test_independent_lists_completed_metadata_and_consistent_consumers(context):
             < content.index("Done", content.index("Last"))
             < content.index("First", content.index("Done", content.index("Last")))
         )
-    baseline = store.list_tasks(project)
+    baseline = store.list_tasks(project, include_inactive=True)
     assert baseline["ordering"] == "project_baseline"
     assert "workstream_order_revision" not in baseline and "project_order_revision" not in baseline
     assert [t["id"] for t in baseline["items"]] == [done["id"], first["id"], last["id"]]
+    active = store.list_tasks(project)
+    assert [t["id"] for t in active["items"]] == [first["id"], last["id"]]
+    assert active["hidden"] == {"done": 1} and active["total"] == 2
+    # Positions keep the whole workstream order while closed work is hidden.
+    assert [(t["id"], t["position"]) for t in board(context, include_inactive=False)["items"]] == [
+        (last["id"], 1),
+        (first["id"], 3),
+    ]
     after = business_rows(store)
     for table in (
         "projects",

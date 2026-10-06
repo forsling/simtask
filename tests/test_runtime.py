@@ -71,9 +71,9 @@ def test_live_stdio_identity_is_read_only_frozen_and_changes_on_restart(tmp_path
                 assert not result.is_error, result.content
                 return result.structured_content
 
-            with sqlite3.connect(database) as db:
-                before = db.execute("SELECT * FROM events").fetchall()
-            identity = await call("runtime_info")
+            discovered = await call("init", path=str(tmp_path), branch="main")
+            assert discovered["state"] == "unregistered_checkout"
+            identity = discovered["runtime"]
             assert identity["package_version"] == version("task-mcp")
             assert identity["source_identifier"] == source_identifier(package)
             assert identity["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION
@@ -83,12 +83,7 @@ def test_live_stdio_identity_is_read_only_frozen_and_changes_on_restart(tmp_path
             assert Path(identity["python_executable"]).resolve() == Path(sys.executable).resolve()
             started = datetime.fromisoformat(identity["process_started_at"])
             assert before_start <= started <= datetime.now(UTC)
-            assert await call("runtime_info") == identity
-            with sqlite3.connect(database) as db:
-                assert db.execute("SELECT * FROM events").fetchall() == before
-            discovered = await call("init", path=str(tmp_path), branch="main")
-            assert discovered["state"] == "unregistered_checkout"
-            assert discovered["runtime"] == identity
+            assert (await call("init", path=str(tmp_path), branch="main"))["runtime"] == identity
             setup = await call(
                 "init", path=str(tmp_path), branch="main", action="create_project", confirmed=True
             )
@@ -99,11 +94,11 @@ def test_live_stdio_identity_is_read_only_frozen_and_changes_on_restart(tmp_path
             with (package / "server.py").open("a") as source:
                 source.write("\n# Simulated editable-install update\n")
             assert source_identifier(package) != identity["source_identifier"]
-            assert await call("runtime_info") == identity
+            assert (await call("init", path=str(tmp_path), branch="main"))["runtime"] == identity
         async with Client(parameters, read_timeout_seconds=30) as restarted:
-            result = await restarted.call_tool("runtime_info", {})
+            result = await restarted.call_tool("init", {"path": str(tmp_path), "branch": "main"})
             assert not result.is_error
-            current = result.structured_content
+            current = result.structured_content["runtime"]
             assert current["source_identifier"] == source_identifier(package)
             assert current["source_identifier"] != identity["source_identifier"]
             assert current["process_started_at"] > identity["process_started_at"]

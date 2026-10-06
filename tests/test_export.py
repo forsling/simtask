@@ -94,7 +94,7 @@ def test_export_workflow_views_match_scoped_queue(context):
         task = create(context, disposition.title())
         store.set_disposition(task["id"], 1, disposition, "Test disposition")
     text = store.export_workstream(ws)["content"]
-    queue = store.list_tasks(project, ws)["items"]
+    queue = store.list_tasks(project, ws, include_inactive=True, include=["ids"])["items"]
     assert {item["view"] for item in queue} == {
         "ready",
         "unresolved_items",
@@ -115,7 +115,7 @@ def test_export_workflow_views_match_scoped_queue(context):
     assert "selected signed-off result" in task_section(text, "Done")
     filtered = store.export_workstream(ws, include_closed=False)["content"]
     assert "Exported tasks: 7 of 9" in filtered
-    assert done["id"] not in filtered
+    assert f"- ID: `{done['id']}`" not in filtered
     assert "### Dropped" not in filtered
     assert "### Deferred" in filtered
     assert "```json" not in text
@@ -132,7 +132,13 @@ def test_export_readable_questions_prerequisites_proposals_and_prose(context):
     task = store.add_prerequisite(task["id"], 1, satisfied["id"])
     task = store.add_prerequisite(task["id"], task["revision"], blocked["id"])
     task = store.add_unresolved(task["id"], task["revision"], "Choose a version\nExplain why")
-    store.add_unresolved(task["id"], task["revision"], "Observer concern", handling="observer")
+    # Observer proposals are no longer created; a legacy row still exports read-only.
+    with sqlite3.connect(store.path) as db:
+        db.execute(
+            "INSERT INTO gate_proposals (id,task_id,gate_type,detail,proposer,created_at) "
+            "VALUES ('gat_legacy',?,'unresolved','Observer concern','older-server',?)",
+            (task["id"], "2026-01-01T00:00:00Z"),
+        )
     revision = store.list_workstreams()["items"][0]["revision"]
     store.set_scope(ws, revision, f"{ws} +{task['id']}")
     text = store.export_workstream(ws)["content"]

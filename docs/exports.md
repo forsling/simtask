@@ -6,16 +6,15 @@ tasks and review decisions are fictional.
 
 ## Getting a report
 
-Call `export_workstream` with the workstream ID. Optional arguments:
+Export is a CLI surface; it is not an MCP tool. Pass the workstream ID:
 
-| Argument | Default | Meaning |
+| Option | Default | Meaning |
 | --- | --- | --- |
-| `include_closed` | `true` | Set `false` to omit done and dropped tasks; deferred tasks remain. |
-| `format` | `markdown` | Human-readable `task-mcp/v5`, or `legacy` for the previous `task-mcp/v1` layout. |
+| `--exclude-closed` | off | Omit done and dropped tasks; deferred tasks remain. |
+| `--export-format` | `markdown` | Human-readable `task-mcp/v5`, or `legacy` for the previous `task-mcp/v1` layout. |
 
-The response contains `format`, `content` and `sha256`. The digest is SHA-256 of
-the UTF-8 content, including its final newline. MCP returns the document as a
-string; the CLI writes the same content to stdout:
+The CLI writes the document to stdout. The underlying Store export also returns
+`format` and `sha256`, the SHA-256 of the UTF-8 content including its final newline:
 
 ```sh
 task-mcp --export-workstream wst_your_workstream_id
@@ -25,9 +24,8 @@ task-mcp --export-workstream wst_your_workstream_id --export-format legacy
 
 `--export-format` and `--exclude-closed` require `--export-workstream`. To save
 the returned text, choose a destination explicitly in your client. The service
-does not write an export file or restore any retired project ledgers. Existing
-MCP connections need to discover the updated tool schema before using the new
-`format` argument; the CLI does not depend on a client's cached schema.
+does not write an export file or restore any retired project ledgers. The CLI
+does not depend on a client's cached tool schema.
 
 ## Reading the report
 
@@ -46,10 +44,12 @@ MCP connections need to discover the updated tool schema before using the new
   Proposed gates are explicitly nonblocking until accepted.
 - Latest rejection shows the actual review/signoff reasons with its originating
   attempt, workstream, specification and timestamp. Signoff history records actual
-  verdicts/reasons and preserves historical defer/judgment fields.
+  verdicts/reasons, any prerequisites still open when approved, and preserves
+  historical defer/judgment fields.
 - Implementation history includes results, evidence, review notes and optional
-  nonblocking value/design concerns labelled with source and author. Attempts
-  for superseded specifications or other workstreams are labelled accordingly.
+  nonblocking worth-doing/approach concerns (stored kinds value/design) labelled
+  with source and author. Attempts for superseded specifications or other
+  workstreams are labelled accordingly.
   The selected signed-off attempt is identified on completed tasks. These
   labels do not invent a new review or sign-off verdict.
 

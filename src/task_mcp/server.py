@@ -27,10 +27,19 @@ class TaskPatch(BaseModel):
     summary: str | None = None
 
 
+CardInclude = Literal["blockers", "attempt", "concerns", "workstreams", "ids"]
+
+
 class ConcernInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["value", "design"]
     text: str
+
+
+class ArtifactInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["artifact", "commit"]
+    reference: str
 
 
 def domain_errors(function):
@@ -67,13 +76,14 @@ def create_server(
         "task-mcp",
         version=RUNTIME_IDENTITY["package_version"],
         instructions=(
-            "Explicit user instructions override workflow guidance. Init the target "
-            "checkout/branch; retain its IDs and last returned revisions. Workstreams have "
-            "nonexclusive memberships and independent order; inclusion starts no implementation. "
-            "Fetch get_default_skills(name=...) on demand: init for setup, feature-capture for "
-            "'add a design task', feature-design for 'let's design X'/'review design tasks', "
-            "proposal-review for ordinary proposals/questions, superdevloop for implementation "
-            "and independent review, signoff for reviewed-result walkthroughs and user verdicts."
+            "The user directs the work: explicit user instructions override all workflow "
+            "guidance.\n"
+            "Call init first for the checkout and branch, and read the notes it returns.\n"
+            "Workflows are skills read with get_default_skills: superdevloop, task-signoff, "
+            "task-capture, task-design, proposal-review and init.\n"
+            "Basic loop: pick up a task (get_next_action), implement it, record_result, "
+            "independent review (record_review), then the user's sign-off (signoff_task).\n"
+            "Pass the last revision each write returned; no confirming read is needed."
         ),
         lifespan=lifespan,
     )
@@ -93,45 +103,53 @@ def create_server(
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     )
 
-    @server.tool(annotations=catalog, structured_output=True)
-    def runtime_info() -> dict[str, Any]:
-        """Read startup-frozen runtime identity and the current database schema revision.
+    def tool(annotations: ToolAnnotations):
+        """Register a tool described by its docstring, unwrapped into one paragraph."""
 
-        No task state or audit event is written. Compare this identity after
-        reconnecting to distinguish an old server process from a stale tool catalog.
+        def register(function):
+            description = " ".join((function.__doc__ or "").split())
+            return server.tool(
+                annotations=annotations, structured_output=True, description=description
+            )(function)
+
+        return register
+
+    def runtime_identity() -> dict[str, Any]:
+        """Startup-frozen runtime identity and the current database schema revision.
+
+        init returns it as its runtime block; no separate tool or audit event is needed.
         """
         return {
             **RUNTIME_IDENTITY,
             "database_schema_revision": store.database_schema_revision(),
         }
 
-    @server.tool(
-        annotations=ToolAnnotations(
+    @tool(
+        ToolAnnotations(
             read_only_hint=False,
             destructive_hint=False,
             idempotent_hint=True,
             open_world_hint=False,
-        ),
-        structured_output=True,
+        )
     )
     @domain_errors
     def open_task_viewer() -> dict[str, Any]:
-        """Explicitly start/reuse a protected loopback editor; return its private browser link.
-
-        The companion outlives this stdio session. Stop it in the UI or with
-        task-mcp ui --stop. This adds a local listener to whole-server trust.
+        """Start or reuse the local browser viewer and editor and return its private link. It
+        outlives this session; stop it in the viewer or with `task-mcp ui --stop`.
         """
         from task_mcp.viewer import launch_viewer
 
         return launch_viewer(store.path)
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def list_projects(limit: int = 20, offset: int = 0) -> dict[str, Any]:
-        """Discover initialized project IDs, names and canonical paths."""
+        """List initialized projects with their IDs, names and checkout paths. Listing selects no
+        project; call init for the checkout you work in.
+        """
         return store.list_projects(limit, offset)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def init(
         path: str,
@@ -146,8 +164,14 @@ def create_server(
         scope_expression: str = "none",
         expected_revision: int | None = None,
         confirmed: bool = False,
+        include_inactive: bool = False,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
-        """Discover or resume a checkout binding; confirmed actions change setup atomically."""
+        """Call first with an absolute checkout path and branch (workstream_name if detached);
+        ready returns cards, notes and runtime, else repeat with a returned choice and
+        confirmed=true. workstream_id checks the binding. A new workstream's scope_expression:
+        none or a base workstream, then +/-task/group.
+        """
         result = store.init(
             path,
             branch,
@@ -158,121 +182,70 @@ def create_server(
             scope_expression,
             expected_revision,
             confirmed,
+            include_inactive,
+            include_archived,
         )
-        return {**result, "runtime": runtime_info()}
+        return {**result, "runtime": runtime_identity()}
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(editing)
     @domain_errors
-    def init_project(
-        path: str,
-        branch: str | None = None,
-        workstream_name: str | None = None,
-        confirmed: bool = False,
+    def set_note(
+        kind: Literal["project", "workstream"],
+        target_id: str,
+        expected_revision: int,
+        text: str,
     ) -> dict[str, Any]:
-        """Explicitly initialize a project and default workstream after user confirmation."""
-        return store.compact_call("init_project", path, branch, workstream_name, confirmed)
+        """Replace a personal, uncommitted project or workstream note (at most 2,000 characters;
+        empty clears). Update the workstream note when the live state it describes changes or
+        the user directs, rewriting rather than appending. expected_revision is the note's, or
+        0.
+        """
+        return store.set_note(kind, target_id, expected_revision, text)
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(editing)
     @domain_errors
-    def attach_checkout(project: str, path: str, confirmed: bool = False) -> dict[str, Any]:
-        """Attach another canonical checkout path to an existing project."""
-        return store.compact_call("attach_checkout", project, path, confirmed)
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def init_workstream(
-        project: str,
-        path: str,
-        branch: str | None = None,
-        name: str | None = None,
-        scope_expression: str = "none",
-        confirmed: bool = False,
+    def archive_workstream(
+        workstream_id: str, expected_revision: int, reason: str, archived: bool = True
     ) -> dict[str, Any]:
-        """Initialize a distinct workstream and explicit initial scope."""
-        return store.compact_call(
-            "init_workstream", project, path, branch, name, scope_expression, confirmed
-        )
+        """Archive a stale workstream with a reason when the user directs (archived=false
+        restores it). Archived workstreams are hidden unless include_archived=true; tasks,
+        memberships and history are unchanged. expected_revision is archive.revision, or 0.
+        """
+        return store.archive_workstream(workstream_id, expected_revision, reason, archived)
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def list_workstreams(
-        project: str | None = None, limit: int = 20, offset: int = 0
+        project: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
-        """List workstreams globally or by project with task counts, not agent liveness."""
-        return store.list_workstreams(project, limit, offset)
+        """List workstreams, globally or for one project, with task counts. Archived workstreams
+        are only counted (archived_hidden) unless include_archived=true.
+        """
+        return store.list_workstreams(project, limit, offset, include_archived)
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def workstream_status(
-        workstream_id: str, limit: int = 20, offset: int = 0, include_scope: bool = False
+        workstream_id: str,
+        limit: int = 20,
+        offset: int = 0,
+        include_scope: bool = False,
+        include_inactive: bool = False,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
-        """Read a paged local task list and current concern refs, with counts and no prose.
-
-        concern_tasks is separately paged at limit/offset, prioritizing awaiting sign-off.
-        include_scope=true also pages explicit scope.
+        """Page one workstream's active cards with counts and its tasks with concerns, awaiting
+        sign-off first. Closed tasks are only counted unless include_inactive=true;
+        include_scope pages explicit scope; archived workstreams list nothing unless
+        include_archived=true.
         """
-        return store.workstream_status(workstream_id, limit, offset, include_scope)
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def list_groups(project: str | None = None, limit: int = 20, offset: int = 0) -> dict[str, Any]:
-        """Discover shared groups globally or through a member/scoped project."""
-        return store.list_groups(project, limit, offset)
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def create_group(
-        workstream_id: str,
-        title: str,
-        body: str = "",
-        acceptance_criteria: str = "",
-        summary: str | None = None,
-    ) -> dict[str, Any]:
-        """Create an empty global group and include it in this workstream's scope."""
-        return store.compact_call(
-            "create_group", workstream_id, title, body, acceptance_criteria, summary
+        return store.workstream_status(
+            workstream_id, limit, offset, include_scope, include_inactive, include_archived
         )
 
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def add_group_member(
-        group_id: str, expected_revision: int, task_id: str, expected_task_revision: int
-    ) -> dict[str, Any]:
-        """Atomically attach a local task to a shared group with revision checks."""
-        return store.compact_call(
-            "add_group_member", group_id, expected_revision, task_id, expected_task_revision
-        )
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def rebind_workstream(
-        workstream_id: str,
-        expected_revision: int,
-        path: str,
-        branch: str | None = None,
-        name: str | None = None,
-        confirmed: bool = False,
-    ) -> dict[str, Any]:
-        """Preserve a workstream's identity/history when its branch or checkout changes."""
-        return store.compact_call(
-            "rebind_workstream", workstream_id, expected_revision, path, branch, name, confirmed
-        )
-
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def preflight(
-        project: str, path: str, branch: str | None = None, workstream_id: str | None = None
-    ) -> dict[str, Any]:
-        """Verify checkout and branch match a bound workstream before autonomous work."""
-        return store.preflight(project, path, branch, workstream_id)
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def set_scope(workstream_id: str, expected_revision: int, expression: str) -> dict[str, Any]:
-        """Replace local scope using none, a workstream base, +/-task/group and exclusions."""
-        return store.compact_call("set_scope", workstream_id, expected_revision, expression)
-
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def create_task(
         project: str,
@@ -285,11 +258,13 @@ def create_server(
         group_id: str | None = None,
         group_expected_revision: int | None = None,
         summary: str | None = None,
+        public_id: str | None = None,
+        kind: Literal["task", "group"] = "task",
     ) -> dict[str, Any]:
-        """Create with direct membership when workstream_id is supplied.
-
-        Include agreed work; open design questions remain blocking gates.
-        Group membership follows existing dynamic inclusion and exclusions.
+        """Create a task or kind=group. workstream_id adds membership; omission leaves it
+        in the inbox. group_id requires group_expected_revision. public_id is a stable,
+        globally unique descriptive ID; conflict needs another name, omission derives
+        a title slug. source/user_request record origin.
         """
         return store.compact_call(
             "create_task",
@@ -303,39 +278,54 @@ def create_server(
             group_id,
             group_expected_revision,
             summary,
+            kind,
+            public_id,
         )
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def list_tasks(
-        project: str,
+        project: str | None = None,
         workstream_id: str | None = None,
         state: str | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_inactive: bool = False,
+        include: list[CardInclude] | None = None,
+        group_id: str | None = None,
     ) -> dict[str, Any]:
-        """Compact workstream list in its local order, or deterministic project baseline."""
-        return store.list_tasks(project, workstream_id, state, limit, offset)
+        """List active cards in workstream order, or the project baseline. Closed tasks are only
+        counted unless include_inactive or a closed state is asked for; state filters by card
+        state (ready includes rework); include adds detail groups. state=group lists groups;
+        group_id a group's members.
+        """
+        return store.list_tasks(
+            project,
+            workstream_id,
+            state,
+            limit,
+            offset,
+            include_inactive,
+            include,
+            group_id=group_id,
+        )
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def get_tasks(
         ids: list[str],
         specification: bool = False,
         workstream_id: str | None = None,
         attempt_ids: list[str] | None = None,
+        include: list[CardInclude] | None = None,
     ) -> dict[str, Any]:
-        """Read 1–20 cards; specification=true gives complete requirements and gates.
-
-        Add up to 20 attempt_ids to retrieve exactly those full proofs in this call.
-        Current concern prose shares the three-attempt summary window; counts/has_more
-        expose omitted concerns. Chosen proof carries its concerns once in this response.
-        Workstream scope filters current execution summaries, never proof provenance.
-        Cards carry no specification_etag; full specs do. No preliminary card read is needed.
+        """Read 1-20 cards (include as list_tasks). specification=true adds full requirements,
+        questions, concerns and the specification_etag; attempt_ids (up to 20) add exactly
+        those complete attempts in the same call.
         """
-        return store.read_tasks(ids, specification, workstream_id, attempt_ids)
+        return store.read_tasks(ids, specification, workstream_id, attempt_ids, include)
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def list_task_attempts(
         task_id: str,
@@ -345,66 +335,71 @@ def create_server(
         limit: int = 20,
         cursor: str | None = None,
     ) -> dict[str, Any]:
-        """Page attempt summaries with state/workstream filters; history is explicit."""
+        """Page a task's attempt summaries, filtered by workstream and state.
+        current_spec_only=false adds attempts against older specifications.
+        """
         return store.list_task_attempts(
             task_id, workstream_id, states, current_spec_only, limit, cursor
         )
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def get_attempt(attempt_id: str) -> dict[str, Any]:
-        """Read one complete proof/review with original task/workstream/spec provenance."""
+        """Read one complete attempt (proof, review and concerns) with its original task,
+        workstream and specification revision.
+        """
         return store.get_attempt(attempt_id)
 
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def list_group_members(
-        group_id: str, limit: int = 20, cursor: str | None = None
-    ) -> dict[str, Any]:
-        """Page group member cards in creation order; ordinary group reads show three."""
-        return store.list_group_members(group_id, limit, cursor)
-
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def update_task(
         task_id: str,
         expected_revision: int,
-        changes: TaskPatch,
+        changes: TaskPatch | None = None,
         specification_etag: str | None = None,
+        group_id: str | None = None,
+        group_expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        """Save edits while retaining memberships and all historical proof.
-
-        Whole body/criteria replacements require the current full specification_etag.
-        Actual requirement changes advance spec_revision; older proof stays historical.
-        No-op patches retain revisions; every call checks expected_revision.
+        """Edit a task's title, summary, body or acceptance criteria, keeping memberships and
+        proof. Replacing body or criteria needs the current specification_etag; requirement
+        changes advance spec_revision. group_id with the group's revision attaches the task to
+        a group.
         """
         return store.compact_call(
             "update_task",
             task_id,
             expected_revision,
-            changes.model_dump(exclude_unset=True),
+            changes.model_dump(exclude_unset=True) if changes is not None else {},
             specification_etag,
+            group_id,
+            group_expected_revision,
         )
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def add_to_workstream(
         task_id: str, workstream_id: str, expected_revision: int
     ) -> dict[str, Any]:
-        """Add to this workstream, retaining all others; starts no implementation."""
+        """Add a task to a workstream, keeping its other memberships; a group ID adds the group
+        and its live members. A task in any workstream is adopted, but open questions and
+        prerequisites still gate its execution.
+        """
         return store.compact_call("add_to_workstream", task_id, workstream_id, expected_revision)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def remove_from_workstream(
         task_id: str, workstream_id: str, expected_revision: int
     ) -> dict[str, Any]:
-        """Remove only this named workstream, retaining other memberships and all proof."""
+        """Remove a task from this workstream only, keeping other memberships and all proof. A
+        group ID removes the group; a member ID excludes just that member. A task left with no
+        workstream is in the inbox.
+        """
         return store.compact_call(
             "remove_from_workstream", task_id, workstream_id, expected_revision
         )
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def set_disposition(
         task_id: str,
@@ -413,146 +408,102 @@ def create_server(
         note: str,
         authorization: str | None = None,
     ) -> dict[str, Any]:
-        """Pause/drop preserving memberships and proof. Revival needs actual authorization."""
+        """Defer, drop or reopen a task with a note, keeping memberships, context and proof.
+        Reopening a dropped task needs the user's actual instruction as authorization.
+        """
         return store.compact_call(
             "set_disposition", task_id, expected_revision, disposition, note, authorization
         )
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def add_unresolved(
         task_id: str,
         expected_revision: int,
         text: str,
-        handling: Literal["active", "observer", "user"] = "active",
+        handling: Literal["active", "user"] = "active",
     ) -> dict[str, Any]:
-        """Add a blocking unresolved item; observers submit a nonblocking gate proposal."""
+        """Add an open question that blocks the task until resolved. Its answer belongs in the
+        rewritten specification.
+        """
         return store.compact_call("add_unresolved", task_id, expected_revision, text, handling)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def resolve_unresolved(
         task_id: str, expected_revision: int, item_id: str, user_note: str
     ) -> dict[str, Any]:
-        """Remove a resolved item after a user decision; workstream membership stays unchanged."""
+        """Resolve a settled question, recording the user's decision in user_note. Fold the
+        answer into the specification with update_task first, unless it changes nothing.
+        """
         return store.compact_call(
             "resolve_unresolved", task_id, expected_revision, item_id, user_note
         )
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def add_prerequisite(
         task_id: str,
         expected_revision: int,
         blocked_by_id: str,
-        handling: Literal["active", "observer", "user"] = "active",
+        handling: Literal["active", "user"] = "active",
         milestone: Literal["review", "signoff"] = "review",
     ) -> dict[str, Any]:
-        """Link a canonical task/group in any project, or propose a nonblocking observer gate.
-
-        Default review clears on done or current-spec passed/human_review (every group member).
-        Use signoff only exceptionally when proceeding before the user's verdict would very
-        likely waste work. Dropped/deferred blockers stay unsatisfied; rework/spec changes can
-        block review links again. A different milestone on an existing link is rejected.
-        The link changes only the dependent gate, never workstream scope or remote proof.
+        """Make a task or group (any project) block this task. milestone=review clears when it,
+        or every group member, passes review or is done; use signoff exceptionally, when
+        proceeding before the user's verdict would very likely waste work. Deferred or dropped
+        blockers never clear.
         """
         return store.compact_call(
             "add_prerequisite", task_id, expected_revision, blocked_by_id, handling, milestone
         )
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def remove_prerequisite(
         task_id: str, expected_revision: int, blocked_by_id: str, note: str
     ) -> dict[str, Any]:
-        """Remove a prerequisite link with an actual decision note; recalculate the gate.
-
-        Use the dependent task's last revision. A removed link advances it once;
-        an absent link returns changed=false with the same revision. Workstream membership,
-        specifications and proof survive. Completed tasks remain immutable.
-        The configured actor and note are audited, including no-ops.
+        """Remove a blocker link, with a note giving the actual reason, and recalculate the gate.
+        An absent link is a no-op. Memberships, specification and proof are unchanged.
         """
         return store.compact_call(
             "remove_prerequisite", task_id, expected_revision, blocked_by_id, note
         )
 
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def propose_prerequisite(
-        task_id: str,
-        expected_revision: int,
-        title: str,
-        body: str = "",
-        acceptance_criteria: str = "",
-        workstream_id: str | None = None,
-        milestone: Literal["review", "signoff"] = "review",
-    ) -> dict[str, Any]:
-        """Create and link a prerequisite included here, or in the inbox.
-
-        Default review clears on done or current-spec passed/human_review. Use signoff only
-        exceptionally when work would very likely be wasted without the user's verdict.
-        Satisfaction is reversible; it neither includes work nor proves code integration.
-        """
-        return store.compact_call(
-            "propose_prerequisite",
-            task_id,
-            expected_revision,
-            title,
-            body,
-            acceptance_criteria,
-            workstream_id,
-            milestone,
-        )
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def accept_gate_proposal(proposal_id: str, expected_revision: int) -> dict[str, Any]:
-        """Activate an observer gate, checking global task/group cycles for prerequisites."""
-        return store.compact_call("accept_gate_proposal", proposal_id, expected_revision)
-
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def dismiss_gate_proposal(
-        proposal_id: str, expected_revision: int, note: str
-    ) -> dict[str, Any]:
-        """Dismiss a pending observer gate with a recorded coordinator decision."""
-        return store.compact_call("dismiss_gate_proposal", proposal_id, expected_revision, note)
-
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def decompose_task(
         task_id: str, expected_revision: int, members: list[dict[str, str]]
     ) -> dict[str, Any]:
-        """Convert to a group and create required members in the parent scopes atomically."""
+        """Turn an open task without attempts, questions or a parent into a group and
+        create members in its workstreams with its prerequisites atomically. Members
+        take title/body/acceptance_criteria and optional unique public_id; omission
+        derives title slugs, and any conflict rolls back all members.
+        """
         return store.compact_call("decompose_task", task_id, expected_revision, members)
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def reorder_tasks(
         workstream_id: str, task_ids: list[str], expected_order_revision: int
     ) -> dict[str, Any]:
-        """Set the named workstream's ordered task-ID prefix in one atomic call.
-
-        Unlisted members follow in their previous relative order; membership is unchanged.
-        Use workstream_order_revision from the board/action/init/status. Empty or already
-        matching requests are no-ops. Duplicate/nonmember IDs and stale revisions fail.
-        Specifications, proof, completion and every other workstream list are unchanged.
+        """Reorder a workstream by listing a task-ID prefix; unlisted members follow in their
+        existing order. Needs the last workstream_order_revision; changes no membership or
+        proof. Order is preference: express a real dependency with add_prerequisite.
         """
         return store.compact_call("reorder_tasks", workstream_id, task_ids, expected_order_revision)
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
-    def get_next_action(workstream_id: str) -> dict[str, Any]:
-        """Read one implement/review action in workstream order.
-
-        Full current spec/token and exactly one applicable local proof for review
-        (or rework) are included. Autonomous actions require workstream membership and clear
-        gates; passed/human_review waits for the user. Null gives bounded counts.
-        Verify the actual checkout/artifacts before trusting recorded proof.
+    def get_next_action(workstream_id: str, include_archived: bool = False) -> dict[str, Any]:
+        """Pick the next implement or review action in workstream order, with the full
+        specification, etag, latest rejection and, for review or rework, the applicable
+        attempt. Only members with clear gates qualify; null returns waiting counts. Marks
+        the task picked for 4h (information only, no lock).
         """
-        return store.get_next_action(workstream_id)
+        return store.get_next_action(workstream_id, include_archived)
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def record_result(
         task_id: str,
@@ -561,19 +512,15 @@ def create_server(
         implementer: str,
         summary: str,
         evidence: str,
-        artifacts: list[dict[str, str]],
+        artifacts: list[ArtifactInput],
         verification: str,
         specification_etag: str,
         concerns: list[ConcernInput] | None = None,
     ) -> dict[str, Any]:
-        """Record factual durable proof, even with gates; this grants no execution authority.
-
-        First check the actual checkout/artifacts and current full specification.
-        Supply its etag, concrete artifacts ({kind: artifact|commit, reference: ...}),
-        actual verification and context evidence. Workstream membership, disposition and blockers
-        stay unchanged. Optional concerns ({kind: value|design, text: ...}) are doubts
-        that cannot be fixed without changing what the task says; they never affect gates.
-        The ACK omits proof/concern prose; retrieve it deliberately with get_tasks.
+        """Record finished work with the last revision, specification_etag, actual verification
+        and artifacts [{kind: artifact|commit, reference}]; it grants no authority. Optional
+        concerns (kind value or design) are worth-doing or approach doubts not fixable without
+        changing the task; they never affect gates.
         """
         return store.compact_call(
             "record_result",
@@ -583,13 +530,13 @@ def create_server(
             implementer,
             summary,
             evidence,
-            artifacts,
+            [a.model_dump() for a in artifacts],
             verification,
             specification_etag,
             [c.model_dump() for c in concerns] if concerns is not None else None,
         )
 
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def record_review(
         attempt_id: str,
@@ -599,11 +546,9 @@ def create_server(
         note: str,
         concerns: list[ConcernInput] | None = None,
     ) -> dict[str, Any]:
-        """Record a declared independent review verdict on an implementation attempt.
-
-        Optional concerns ({kind: value|design, text: ...}) are doubts that cannot be
-        fixed without changing what the task says. They never affect gates or verdicts.
-        Omission preserves existing concerns, including the implementer's contribution.
+        """Record an independent reviewer's pass or rework on an attempt. A pass awaits the
+        user's sign-off; it never completes a task. Concerns are as in record_result and are
+        kept when omitted.
         """
         return store.compact_call(
             "record_review",
@@ -615,13 +560,7 @@ def create_server(
             [c.model_dump() for c in concerns] if concerns is not None else None,
         )
 
-    @server.tool(annotations=editing, structured_output=True)
-    @domain_errors
-    def human_review(attempt_id: str, expected_revision: int, user_note: str) -> dict[str, Any]:
-        """Record an explicit user's review or instruction to skip further independent review."""
-        return store.compact_call("human_review", attempt_id, expected_revision, user_note)
-
-    @server.tool(annotations=editing, structured_output=True)
+    @tool(editing)
     @domain_errors
     def signoff_task(
         task_id: str,
@@ -631,10 +570,10 @@ def create_server(
         decision: Literal["approve", "rework", "revise", "drop"],
         reasons: str | None = None,
     ) -> dict[str, Any]:
-        """Record the actual user's verdict and reasons on an exact reviewed result.
-        Approve completes; rework returns to implementation; revise opens a design
-        question with the reasons; drop closes without approval. Reasons are required
-        for rework/revise and optional for approve/drop. Read full proof with get_tasks.
+        """Record the user's verdict on a reviewed attempt: approve completes it, rework returns
+        it to implementation, revise turns the reasons into a question, drop closes it
+        unapproved. Rework and revise need reasons. Approving an unreviewed result needs the
+        user's explicit say-so, stated in reasons.
         """
         return store.compact_call(
             "signoff_task",
@@ -646,7 +585,7 @@ def create_server(
             expected_attempt_revision,
         )
 
-    @server.tool(annotations=additive, structured_output=True)
+    @tool(additive)
     @domain_errors
     def list_events(
         project: str | None = None,
@@ -656,31 +595,17 @@ def create_server(
         limit: int = 20,
         include_details: bool = False,
     ) -> dict[str, Any]:
-        """Read local audit history. Pass returned through_sequence for stable pagination."""
+        """Page the local audit history for a project or task. Pass the returned through_sequence
+        to keep pages stable.
+        """
         return store.list_events(
             project, task_id, after_sequence, through_sequence, limit, include_details
         )
 
-    @server.tool(annotations=additive, structured_output=True)
-    @domain_errors
-    def export_workstream(
-        workstream_id: str,
-        include_closed: bool = True,
-        format: Literal["markdown", "legacy"] = "markdown",
-    ) -> dict[str, Any]:
-        """Return a readable v2 Markdown snapshot, or legacy v1 with embedded JSON.
-
-        Both include a content hash. Closed means done/dropped, not deferred.
-        Export returns text only; it never saves files or synchronizes edits.
-        """
-        return store.export_workstream(workstream_id, include_closed, format)
-
-    @server.tool(annotations=catalog, structured_output=True)
+    @tool(catalog)
     def get_default_skills(name: str | None = None) -> dict[str, Any]:
-        """Read the index or one skill: feature-capture for 'add a design task',
-        feature-design for 'let's design X'/'review design tasks', superdevloop for
-        workstream Build work/review and signoff for the user's Value/Design/Build verdict.
-        Explicit user instructions override the reference guidance.
+        """Read the workflow skill index (names, descriptions, versions and hashes), or one
+        complete skill by name.
         """
         return default_skills(name)
 
