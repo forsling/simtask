@@ -179,8 +179,8 @@ def create_server(
         include_archived: bool = False,
     ) -> dict[str, Any]:
         """Call first with an absolute checkout path and branch (workstream_name if detached);
-        ready returns cards, notes and runtime, else repeat with a returned choice and
-        confirmed=true. workstream_id checks the binding. A new workstream's scope_expression:
+        ready returns cards, notes and runtime, else make one call from next with its
+        arguments. workstream_id checks the binding. A new workstream's scope_expression:
         none or a base workstream, then +/-task/group.
         """
         result = store.init(

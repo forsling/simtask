@@ -195,22 +195,41 @@ def test_archived_workstreams_are_hidden_from_discovery_until_requested(setup, t
     # Init discovery by checkout path leaves archived workstreams out of its candidates.
     fresh = store.init(repo, "topic")
     assert fresh["state"] == "new_branch" and fresh["archived_hidden"] == 1
-    assert [w["id"] for w in fresh["candidates"]] == [main] and fresh["candidate_total"] == 1
+    assert [w["id"] for w in fresh["workstreams"]] == [main] and not fresh["more_workstreams"]
     shown = store.init(repo, "topic", include_archived=True)
-    assert [w["id"] for w in shown["candidates"]] == [main, old] and shown["candidate_total"] == 2
+    assert [w["id"] for w in shown["workstreams"]] == [main, old]
+    # Moving the archived workstream here also needs the explicit argument.
+    assert shown["next"][-1]["arguments"]["include_archived"] is True
     assert "archived_hidden" not in shown
     loose = str(tmp_path / "loose")
     unregistered = store.init(loose, "topic", project=project)
-    assert [w["id"] for w in unregistered["workstream_candidates"]] == [main]
+    assert [w["id"] for w in unregistered["workstreams"]] == [main]
     assert unregistered["archived_hidden"] == 1
     unregistered = store.init(loose, "topic", project=project, include_archived=True)
-    assert [w["id"] for w in unregistered["workstream_candidates"]] == [main, old]
+    assert [w["id"] for w in unregistered["workstreams"]] == [main, old]
 
     # Its exact checkout reports the archive instead of silently resuming it.
     stopped = store.init(repo, "old")
     assert stopped["state"] == "archived" and "queue" not in stopped
-    assert stopped["workstream"]["id"] == old and "Inactive snapshot" in stopped["message"]
-    assert stopped["choices"] == ["include_archived", "unarchive_workstream"]
+    assert [w["id"] for w in stopped["workstreams"]] == [old]
+    assert stopped["workstreams"][0]["archive"]["reason"] == "Inactive snapshot"
+    assert stopped["next"] == [
+        {
+            "choice": "resume",
+            "tool": "init",
+            "arguments": {
+                "path": repo,
+                "branch": "old",
+                "workstream_id": old,
+                "include_archived": True,
+            },
+        },
+        {
+            "choice": "unarchive",
+            "tool": "archive_workstream",
+            "arguments": {"workstream_id": old, "archived": False, "expected_revision": 1},
+        },
+    ]
     assert store.init(repo, "old", workstream_id=old)["state"] == "archived"
     resumed = store.init(repo, "old", include_archived=True)
     assert resumed["state"] == "ready" and resumed["workstream"]["archive"]["archived"]

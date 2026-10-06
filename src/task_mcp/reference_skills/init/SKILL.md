@@ -12,9 +12,9 @@ description: Set up or resume the Task MCP binding for a checkout and branch. Us
 2. When the result is ready, keep the returned project and workstream IDs,
    read the notes and continue with the user's request.
 
-3. Otherwise, pick the fitting returned choice and show the user the path,
+3. Otherwise, pick the fitting call from `next` and show the user the path,
    branch, project, workstream and scope it would set up. Names and history do
-   not imply scope; ask. Repeat the call with the confirmed choice.
+   not imply scope; ask. Make the confirmed call with its arguments as given.
 
 4. Resume, archive or restore an archived workstream (`archive_workstream`)
    only when the user directs.

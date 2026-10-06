@@ -163,6 +163,30 @@ PICK_TTL = timedelta(hours=4)
 ARCHIVE_REASON_LIMIT = 200
 # Archived workstreams are left out of discovery and selection SQL unless requested.
 ARCHIVED_IDS_SQL = "SELECT workstream_id FROM workstream_archive WHERE archived=1"
+
+# init answers every request that is not ready in one shape: the state's fixed message,
+# what exists (workstreams with their roles) and the calls that work (next).
+INIT_MESSAGES = {
+    "mismatch": "The request does not match the recorded bindings.",
+    "archived": "The workstream bound here is archived and was not resumed. To unarchive it, "
+    "also give a reason, then init again.",
+    "new_branch": "No workstream is bound to this branch or name at this checkout.",
+    "unregistered_checkout": "This checkout is not attached to a project.",
+}
+INIT_NAME_TAKEN = (
+    " The name is already used (see name_holder), so calls that need it are not offered; "
+    "give another workstream_name to use a different name."
+)
+INIT_NEXT = " workstreams shows what exists; next lists the calls that work, with their arguments."
+INIT_WORKSTREAM_KEYS = (
+    "id",
+    "project_id",
+    "name",
+    "branch",
+    "checkout_path",
+    "revision",
+    "archive",
+)
 # Notes are bounded so they stay a current summary rather than a growing log.
 NOTE_LIMIT = 2000
 NOTE_KINDS = ("project", "workstream")
@@ -1266,23 +1290,6 @@ class Store:
                     )
             if project is not None:
                 chosen = dict(self._project(db, project, scope))
-                chosen.pop("order_revision", None)
-                if selected and selected["id"] != chosen["id"]:
-                    return {
-                        "state": "mismatch",
-                        "message": (
-                            f"Checkout is attached to another project ({selected['name']!r}, "
-                            f"{selected['id']}), not {chosen['name']!r} ({chosen['id']}); init "
-                            "without project= to use the attached project, or init the "
-                            "requested project at one of its own checkouts"
-                        ),
-                        "path": canonical,
-                        "branch": branch,
-                        "project": selected,
-                        "requested_project": chosen,
-                        **({"workstream": requested} if requested else {}),
-                        "choices": ["use_attached_project"],
-                    }
             elif selected is None and requested:
                 # An unregistered checkout naming a workstream is checked within that
                 # workstream's project, so a branch already bound there is reported.
@@ -1295,344 +1302,203 @@ class Store:
                 chosen = selected
             if chosen:
                 chosen.pop("order_revision", None)
-            candidate = None
-            if chosen:
-                if branch:
-                    candidate = db.execute(
-                        "SELECT * FROM workstreams WHERE project_id=? AND branch=?",
-                        (chosen["id"], branch),
-                    ).fetchone()
-                else:
-                    candidate = db.execute(
-                        "SELECT * FROM workstreams WHERE project_id=? AND branch IS NULL "
-                        "AND name=?",
-                        (chosen["id"], workstream_name),
-                    ).fetchone()
-                candidate = self._with_archive(db, candidate)
-            here = f"branch {branch!r}" if branch else f"name {workstream_name!r}"
-
-            # Following a choice that resumes or moves an archived workstream needs the
-            # explicit include_archived=true, so its instructions say so.
-            def archived_flag(ws):
-                return " include_archived=true" if self._archived(ws) else ""
-
-            def archived_note(ws):
-                return f" (archived: {ws['archive']['reason']})" if self._archived(ws) else ""
-
-            def archived_hidden(project_id):
-                # How many archived workstreams discovery left out, when any were.
-                count = (
-                    0
-                    if include_archived
-                    else db.execute(
-                        "SELECT count(*) FROM workstreams WHERE (? IS NULL OR project_id=?) "
-                        f"AND id IN ({ARCHIVED_IDS_SQL})",
-                        (project_id,) * 2,
-                    ).fetchone()[0]
-                )
-                return {"archived_hidden": count} if count else {}
-
-            def binding(ws_branch, ws_name, ws_path):
-                # A name-bound (detached or non-Git) binding has no branch to report.
-                if ws_branch:
-                    return f"branch {ws_branch!r} at {ws_path}"
-                return f"name {ws_name!r} (no branch) at {ws_path}"
-
-            def requested_binding(target):
-                if target["project_id"] != chosen["id"]:
-                    return (
-                        f"Workstream {target['name']!r}{archived_note(target)} belongs to "
-                        f"another project ({target['project_id']})"
-                    )
-                return (
-                    f"Workstream {target['name']!r}{archived_note(target)} is bound to "
-                    f"{binding(target['branch'], target['name'], target['checkout_path'])}"
-                )
-
-            # A rebind renames the workstream to workstream_name or branch, and a new one is
-            # inserted under that name stripped; UNIQUE(project_id, name) must still hold, so
-            # a choice that would collide is named in the message instead of being offered.
+            here = {"path": canonical, "branch": branch, "workstream_name": workstream_name}
+            here = {key: value for key, value in here.items() if value is not None}
+            # A rebind renames the moved workstream to workstream_name or branch; a new one
+            # takes that name stripped. UNIQUE(project_id, name) must hold.
             rebind_name = workstream_name or branch
-            insert_name = rebind_name.strip()
 
-            def name_holder(name, exclude=None):
+            def bound_in(project_id):
+                # The workstream bound to this branch (or, without one, this name).
+                where = "branch=?" if branch else "branch IS NULL AND name=?"
                 row = db.execute(
-                    "SELECT * FROM workstreams WHERE project_id=? AND name=? AND id IS NOT ?",
-                    (chosen["id"], name, exclude),
+                    f"SELECT * FROM workstreams WHERE project_id=? AND {where}",
+                    (project_id, branch or workstream_name),
                 ).fetchone()
                 return self._with_archive(db, row)
 
-            def name_taken(holder, blocked):
-                return (
-                    f"; the workstream name {holder['name']!r} is already used by workstream "
-                    f"{holder['id']}{archived_note(holder)} "
-                    f"({binding(holder['branch'], holder['name'], holder['checkout_path'])}), "
-                    f"so {blocked} would conflict: pass another workstream_name"
-                )
+            def name_holder(project_id, moving=None):
+                # Who holds the name a new workstream, or moving after a rebind, would take.
+                row = db.execute(
+                    "SELECT * FROM workstreams WHERE project_id=? AND name=? AND id IS NOT ?",
+                    (
+                        project_id,
+                        rebind_name if moving else rebind_name.strip(),
+                        moving and moving["id"],
+                    ),
+                ).fetchone()
+                return self._with_archive(db, row)
 
-            # Each offered choice's message says which init arguments follow it.
-            def rebind_how(target):
-                return (
-                    f"init action=rebind_workstream workstream_id={target['id']} "
-                    f"expected_revision={target['revision']} confirmed=true" + archived_flag(target)
-                )
+            # Every response that is not ready has one shape: what exists, then each call
+            # that works when made exactly as given. A call that would fail is left out.
+            def offer(choice, arguments, tool="init"):
+                return {"choice": choice, "tool": tool, "arguments": arguments}
 
-            def binding_how(target):
-                own = (
-                    f"branch={target['branch']!r}"
-                    if target["branch"]
-                    else f"workstream_name={target['name']!r}"
-                )
-                return f"init path={target['checkout_path']!r} {own}" + archived_flag(target)
+            def resumable(ws):
+                return {"include_archived": True} if self._archived(ws) else {}
 
-            def create_how(choice):
-                into = f" project={chosen['id']}" if choice == "attach_workstream" else ""
-                return f"init action={choice}{into} confirmed=true without workstream_id"
+            def resume(ws, own=False):
+                # Resume ws here, or at its own checkout and branch (or name).
+                where = here
+                if own:
+                    key, value = (
+                        ("branch", ws["branch"])
+                        if ws["branch"]
+                        else ("workstream_name", ws["name"])
+                    )
+                    where = {"path": ws["checkout_path"], key: value}
+                return offer("resume", where | {"workstream_id": ws["id"]} | resumable(ws))
 
-            if candidate and candidate["checkout_path"] == canonical and selected:
-                ws = dict(candidate)
-                if requested and requested["id"] != ws["id"]:
+            def rebind(ws):
+                moved = {"action": "rebind_workstream", "workstream_id": ws["id"]}
+                moved |= {"expected_revision": ws["revision"], "confirmed": True}
+                return offer("rebind", here | moved | resumable(ws))
+
+            def check(project_id=None):
+                into = {"project": project_id} if project_id else {}
+                listed = {"include_archived": True} if include_archived else {}
+                return offer("check", here | into | listed)
+
+            def movable(project_id, rows, new_choice):
+                # A new workstream, then each listed one moved here, unless the name is taken.
+                calls, listed = [], []
+                holder = name_holder(project_id)
+                if holder:
+                    listed.append((holder, "name_holder"))
+                else:
+                    into = {"project": project_id} if new_choice == "attach_workstream" else {}
+                    calls.append(
+                        offer("create", here | {"action": new_choice, **into, "confirmed": True})
+                    )
+                for ws in rows:
+                    holder = name_holder(project_id, ws)
+                    if holder:
+                        listed.append((holder, "name_holder"))
+                    else:
+                        calls.append(rebind(ws))
+                return calls, listed
+
+            def report(state, project_row, listed, calls, **extra):
+                found = {}
+                for ws, role in listed:
+                    if ws:
+                        item = found.setdefault(
+                            ws["id"],
+                            {key: ws[key] for key in INIT_WORKSTREAM_KEYS if key in ws}
+                            | {"roles": []},
+                        )
+                        if role not in item["roles"]:
+                            item["roles"].append(role)
+                taken = any("name_holder" in item["roles"] for item in found.values())
+                return {
+                    "state": state,
+                    "message": INIT_MESSAGES[state]
+                    + (INIT_NAME_TAKEN if taken else "")
+                    + INIT_NEXT,
+                    "path": canonical,
+                    "branch": branch,
+                    "workstream_name": workstream_name,
+                    "project": project_row,
+                    "workstreams": list(found.values()),
+                    "next": calls,
+                    **extra,
+                }
+
+            if selected and chosen["id"] != selected["id"]:
+                # project= names another project than the one this checkout is attached to.
+                bound = bound_in(selected["id"])
+                local = bound if bound and bound["checkout_path"] == canonical else None
+                calls = [resume(local) if local else check()]
+                if requested and requested["id"] != (local or {}).get("id"):
+                    calls.append(resume(requested, own=True))
+                listed = [(requested, "requested"), (bound, "bound")]
+                return report("mismatch", selected, listed, calls)
+            bound = bound_in(chosen["id"]) if chosen else None
+            if bound and bound["checkout_path"] == canonical and selected:
+                if requested and requested["id"] != bound["id"]:
                     # Report the requested workstream's real binding, never the local one
                     # in its place.
-                    use = " and with include_archived=true" if self._archived(ws) else ""
-                    return {
-                        "state": "mismatch",
-                        "message": (
-                            f"{requested_binding(requested)}; this checkout's {here} is bound "
-                            f"to workstream {ws['name']!r} ({ws['id']}){archived_note(ws)}; "
-                            f"init without workstream_id (or with {ws['id']}){use} to use it, "
-                            f"or {binding_how(requested)} for the requested workstream"
-                        ),
-                        "path": canonical,
-                        "branch": branch,
-                        "project": selected,
-                        "workstream": requested,
-                        "bound_workstream": ws,
-                        "choices": ["use_bound_workstream", "init_requested_binding"],
-                    }
-                if self._archived(ws) and not include_archived:
+                    listed = [(requested, "requested"), (bound, "bound")]
+                    calls = [resume(bound), resume(requested, own=True)]
+                    return report("mismatch", selected, listed, calls)
+                if self._archived(bound) and not include_archived:
                     # Never silently resume an archived workstream at its own checkout.
-                    return {
-                        "state": "archived",
-                        "message": (
-                            f"This checkout's {here} is bound to workstream {ws['name']!r} "
-                            f"({ws['id']}), which is archived ({ws['archive']['reason']}; "
-                            f"{ws['archive']['updated_by']}, {ws['archive']['updated_at']}); "
-                            "it was not resumed. Init again with include_archived=true to "
-                            f"resume it as archived, or unarchive it with "
-                            f"{self._archive_hint(ws)} and init again"
-                        ),
-                        "path": canonical,
-                        "branch": branch,
-                        "project": selected,
-                        "workstream": ws,
-                        "choices": ["include_archived", "unarchive_workstream"],
-                    }
-                return self._ready_init(db, selected, ws, include_inactive) | {"changed": False}
-            if candidate and not (
-                action == "rebind_workstream" and confirmed and workstream_id == candidate["id"]
+                    unarchive = {"workstream_id": bound["id"], "archived": False}
+                    unarchive["expected_revision"] = bound["archive"]["revision"]
+                    calls = [resume(bound), offer("unarchive", unarchive, "archive_workstream")]
+                    listed = [(requested, "requested"), (bound, "bound")]
+                    return report("archived", selected, listed, calls)
+                return self._ready_init(db, selected, bound, include_inactive) | {"changed": False}
+            if bound and not (
+                action == "rebind_workstream" and confirmed and workstream_id == bound["id"]
             ):
-                bound = dict(candidate)
-                holder = name_holder(rebind_name, bound["id"])
-                located = (
-                    f"{here} of project {chosen['name']!r} is bound to workstream "
-                    f"{bound['name']!r} ({bound['id']}){archived_note(bound)} at another "
-                    f"checkout ({bound['checkout_path']})"
-                )
-                rebind = (
-                    name_taken(holder, "rebinding it here")
-                    if holder
-                    else f", or confirm {rebind_how(bound)} to move that workstream here"
-                )
-                if requested and requested["id"] != bound["id"]:
-                    # Another workstream is named while this branch is bound elsewhere: report
-                    # the requested workstream and the branch's actual binding, never one in
-                    # place of the other.
-                    return {
-                        "state": "mismatch",
-                        "message": (
-                            f"{requested_binding(requested)}; {located}; "
-                            f"{binding_how(requested)} for the requested workstream{rebind}"
-                        ),
-                        "path": canonical,
-                        "branch": branch,
-                        "project": chosen,
-                        "workstream": requested,
-                        "bound_workstream": bound,
-                        "choices": ([] if holder else ["rebind_bound_workstream"])
-                        + ["init_requested_binding"],
-                    }
-                return {
-                    "state": "mismatch",
-                    "message": (
-                        f"{located[0].upper()}{located[1:]}; {binding_how(bound)} to use it "
-                        f"at its own binding{rebind}"
-                    ),
-                    "path": canonical,
-                    "branch": branch,
-                    "project": chosen,
-                    "workstream": bound,
-                    "choices": ([] if holder else ["rebind_workstream"])
-                    + ["init_requested_binding"],
-                }
+                # The branch is bound at another checkout: offer its own binding (or the
+                # requested workstream's), or moving it here. Never one for the other.
+                holder = name_holder(chosen["id"], bound)
+                calls = [resume(requested or bound, own=True)] + ([] if holder else [rebind(bound)])
+                listed = [(requested, "requested"), (bound, "bound"), (holder, "name_holder")]
+                return report("mismatch", chosen, listed, calls)
+            new_choice = "new_workstream" if selected else "attach_workstream"
             if requested and not (action and confirmed):
                 # The checkout/branch match check: a named binding must match exactly.
-                new_choice = "new_workstream" if selected else "attach_workstream"
-                new_holder = name_holder(insert_name)
-                if requested["project_id"] != chosen["id"]:
-                    # rebind_workstream cannot move a workstream across projects
-                    # (workstream_project_mismatch), so it is not offered here.
-                    message = (
-                        f"{requested_binding(requested)}, not {chosen['name']!r} "
-                        f"({chosen['id']}); choose a workstream of this project"
-                    )
-                    if new_holder:
-                        message += name_taken(new_holder, f"action={new_choice}")
-                    else:
-                        message += f", or confirm {create_how(new_choice)} to start one here"
-                    choices = [] if new_holder else [new_choice]
-                else:
-                    rebind_holder = name_holder(rebind_name, requested["id"])
-                    choices = ([] if rebind_holder else ["rebind_workstream"]) + (
-                        [] if new_holder else [new_choice]
-                    )
-                    message = (
-                        f"{requested_binding(requested)}, not "
-                        f"{binding(branch, workstream_name, canonical)}"
-                    )
-                    if choices:
-                        effect = {
-                            "rebind_workstream": f"{rebind_how(requested)} to move it here",
-                            new_choice: f"{create_how(new_choice)} for a new workstream here",
-                        }
-                        offered = " or ".join(effect[choice] for choice in choices)
-                        message += f"; confirm {offered}, or choose another workstream"
-                    holder = rebind_holder or new_holder
-                    if holder:
-                        blocked = [
-                            f"action={choice}"
-                            for choice in ("rebind_workstream", new_choice)
-                            if choice not in choices
-                        ]
-                        message += name_taken(holder, " and ".join(blocked))
-                return {
-                    "state": "mismatch",
-                    "message": message,
-                    "path": canonical,
-                    "branch": branch,
-                    "project": chosen,
-                    "workstream": requested,
-                    "choices": choices,
-                }
+                # Rebinding never crosses projects (workstream_project_mismatch).
+                rows = [requested] if requested["project_id"] == chosen["id"] else []
+                calls, listed = movable(chosen["id"], rows, new_choice)
+                calls = [resume(requested, own=True)] + calls
+                return report("mismatch", chosen, [(requested, "requested")] + listed, calls)
             if not action or not confirmed:
                 # Discovery leaves archived workstreams out unless include_archived=true.
                 unarchived = "" if include_archived else f" AND id NOT IN ({ARCHIVED_IDS_SQL})"
-                if selected:
+                if chosen:
                     rows = [
                         self._with_archive(db, row)
                         for row in db.execute(
                             "SELECT * FROM workstreams WHERE project_id=?"
                             + unarchived
                             + " ORDER BY created_at,id LIMIT 11",
-                            (selected["id"],),
+                            (chosen["id"],),
                         ).fetchall()
                     ]
-                    message = (
-                        "Choose an initial scope or an explicit workstream rebind: confirm "
-                        f"{create_how('new_workstream')} (scope_expression optional, default "
-                        "none) for a new workstream here, or confirm init "
-                        "action=rebind_workstream with a candidate's workstream_id, its "
-                        "revision as expected_revision and confirmed=true to move it here"
+                    more = len(rows) > 10
+                    rows = rows[:10]
+                    # When the name is taken, only its holder can move here; it may be
+                    # archived or beyond the first ten, so it is listed too.
+                    holder = name_holder(chosen["id"])
+                    if holder and holder["id"] not in {ws["id"] for ws in rows}:
+                        rows.append(holder)
+                    calls, listed = movable(chosen["id"], rows, new_choice)
+                    hidden = 0
+                    if not include_archived:
+                        hidden = db.execute(
+                            "SELECT count(*) FROM workstreams WHERE project_id=? "
+                            f"AND id IN ({ARCHIVED_IDS_SQL})",
+                            (chosen["id"],),
+                        ).fetchone()[0]
+                    return report(
+                        "new_branch" if selected else "unregistered_checkout",
+                        chosen,
+                        [(ws, "candidate") for ws in rows] + listed,
+                        calls,
+                        more_workstreams=more,
+                        **({"archived_hidden": hidden} if hidden else {}),
                     )
-                    choices = ["new_workstream", "rebind_workstream"]
-                    holder = name_holder(insert_name)
-                    if holder:
-                        # Only rebinding the workstream that holds this name can succeed.
-                        message = (
-                            "Choose an explicit workstream rebind"
-                            + name_taken(holder, "action=new_workstream")
-                            + f", or confirm {rebind_how(holder)} to move that workstream here"
-                        )
-                        choices = ["rebind_workstream"]
-                    return {
-                        "state": "new_branch",
-                        "message": message,
-                        "path": canonical,
-                        "project": selected,
-                        "candidates": rows[:10],
-                        "more_candidates": len(rows) > 10,
-                        "candidate_total": db.execute(
-                            "SELECT count(*) FROM workstreams WHERE project_id=?" + unarchived,
-                            (selected["id"],),
-                        ).fetchone()[0],
-                        **archived_hidden(selected["id"]),
-                        **({"name_holder": holder} if holder else {}),
-                        "choices": choices,
-                    }
+                # Without project=, create a project or check one to join; checking it
+                # lists the calls that work within that project.
                 projects = [
                     {key: row[key] for key in row.keys() if key != "order_revision"}
                     for row in db.execute(
                         "SELECT * FROM projects ORDER BY name,id LIMIT 11"
                     ).fetchall()
                 ]
-                # With project=, candidates and choices are checked within that project.
-                workstreams = [
-                    dict(row)
-                    for row in db.execute(
-                        "SELECT id,project_id,name,branch,checkout_path,revision "
-                        "FROM workstreams WHERE (? IS NULL OR project_id=?)"
-                        + unarchived
-                        + " ORDER BY created_at,id LIMIT 11",
-                        (chosen and chosen["id"],) * 2,
-                    ).fetchall()
-                ]
-                rebind_any = (
-                    "confirm init action=rebind_workstream with a workstream_id, its revision "
-                    "as expected_revision and confirmed=true to move that workstream here"
+                create = offer("create", here | {"action": "create_project", "confirmed": True})
+                return report(
+                    "unregistered_checkout",
+                    None,
+                    [],
+                    [create] + [check(row["id"]) for row in projects[:10]],
+                    projects=projects[:10],
+                    more_projects=len(projects) > 10,
                 )
-                holder = None
-                if chosen:
-                    choices = ["attach_workstream", "rebind_workstream"]
-                    message = (
-                        f"Checkout is not registered; within project {chosen['name']!r} "
-                        f"({chosen['id']}) confirm {create_how('attach_workstream')} "
-                        "(scope_expression optional, default none) to attach it with a new "
-                        f"workstream, or {rebind_any} (one of this project's)"
-                    )
-                    holder = name_holder(insert_name)
-                    if holder:
-                        # Only rebinding the workstream that holds this name can succeed.
-                        choices = ["rebind_workstream"]
-                        message = (
-                            "Checkout is not registered"
-                            + name_taken(holder, "action=attach_workstream")
-                            + f", or confirm {rebind_how(holder)} to move that workstream here"
-                        )
-                    # create_project ignores project=, so it is offered only without it.
-                    message += "; to create a new project, init without project="
-                else:
-                    choices = ["create_project", "attach_workstream", "rebind_workstream"]
-                    message = (
-                        "Choose how this checkout relates to existing projects: confirm "
-                        f"{create_how('create_project')} for a new project, or init "
-                        "action=attach_workstream project=<project id> confirmed=true "
-                        "(scope_expression optional) to attach it to an existing project "
-                        f"with a new workstream, or {rebind_any}; init with project= and "
-                        "no action first to check names within that project"
-                    )
-                return {
-                    "state": "unregistered_checkout",
-                    "message": message,
-                    "path": canonical,
-                    **({"project": chosen} if chosen else {}),
-                    **({"name_holder": holder} if holder else {}),
-                    "choices": choices,
-                    "project_candidates": projects[:10],
-                    "more_projects": len(projects) > 10,
-                    "workstream_candidates": workstreams[:10],
-                    "more_workstreams": len(workstreams) > 10,
-                    **archived_hidden(chosen and chosen["id"]),
-                }
             if action not in {
                 "create_project",
                 "new_workstream",

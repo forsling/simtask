@@ -47,9 +47,14 @@ Projects are initialized explicitly at a canonical path. A project may attach
 other checkout paths. Each workstream has a durable ID and a mutable branch or
 explicit name binding. Each session calls `init` with its explicit target path
 and branch/name; an exact binding returns its scoped queue idempotently.
-Discovery returns `new_branch`, `unregistered_checkout`, or `mismatch` when
-setup needs a choice. Confirmed create, attach and rebind actions are atomic;
-rebind checks the workstream revision and preserves its scope and history.
+Discovery returns `new_branch`, `unregistered_checkout`, `mismatch` or
+`archived` when setup needs a choice, always in one shape: a fixed message, what
+exists (`workstreams` with roles) and `next`, the calls that work with their exact
+arguments. Init leaves out a call that would fail rather than explaining it, and
+an unknown checkout without a project is checked one project at a time, so every
+offered call has passed the name and branch checks. Confirmed create, attach and
+rebind actions are atomic; rebind checks the workstream revision and preserves its
+scope and history.
 Passing a known workstream ID checks that it is bound to the given checkout and
 branch and reports any mismatch; there are no separate setup tools. A new
 workstream chooses its scope explicitly; branch names and Git history do not
@@ -152,8 +157,8 @@ restores everything as it was. Archived workstreams are skipped by
 and `include_archived=true` includes them. `init` at an archived workstream's
 own checkout returns `state=archived` rather than resuming it, and a rebind of
 one needs the flag too. Init's mismatch invariants hold: a requested workstream
-is never swapped, and every offered choice works when followed, so a choice that
-resumes or moves an archived workstream carries `include_archived=true`. The
+is never swapped, and every offered call works as given, so a call that resumes
+or moves an archived workstream carries `include_archived=true`. The
 archived workstream keeps its branch and name, which therefore stay unavailable
 to new workstreams in that project. The viewer hides archived workstreams from
 navigation unless the user shows them. Archive state lives in a separate

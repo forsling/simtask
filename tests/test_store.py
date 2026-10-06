@@ -89,8 +89,8 @@ def test_session_init_new_branch_attach_rebind_and_rollback(store, tmp_path):
     work = task(store, project, main, "Keep history")
     branch = store.init(str(tmp_path / "repo"), branch="feature")
     assert branch["state"] == "new_branch"
-    assert branch["candidates"][0]["id"] == main
-    main_revision = branch["candidates"][0]["revision"]
+    assert branch["workstreams"][0]["id"] == main
+    main_revision = branch["workstreams"][0]["revision"]
     with pytest.raises(TaskError, match="revision_conflict"):
         store.init(
             str(tmp_path / "repo"),
@@ -112,8 +112,11 @@ def test_session_init_new_branch_attach_rebind_and_rollback(store, tmp_path):
     checkout = str(tmp_path / "another-checkout")
     unknown = store.init(checkout, branch="release")
     assert unknown["state"] == "unregistered_checkout"
-    assert {"create_project", "attach_workstream", "rebind_workstream"} == set(unknown["choices"])
-    assert unknown["workstream_candidates"]
+    # Without project=: a new project, or a check of the existing one.
+    assert [item["choice"] for item in unknown["next"]] == ["create", "check"]
+    assert unknown["next"][1]["arguments"]["project"] == project
+    assert [row["id"] for row in unknown["projects"]] == [project]
+    assert unknown["workstreams"] == [] and unknown["project"] is None
     with pytest.raises(TaskError, match=r"unknown_scope_base: .*none.*\+/-task or group"):
         store.init(
             checkout,
@@ -405,20 +408,24 @@ def test_explicit_init_and_attachment_do_not_write_checkouts(store, tmp_path):
     assert feature["state"] == "ready" and feature["queue"] == []
     # The checkout/branch match check: a bound workstream elsewhere is a clear mismatch.
     moved = store.init(canonical, branch="feature", workstream_id=ws)
-    assert moved["state"] == "mismatch" and "another checkout" in moved["message"]
+    bound = {item["id"]: item for item in moved["workstreams"]}[feature["workstream"]["id"]]
+    assert moved["state"] == "mismatch" and bound["roles"] == ["bound"]
+    assert bound["checkout_path"] == str(other)
     other_branch = store.init(canonical, branch="release", workstream_id=ws)
     assert other_branch["state"] == "mismatch"
-    assert other_branch["workstream"]["id"] == ws
-    assert "'main'" in other_branch["message"] and "'release'" in other_branch["message"]
-    assert other_branch["choices"] == ["rebind_workstream", "new_workstream"]
+    assert other_branch["workstreams"][0]["id"] == ws
+    assert other_branch["workstreams"][0]["branch"] == "main"
+    assert [item["choice"] for item in other_branch["next"]] == ["resume", "create", "rebind"]
     # An unregistered checkout is checked within the named workstream's project: 'main' is
     # bound there already, so attaching a second 'main' (which would fail) is not offered.
     unattached = store.init(str(tmp_path / "elsewhere"), branch="main", workstream_id=ws)
-    assert unattached["state"] == "mismatch" and "another checkout" in unattached["message"]
-    assert unattached["workstream"]["id"] == ws
-    assert unattached["choices"] == ["rebind_workstream", "init_requested_binding"]
+    assert unattached["state"] == "mismatch"
+    assert [item["id"] for item in unattached["workstreams"]] == [ws]
+    assert unattached["workstreams"][0]["roles"] == ["requested", "bound"]
+    assert [item["choice"] for item in unattached["next"]] == ["resume", "rebind"]
     loose = store.init(str(tmp_path / "elsewhere"), branch="topic", workstream_id=ws)
-    assert loose["choices"] == ["rebind_workstream", "attach_workstream"]
+    assert [item["choice"] for item in loose["next"]] == ["resume", "create", "rebind"]
+    assert loose["next"][1]["arguments"]["action"] == "attach_workstream"
     assert list(other.iterdir()) == []
 
 
@@ -437,7 +444,7 @@ def test_workstream_rebinding_and_named_non_git_context(store, tmp_path):
     assert renamed["id"] == ws and renamed["revision"] == 2
     assert store.init(path, branch="renamed", workstream_id=ws)["workstream"]["id"] == ws
     stale = store.init(path, branch="main", workstream_id=ws)
-    assert stale["state"] == "mismatch" and "'renamed'" in stale["message"]
+    assert stale["state"] == "mismatch" and stale["workstreams"][0]["branch"] == "renamed"
     assert store.init(path, branch="main")["state"] == "new_branch"
     named = store.init_workstream(project, path, name="detached", confirmed=True)
     resumed = store.init(path, workstream_name="detached", workstream_id=named["workstream"]["id"])

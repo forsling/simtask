@@ -186,34 +186,45 @@ project or persistent session entity. Repeating either call returns its own
 An exact existing path/branch binding returns `ready` with project and
 workstream identities, revision, binding and compact scoped queue. No confirmation
 is needed for ordinary resume. Passing a known `workstream_id` also checks that it
-is bound to this checkout and branch; otherwise `mismatch` reports the requested
-workstream's own binding (or its other project), any workstream already bound
-here as `bound_workstream`, and the choices (`rebind_workstream` only for a
-workstream of the same project, since rebinding never crosses projects); an unknown ID is an
-`unknown_workstream` error. An unknown checkout naming a `workstream_id` is checked
-within that workstream's project. A known checkout on an
-unbound branch returns `new_branch` and that project's registered workstream
-candidates. An unknown checkout returns `unregistered_checkout` with project and
-workstream candidates and the choices `create_project`, `attach_workstream`, and
-`rebind_workstream`; with `project`, it is checked within that project (its
-workstream candidates only, no `create_project`, and `attach_workstream` withheld
-when the name is taken). A branch bound to another checkout returns `mismatch`; when
-another `workstream_id` is requested, it reports that workstream and the branch's
-binding as `bound_workstream` separately. A `project` other than the one the
-checkout is attached to is a `mismatch` naming both. Every `mismatch` carries a
-`choices` list, and each offered choice works when followed:
-`use_bound_workstream` (init here without `workstream_id`), `init_requested_binding`
-(init `workstream` at its own checkout and branch), `use_attached_project` (init
-without `project`), `rebind_workstream` / `rebind_bound_workstream` (confirm a rebind
-of `workstream` / `bound_workstream` here), and `new_workstream` /
-`attach_workstream`. A rebind or new workstream whose name (`workstream_name` or
-the branch) is already used in the project is not offered; the message names the
-workstream holding it. Each message says which `init` arguments follow each offered
-choice. Archived workstreams add one state and a flag; see
-[Archived workstreams](#archived-workstreams).
-Candidates are recorded bindings, not scanned Git refs or running agents. The
-initial call may append an audit event but changes no project, task, scope or
-workstream state.
+is bound to this checkout and branch; an unknown ID is an `unknown_workstream`
+error.
+
+Every other result has one shape, whatever the case:
+
+- `state`: `mismatch` (the request does not match the recorded bindings: a
+  `workstream_id` bound elsewhere or in another project, this branch bound at
+  another checkout, or a `project` other than the one this checkout is attached
+  to), `new_branch` (a known checkout on an unbound branch or name),
+  `unregistered_checkout` (an unknown checkout) or `archived` (see
+  [Archived workstreams](#archived-workstreams)).
+- `message`: a fixed sentence for the state.
+- `path`, `branch`, `workstream_name` and `project` (the project the request was
+  checked in; `null` for an unknown checkout without `project`).
+- `workstreams`: what exists, each with `id`, `project_id`, `name`, `branch`,
+  `checkout_path`, `revision`, any `archive` block, and `roles`: `requested`
+  (the `workstream_id` given), `bound` (bound to this branch or name in the
+  project), `candidate` (one of the project's workstreams, at most ten, with
+  `more_workstreams` and `archived_hidden`) or `name_holder` (it holds the name a
+  new or moved workstream would take).
+- `next`: the calls that work, each `{choice, tool, arguments}` with the exact
+  arguments. `choice` is `resume` (resume that workstream here or at its own
+  checkout and branch), `rebind` (move it here), `create` (`create_project`,
+  `new_workstream` or `attach_workstream`), `check` (the same init within one
+  project, which returns that project's calls) or `unarchive`
+  (`archive_workstream` with `archived=false`; add a `reason`, then init again).
+
+A call that would fail is left out: a rebind never crosses projects, and a new or
+moved workstream whose name (`workstream_name` or the branch) is already used in
+the project is not offered; its holder is listed as `name_holder` and the message
+says another `workstream_name` avoids the conflict. A requested workstream is
+always reported as itself and offered at its own binding, never swapped for the
+one bound here. An unknown checkout naming a `workstream_id` is checked within that
+workstream's project. Without `project`, an unknown checkout offers
+`create_project` and a `check` of each listed project (`projects`, at most ten,
+with `more_projects`), so names and branch bindings are checked before attaching
+or moving anything. Candidates are recorded bindings, not scanned Git refs or
+running agents. The initial call may append an audit event but changes no
+project, task, scope or workstream state.
 
 After choosing setup, call `init` again with `confirmed=true` and `action`:
 `create_project` creates a project and its first workstream;
@@ -348,21 +359,20 @@ Once archived, a workstream is left out unless a call passes
 `include_archived=true`:
 
 - `list_workstreams` omits it and counts it in `archived_hidden`.
-- `init` leaves it out of `new_branch` candidates and `unregistered_checkout`
-  workstream candidates (`archived_hidden` counts them). At its own checkout and
-  branch, with or without its `workstream_id`, `init` returns
-  `state=archived` instead of resuming, with the archive reason and the choices
-  `include_archived` (init again with `include_archived=true`; the ready result
-  keeps its `archive` block and says it is archived) and `unarchive_workstream`
-  (the `archive_workstream` call to make, then init again).
+- `init` leaves it out of `new_branch` and `unregistered_checkout` candidates
+  (`archived_hidden` counts them). At its own checkout and branch, with or
+  without its `workstream_id`, `init` returns `state=archived` instead of
+  resuming, with the workstream and its `archive` block, a `resume` call with
+  `include_archived=true` (the ready result keeps its `archive` block and says it
+  is archived) and an `unarchive` call (`archive_workstream`; add a `reason`, then
+  init again).
 - `init action=rebind_workstream` refuses to move it (`workstream_archived`).
 - `workstream_status` returns its header and counts with
   `listing_skipped="archived"` but no task cards, concern list or scope pages.
 - `get_next_action` selects nothing (`diagnostics.workstream_archived`).
 
-Mismatch reports name an archived workstream as archived, and each offered choice
-that would resume or move one includes `include_archived=true`, so it still works
-when followed. An archived workstream still holds its branch and name in the
+Init lists an archived workstream with its `archive` block, and each `next` call
+that resumes or moves one includes `include_archived=true`, so it works as given. An archived workstream still holds its branch and name in the
 project, so a new workstream cannot take them; rebind or unarchive it instead.
 Its `archive` block (`archived`, `reason`, `revision`, `updated_at`,
 `updated_by`) appears wherever the workstream does once it was ever archived.
