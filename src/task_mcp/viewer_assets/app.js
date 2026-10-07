@@ -1415,24 +1415,33 @@ async function copyPrompt(text, anchor, purpose = "sign-off") {
     toast("Couldn't copy automatically. The prompt is selected: press Ctrl+C (⌘C on a Mac) to copy it.", true);
   }
 }
+// The task's current unresolved items, in stored order and in full: a plain list with
+// thin dividers under a counted heading. Answered items leave this list; their history
+// stays in Activity. The section is omitted when no current item exists.
+function unresolvedSection(t) {
+  const items = t.unresolved_items;
+  const n = items.length;
+  const list = el("ol", "questions");
+  list.setAttribute("aria-labelledby", "unresolved-title");
+  items.forEach((q) => list.append(el("li", "question", markdown(q.text))));
+  // The count is shown as a badge; assistive technology reads it as words with the heading.
+  const count = node("span", String(n), "question-count");
+  count.setAttribute("aria-hidden", "true");
+  const title = el("h3", "block-title", node("span", "Unresolved items"), count,
+    node("span", n === 1 ? "(1 current item)" : `(${n} current items)`, "sr-only"));
+  title.id = "unresolved-title";
+  // The one Design with agent action sits beside this heading, not in the next step.
+  // Its row also hosts the selectable prompt when the clipboard cannot be written.
+  const prompt = canDesign(t) && designPrompt(t);
+  const head = el("div", prompt ? "block-head prompt-host" : "block-head", title,
+    prompt && button("Design with agent", (e) => copyPrompt(prompt, e.currentTarget, "design discussion"), "btn small"));
+  const out = el("section", "block unresolved", head, list);
+  out.setAttribute("aria-labelledby", "unresolved-title");
+  return out;
+}
 function body(t) {
   const out = [];
-  if (t.unresolved_items.length) {
-    const list = el("div", "questions");
-    t.unresolved_items.forEach((q) => {
-      list.append(el("div", "question", markdown(q.text)));
-    });
-    // The one Design with agent action sits beside this heading, not in the next step.
-    // Its row also hosts the selectable prompt when the clipboard cannot be written.
-    const title = el("h3", "block-title", node("span", "Unresolved items"));
-    let headRow = title;
-    if (canDesign(t)) {
-      const prompt = designPrompt(t);
-      headRow = el("div", "block-head prompt-host", title,
-        button("Design with agent", (e) => copyPrompt(prompt, e.currentTarget, "design discussion"), "btn small"));
-    }
-    out.push(el("section", "block", headRow, list));
-  }
+  if (t.unresolved_items.length) out.push(unresolvedSection(t));
   if (t.blocked_by.length) {
     const list = el("div", "links");
     t.prerequisites.forEach((p) => {

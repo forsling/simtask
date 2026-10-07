@@ -143,6 +143,13 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   shown for reading under **Unresolved items**; you settle them with an agent,
   which records the answer. A passed result does not remove unresolved items or prerequisites;
   Store still validates every decision.
+- The **Unresolved items** section is a plain list on the normal background,
+  marked by a thin orange rule at its left edge and a count beside the heading
+  (read out as "N current items"). Each current item appears in full, in stored
+  order, through the same safe Markdown rendering as the specification, with a
+  thin divider between items; nothing is truncated or folded. Answered items
+  leave the list and stay in **Activity**. The section is hidden when a task has
+  no current unresolved items.
 - Every open task with unresolved items (captured feature briefs, other
   questions, saved ideas and Unassigned tasks alike) offers one **Design with
   agent** button beside the **Unresolved items** heading; the next-step panel

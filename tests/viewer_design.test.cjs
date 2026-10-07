@@ -97,7 +97,7 @@ async function test() {
     const head = designs[0].parentElement;
     assert.ok(classes(head).includes("block-head") && classes(head).includes("prompt-host"), key);
     const heading = head.children.find(n => n.tag === "h3");
-    assert.equal(texts(heading).trim(), "Unresolved items", key);
+    assert.equal(heading.children[0].textContent, "Unresolved items", key);
     assert.equal(head.parentElement.tag, "section", key);
     assert.ok(banner, key);
     assert.ok(!labels(banner).includes(DESIGN), `${key}: not duplicated in the next step`);
