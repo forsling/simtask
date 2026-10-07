@@ -22,6 +22,7 @@ project-wide views name one:
 | --- | --- |
 | `/w/<workstream>` and `/w/<workstream>/t/id/<task>` | A workstream, optionally with a selected task |
 | `/p/<project>` and `/p/<project>/t/id/<task>` | The project's **All tasks** |
+| `/p/<project>/u` and `/p/<project>/u/t/id/<task>` | The project's **Unassigned** tasks |
 | `/p/<project>/g` | The project's **Task groups** |
 | `/g/id/<group>` | A group, in the view it implies: its project's **Task groups**, or **Shared task groups** when it spans projects |
 | `/p/<project>/g/id/<group>` | A group shown in a project's **Task groups** other than the one it implies (a shared group, for example) |
@@ -72,6 +73,27 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   date · Retry** until a later refresh succeeds. “All tasks” includes
   tasks outside any one workstream. Workstream names and counts describe
   recorded state, not a running agent.
+- **Unassigned**, directly below **All tasks** in each project, lists that
+  project's tasks that belong to no workstream: zero effective memberships,
+  counting direct members and members inherited through a group a workstream
+  includes, and honouring the workstream's exclusions of the task or its group. A
+  membership in an archived workstream still counts, so archiving a workstream
+  never moves its tasks here. The server filters and pages over these tasks
+  only (a viewer-only `list_tasks` option, not an MCP argument), so assigned
+  tasks never fill a page. The list uses the usual sections and each task's
+  project-wide standing, as in All tasks; search, `j`/`k`, task details,
+  questions, prerequisites, results and sign-off work as there. It is a
+  placement filter, not a status or an agent's queue, and has no order to
+  drag. **Add to workstream** stays in each task's next step and **Actions**
+  (a task whose result passed review shows **Sign off with an agent** in its
+  next step instead, in any placement, and keeps placement in **Actions**);
+  after adding, the task leaves Unassigned on the next refresh, and removing a
+  task's last membership brings it back. With nothing to show it says **No
+  unassigned tasks**. In **All tasks**, each card of a task in no workstream
+  carries a small **Unassigned** marker after its title, so that a task under
+  Open is not taken for work an agent can pick up; workstream cards have none.
+  Task details show the placement as *Unassigned* (agents' MCP tools call it the
+  inbox, for example `state=inbox`).
 - Above the list, the project's note and, in a named workstream, that
   workstream's note show as read-only plain text with when and by whom each was
   last updated; empty notes are not shown. Collapse either one with its header.
@@ -122,7 +144,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   which records the answer. A passed result does not remove unresolved items or prerequisites;
   Store still validates every decision.
 - Every open task with unresolved items (captured feature briefs, other
-  questions, saved ideas and inbox tasks alike) offers one **Design with
+  questions, saved ideas and Unassigned tasks alike) offers one **Design with
   agent** button beside the **Unresolved items** heading; the next-step panel
   does not repeat it. It copies a prompt naming the task
   (`Design with me: <public-id> — <title>. …`, with older tasks keeping their
@@ -131,7 +153,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   agree on: a captured feature brief goes through the task-design skill, other
   items are handled by their own context. The prompt asks for discussion only,
   not implementation, and carries no copy of the questions. No workstream is
-  needed first: an inbox task still shows its separate placement action, and a
+  needed first: an Unassigned task still shows its separate placement action, and a
   saved idea keeps **Go through it with an agent**. Copying confirms with a short
   notice, or shows the prompt selected beside the heading when the clipboard
   cannot be written; it launches no agent and changes no task, membership,
@@ -155,8 +177,8 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   dropped tasks. Completed tasks offer no actions.
   **Add to workstream** and **Remove from workstream** identify the workstream
   being changed; adding retains existing memberships and removing changes only
-  the named one. Details list every effective membership accurately. The inbox
-  contains tasks included in none. Controls require no typed note, preserve proof
+  the named one. Details list every effective membership accurately.
+  **Unassigned** lists tasks included in none. Controls require no typed note, preserve proof
   and clear no questions/prerequisites.
 - **Ask a question** takes one short line; the question holds the task until an
   agent settles it with you. **Defer** and **Resume** (from Later) take effect at
@@ -165,7 +187,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   keeps as the instruction that revived it. Each change records a reason in the
   history: yours, or a plain stand-in such as “Deferred in the browser.”
   Workstreams, details and results are kept through every status change.
-- **+ Idea** (beside Refresh, in All tasks and workstream views) saves a thought
+- **+ Idea** (beside Refresh, in All tasks, Unassigned and workstream views) saves a thought
   before it is lost: **Idea title (required)** (one line, up to 200 characters), an
   **ID** and a multiline **Details (optional)** area (up to 500). The ID is filled in
   as you type the title, with the server's short-slug rule (README, Task identity),
@@ -174,11 +196,12 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   letters, digits and single hyphens, starting with a letter, up to 40 characters); an
   invalid, over-long or taken ID is refused with a plain message asking for another,
   and nothing is saved. The ID is permanent. Saving creates, in one audited
-  Store step, a task in the project's inbox (no workstream, even when opened
-  from one): the short title and details as description, source user and
+  Store step, a task saved to the project's **Unassigned** tasks (no workstream,
+  even when opened from one; the Store's inbox) until it is assigned or
+  processed: the short title and details as description, source user and
   the exact text as its request, held by one open item, “Idea to process: turn
   into a proper brief or task with the user”. The viewer confirms and opens it
-  in **All tasks** under **Design** with an orange dot. No
+  in **Unassigned** under **Design** with an orange dot. No
   agent picks it up as is. Its next step, **Go through it with an agent**,
   copies a prompt (`Go through my ideas, starting with <public-id> — <title>`);
   the task-capture skill then goes through your ideas one at a time with you,

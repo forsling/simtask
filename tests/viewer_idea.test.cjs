@@ -79,10 +79,12 @@ async function test() {
 
   if (origin) run(`state.project = ${JSON.stringify(project)}; state.projects = [{id: ${JSON.stringify(project)}, name: "Demo"}];`);
 
-  // The dialog names where the idea goes: the project's inbox, not this workstream.
+  // The dialog names where the idea goes: the project's Unassigned tasks, not this
+  // workstream, until it is assigned or processed.
   run("captureIdea()");
   assert.equal(get("dialog-title").textContent, "Save an idea");
-  assert.match(get("dialog-description").textContent, /inbox of Demo, not this workstream.*Design/);
+  assert.match(get("dialog-description").textContent, /saved to Unassigned in Demo, not this workstream.*Design until it is assigned or processed/);
+  assert.doesNotMatch(get("dialog-description").textContent, /inbox/i);
   assert.equal(get("submit").textContent, "Save idea");
   assert.equal(get("field-text").required, true);
   assert.equal(get("field-text").maxLength, 200);
@@ -135,9 +137,10 @@ async function test() {
     assert.equal(get("dialog").open, false);
     assert.equal(get("form-error").textContent, "");
     assert.equal(run("state.stream"), null);
+    assert.equal(run("state.unassigned"), true);
     const id = run("state.selected");
     assert.equal(id, "stale-colours");
-    assert.equal(context.pushed, `/p/${project.slice(4, 12)}/t/id/${id}`);
+    assert.equal(context.pushed, `/p/${project.slice(4, 12)}/u/t/id/${id}`);
     assert.equal(context.reloads, 1);
     console.log(JSON.stringify({id}));
     return;
@@ -147,12 +150,13 @@ async function test() {
   assert.deepEqual(JSON.parse(JSON.stringify(context.requests)), [
     {action: "idea-id", payload: {title: "Colour-code stale workstreams"}},
     {action: "idea", payload: {project: "prj_bbbb2222", text: "Colour-code stale workstreams", note: "After a week.\n\n  Keep indentation.  "}}]);
-  // Saving confirms and shows the idea in the project's All tasks, selected.
+  // Saving confirms and shows the idea in the project's Unassigned view, selected.
   assert.equal(get("dialog").open, false);
-  assert.match(context.toasts.at(-1).text, /Idea saved to the inbox.*Design/);
+  assert.match(context.toasts.at(-1).text, /Idea saved to Unassigned.*Design until it is assigned or processed/);
   assert.equal(run("state.stream"), null);
+  assert.equal(run("state.unassigned"), true);
   assert.equal(run("state.selected"), "colour-code-stale-workstreams");
-  assert.equal(context.pushed, "/p/bbbb2222/t/id/colour-code-stale-workstreams");
+  assert.equal(context.pushed, "/p/bbbb2222/u/t/id/colour-code-stale-workstreams");
   assert.equal(context.reloads, 1);
 
   // An edited ID is sent as typed; clearing the title clears an untouched prefill only.

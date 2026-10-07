@@ -27,11 +27,11 @@ _TASK_ID = rf"(?:id/{_PUBLIC_ID}|{_ID})"
 # forwards a different laptop port. A literal 127.0.0.1 still defeats DNS rebinding,
 # and Origin must still match this Host exactly.
 LOOPBACK_HOST = re.compile(r"127\.0\.0\.1:[1-9][0-9]{0,4}")
-# Location URLs the app page is served for: /p/<id>[/t/<id> | /g[/<id>]],
-# /w/<id>[/t/<id>], /g/<id> and /sg[/<id>].
+# Location URLs the app page is served for: /p/<id>[/t/<id> | /u[/t/<id>] | /g[/<id>]],
+# /w/<id>[/t/<id>], /g/<id> and /sg[/<id>]. /p/<id>/u is the project's Unassigned view.
 # Full public task/group IDs follow /id/; legacy hex prefixes stay unmarked.
 APP_PATH = re.compile(
-    rf"/(?:p/{_ID}(?:/t/{_TASK_ID}|/g(?:/{_TASK_ID})?)?|w/{_ID}(?:/t/{_TASK_ID})?|g/{_TASK_ID}|sg(?:/{_TASK_ID})?)"
+    rf"/(?:p/{_ID}(?:/t/{_TASK_ID}|/u(?:/t/{_TASK_ID})?|/g(?:/{_TASK_ID})?)?|w/{_ID}(?:/t/{_TASK_ID})?|g/{_TASK_ID}|sg(?:/{_TASK_ID})?)"
 )
 
 
@@ -52,7 +52,8 @@ def dispatch(store, action, data):
         "remove-from-workstream": store.remove_from_workstream,
         "disposition": store.set_disposition,
         "question": store.add_unresolved,
-        # A quick idea becomes an inbox task held by an Idea to process item (no MCP tool).
+        # A quick idea becomes an Unassigned (inbox) task held by an Idea to process item
+        # (no MCP tool).
         "idea": store.capture_idea,
         # The ID an idea would get from its title: the Store's one short-slug rule.
         "idea-id": store.suggest_task_id,

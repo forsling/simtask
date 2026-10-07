@@ -29,6 +29,21 @@ CARD_INCLUDE_GROUPS = ("blockers", "attempt", "concerns", "workstreams", "ids")
 # Where a task stands for the user, as the viewer sections its board and counts
 # Needs input in the sidebar. Store._standing is the only definition of this rule.
 STANDINGS = ("signoff", "decision", "progress", "open", "deferred", "done", "dropped")
+# Task t's effective membership in workstream w of its project: a direct member or a
+# member of its live parent group, unless that workstream excludes the task or the group.
+# Archived workstreams still count: archiving changes discovery, never membership. A
+# task's workstream_ids and the viewer's Unassigned filter share this one predicate
+# (with t and w bound by the query), so they always agree.
+EFFECTIVE_MEMBERSHIP_SQL = (
+    "w.project_id=t.project_id AND NOT EXISTS (SELECT 1 FROM scope_exclusions e "
+    "WHERE e.workstream_id=w.id AND e.task_id=t.id) "
+    "AND (EXISTS (SELECT 1 FROM scope_members m "
+    "WHERE m.workstream_id=w.id AND m.task_id=t.id) "
+    "OR EXISTS (SELECT 1 FROM scope_groups g "
+    "WHERE g.workstream_id=w.id AND g.group_id=t.parent_group_id AND NOT EXISTS "
+    "(SELECT 1 FROM scope_exclusions e WHERE e.workstream_id=w.id "
+    "AND e.task_id=g.group_id)))"
+)
 # Slim-card state words for gate views whose internal names are longer.
 STATE_WORDS = {"unresolved_items": "question", "prerequisites": "blocked"}
 # Values the list_tasks state filter accepts: slim state words, then older view names.
@@ -2181,16 +2196,9 @@ class Store:
         return [
             row["id"]
             for row in db.execute(
-                "SELECT w.id FROM workstreams w WHERE w.project_id=? "
-                "AND NOT EXISTS (SELECT 1 FROM scope_exclusions e "
-                "WHERE e.workstream_id=w.id AND e.task_id=?) "
-                "AND (EXISTS (SELECT 1 FROM scope_members m "
-                "WHERE m.workstream_id=w.id AND m.task_id=?) "
-                "OR EXISTS (SELECT 1 FROM scope_groups g "
-                "WHERE g.workstream_id=w.id AND g.group_id=? AND NOT EXISTS "
-                "(SELECT 1 FROM scope_exclusions e WHERE e.workstream_id=w.id "
-                "AND e.task_id=g.group_id))) ORDER BY w.id",
-                (task["project_id"], task["id"], task["id"], task["parent_group_id"]),
+                "SELECT w.id FROM (SELECT ? AS id,? AS project_id,? AS parent_group_id) t "
+                "JOIN workstreams w ON " + EFFECTIVE_MEMBERSHIP_SQL + " ORDER BY w.id",
+                (task["id"], task["project_id"], task["parent_group_id"]),
             )
         ]
 
@@ -4682,11 +4690,14 @@ class Store:
         include=None,
         full_cards=False,
         group_id=None,
+        unassigned=False,
     ):
         """Board of active work; full_cards is the viewer's internal unabridged projection.
 
         state="group" lists shared groups instead of tasks (those in the workstream's scope,
         or related to the project, or all); group_id lists that group's members.
+        unassigned=True (the viewer's Unassigned view, not an MCP argument) lists only the
+        project's tasks with no effective workstream membership, paged over those matches.
         """
         request = dict(
             project=project,
@@ -4701,12 +4712,26 @@ class Store:
             request["full_cards"] = True
         if group_id is not None:
             request["group_id"] = group_id
+        if unassigned:
+            request["unassigned"] = True
 
         def operation(db, scope):
             self._page(limit, offset)
             self._validate_include_inactive(include_inactive)
             self._validate_state_filter(state)
             groups = self._include_groups(include)
+            if unassigned:
+                if type(unassigned) is not bool:
+                    raise TaskError("invalid_unassigned: use true or false")
+                if project is None or workstream_id is not None or group_id is not None or state:
+                    raise TaskError(
+                        "invalid_unassigned: name only the project; Unassigned has no "
+                        "workstream, group or state filter"
+                    )
+                project_id = self._project(db, project, scope)["id"]
+                return self._unassigned_listing(
+                    db, project_id, limit, offset, include_inactive, groups, full_cards
+                )
             if group_id is not None:
                 group = self._task(db, group_id, {})
                 if group["object_type"] != "group":
@@ -4792,6 +4817,55 @@ class Store:
             }
 
         return self._run("tasks.listed", request, operation)
+
+    def _unassigned_listing(self, db, project_id, limit, offset, include_inactive, include, full):
+        """The project's tasks in no workstream, in baseline order, paged in SQL over the
+        matches only: assigned tasks never take a place on a page."""
+        where = (
+            "t.project_id=? AND t.object_type='task' AND NOT EXISTS "
+            "(SELECT 1 FROM workstreams w WHERE " + EFFECTIVE_MEMBERSHIP_SQL + ")"
+        )
+        closed = ",".join("?" * len(INACTIVE_STATUSES))
+        active = "" if include_inactive else f" AND t.status NOT IN ({closed})"
+        values = (project_id,) + (() if include_inactive else INACTIVE_STATUSES)
+        total = db.execute(
+            f"SELECT count(*) FROM tasks t WHERE {where}{active}", values
+        ).fetchone()[0]
+        rows = db.execute(
+            f"SELECT t.id FROM tasks t WHERE {where}{active} "
+            "ORDER BY t.order_key,t.id LIMIT ? OFFSET ?",
+            values + (limit + 1, offset),
+        ).fetchall()
+        page = self._paged([row["id"] for row in rows], limit, offset)
+        items = []
+        for identity in page["items"]:
+            task = self._task(db, identity, {})
+            card = self._card(db, task)
+            items.append(
+                card | {"standing": self._standing(card)}
+                if full
+                else self._board_card(db, task, None, include, full=card)
+            )
+        hidden = {}
+        if not include_inactive:
+            hidden = {
+                row["status"]: row["n"]
+                for row in db.execute(
+                    f"SELECT t.status, count(*) AS n FROM tasks t WHERE {where} "
+                    f"AND t.status IN ({closed}) GROUP BY t.status",
+                    (project_id, *INACTIVE_STATUSES),
+                )
+            }
+            hidden = {status: hidden[status] for status in INACTIVE_STATUSES if status in hidden}
+        return {
+            "project_id": project_id,
+            "ordering": "project_baseline",
+            "placement": "unassigned",
+            "total": total,
+            **({} if include_inactive else {"hidden": hidden}),
+            **page,
+            "items": items,
+        }
 
     def _group_listing(self, db, project_id, workstream_id, limit, offset, include):
         """Shared groups as slim cards: in scope, related to a project, or all."""

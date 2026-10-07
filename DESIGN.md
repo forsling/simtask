@@ -82,7 +82,8 @@ future members of the workstream's own project enter it unless individually excl
 explicit exclusion takes precedence over group expansion. A workstream can
 snapshot another workstream's current expression, then add or remove references.
 Membership is nonexclusive: adding a task to B keeps it in A. Adoption is derived
-from effective membership in at least one workstream; inbox means none. Workstream
+from effective membership in at least one workstream; inbox means none (the
+viewer calls it Unassigned). Workstream
 implementation/review state uses its own current-spec attempts. A task's global
 completion and historical proof remain canonical.
 A workstream has an ordered list of shared tasks. Each list's ordering metadata

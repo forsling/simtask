@@ -37,7 +37,9 @@ context.streams = streams;
 context.calls = [];
 const navLabels = () => {
   const sub = get("nav").children.find(c => c.className === "nav-sub");
-  return sub.children.slice(2).map(text);
+  // All tasks, then Unassigned directly below it, then Task groups, then workstreams.
+  assert.deepEqual(sub.children.slice(0, 3).map(text), ["All tasks", "Unassigned", "Task groups"]);
+  return sub.children.slice(3).map(text);
 };
 async function test() {
   run(`state.projects = [{id: "p", name: "Project"}];

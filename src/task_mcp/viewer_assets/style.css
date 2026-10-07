@@ -530,6 +530,8 @@ kbd {
 }
 .badge.tone-go { background: var(--go-bg); }
 .badge.tone-warn { background: var(--warn-bg); }
+/* Placement, not a standing: a quiet marker for tasks in no workstream (All tasks). */
+.badge.tone-placement { background: var(--muted-bg); color: var(--muted); font-weight: 500; }
 .row-main {
   display: flex;
   flex-direction: column;

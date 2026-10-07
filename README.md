@@ -88,7 +88,9 @@ There is no automatic startup or installed OS service. The current launcher
 uses POSIX file locking (Linux/macOS).
 
 Browse projects and workstreams, search/filter task titles, and read
-specifications, evidence and audit history. The project note and, in a
+specifications, evidence and audit history. Each project's **Unassigned** view,
+below **All tasks**, lists its tasks in no workstream (what MCP tools call the
+inbox), and All tasks marks those cards **Unassigned**. The project note and, in a
 workstream, its workstream note appear read-only above the task list. Archived
 workstreams are hidden from navigation until **Show archived**. Each project's **Task groups** page shows
 its discoverable groups, including shared groups and empty groups included in
@@ -106,9 +108,10 @@ except when bringing back a dropped task). A task waiting for sign-off offers
 agent: sign-off is a walkthrough with an agent, not a browser form. **+ Idea**
 saves a thought before it is lost: one line plus an optional sentence, under a
 short ID that is prefilled from the line and editable, becomes
-an inbox task held by an "Idea to process" item, shown under Needs input until
-you ask an agent to "go through my ideas" (the task-capture skill turns each into a
-brief or task with you, splits it, or drops it). Apart from these quick ideas,
+an Unassigned task (in no workstream) held by an "Idea to process" item, shown
+under Design in the project's **Unassigned** view until it is assigned, or
+processed when you ask an agent to "go through my ideas" (the task-capture skill
+turns each into a brief or task with you, splits it, or drops it). Apart from these quick ideas,
 the browser does not create or edit tasks, answer questions, record reviews or
 sign off.
 Concurrent changes keep what you entered and offer reconciliation.

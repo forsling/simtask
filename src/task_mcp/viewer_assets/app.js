@@ -71,6 +71,8 @@ const state = {
   rows: [],
   project: null,
   stream: null,
+  // The project's Unassigned view: its tasks in no workstream (never with a stream).
+  unassigned: false,
   groups: false,
   linkedGroup: null,
   task: null,
@@ -415,6 +417,7 @@ function details(id) {
 
 // Short, token-free paths name the selected project, view and task or group:
 //   /p/<project>      All tasks         /p/<project>/t/<task>
+//   /p/<project>/u    Unassigned        /p/<project>/u/t/<task>
 //   /p/<project>/g    Task groups       /p/<project>/g/<group>
 //   /w/<workstream>   a workstream      /w/<workstream>/t/<task>
 //   /g/<group>        a group in the view it implies (its project's groups, or shared)
@@ -448,16 +451,26 @@ function routePath() {
     if (home && home === (state.groups === "shared" ? "shared" : state.project)) return "/g/" + id;
     return (state.groups === "shared" ? "/sg/" : project + "/g/") + id;
   }
-  const base = state.stream ? "/w/" + shortId(state.stream, ids(state.streams)) : project;
+  const base = state.stream ? "/w/" + shortId(state.stream, ids(state.streams)) : state.unassigned ? project + "/u" : project;
   return state.selected ? base + "/t/" + taskRouteId(state.selected, ids(state.rows)) : base;
 }
 // A parsed location ({view, project, stream, group, task} as public IDs/hex prefixes), {} for the
 // default location, or null for an unrecognized address.
 function parseRoute(path) {
   if (path === "/") return {};
-  const [a, b, c, d, e, ...rest] = path.split("/").slice(1);
+  const parts = path.split("/").slice(1);
   const id = (s) => /^[0-9a-f]{1,32}$/.test(s || "");
   const publicId = (s) => typeof s === "string" && s.length <= 96 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(s);
+  // /p/<project>/u[/t/<task> | /t/id/<public-id>]: the project's Unassigned view.
+  if (parts[0] === "p" && id(parts[1]) && parts[2] === "u") {
+    const [, project, , t, x, y, ...more] = parts;
+    if (more.length) return null;
+    if (t === undefined) return { view: "unassigned", project };
+    if (t === "t" && id(x) && y === undefined) return { view: "unassigned", project, task: x };
+    if (t === "t" && x === "id" && publicId(y)) return { view: "unassigned", project, task: y, publicId: true };
+    return null;
+  }
+  const [a, b, c, d, e, ...rest] = parts;
   if (rest.length) return null;
   if ((a === "p" || a === "w") && id(b) && d === "id" && publicId(e)) {
     if (c === "t") return {view: a === "p" ? "all" : "workstream", [a === "p" ? "project" : "stream"]: b, task: e, publicId: true};
@@ -604,11 +617,12 @@ async function openLocation(path, { initial = false } = {}) {
   state.project = project.id;
   state.streams = streams;
   state.stream = stream;
+  state.unassigned = view === "unassigned" && !groups && !stream;
   state.groups = groups;
   state.linkedGroup = group;
   state.selected = group;
   state.task = null;
-  const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : state.stream ? `${project.name} · ${streamName(state.stream)}` : `${project.name} · All tasks`;
+  const name = groups === "shared" ? "Shared task groups" : groups ? `${project.name} task groups` : state.stream ? `${project.name} · ${streamName(state.stream)}` : `${project.name} · ${boardName()}`;
   notices.forEach((n) => toast(`${n} Showing ${name}.`));
   // Keep the requested address until the board resolves its exact ID or legacy prefix.
   if (!task) syncRoute();
@@ -655,6 +669,7 @@ async function chooseProject(id, { keepSelection = false } = {}) {
   const generation = ++state.generation;
   state.project = id;
   state.groups = false;
+  state.unassigned = false;
   state.linkedGroup = null;
   if (!keepSelection) {
     state.selected = null;
@@ -682,9 +697,13 @@ function renderNav() {
     nav.append(b);
     if (p.id !== state.project) return;
     const sub = el("div", "nav-sub");
-    const all = button("", () => changeScope(null), "nav-item" + (active && !state.stream ? " active" : ""));
+    const all = button("", () => changeScope(null), "nav-item" + (active && !state.stream && !state.unassigned ? " active" : ""));
     all.append(node("span", "All tasks", "grow"));
-    sub.append(all);
+    // Directly below All tasks: the project's tasks in no workstream.
+    const unassigned = button("", () => chooseUnassigned(), "nav-item" + (active && state.unassigned ? " active" : ""));
+    unassigned.append(node("span", "Unassigned", "grow"));
+    unassigned.title = "Tasks in this project that belong to no workstream";
+    sub.append(all, unassigned);
     const groups = button("", () => chooseGroups("project"), "nav-item" + (state.groups === "project" ? " active" : ""));
     groups.append(icon("layers", 14), node("span", "Task groups", "grow"));
     sub.append(groups);
@@ -735,6 +754,7 @@ async function chooseGroups(mode) {
   state.groups = mode;
   state.linkedGroup = null;
   state.stream = null;
+  state.unassigned = false;
   state.selected = null;
   state.task = null;
   syncRoute("push");
@@ -748,16 +768,25 @@ function groupKind(group) {
   const projects = groupProjectCount(group);
   return projects > 1 ? "Shared group" : projects === 1 ? "Project group" : "Empty group";
 }
-async function changeScope(id) {
+async function changeScope(id, { unassigned = false } = {}) {
   closeDrawer();
   state.groups = false;
   state.linkedGroup = null;
   state.stream = id;
+  state.unassigned = !id && unassigned;
   state.selected = null;
   state.task = null;
   syncRoute("push");
   renderNav();
   await reload();
+}
+// The project's Unassigned view: a placement filter over its tasks, not a status.
+function chooseUnassigned() {
+  return changeScope(null, { unassigned: true });
+}
+// The project-wide task list's name: All tasks, or its Unassigned view.
+function boardName() {
+  return state.unassigned ? "Unassigned" : "All tasks";
 }
 async function reload({ quiet = false, requested = null, publicId = false } = {}) {
   const generation = ++state.listGeneration;
@@ -767,11 +796,12 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
   const project = state.project;
   const groups = state.groups;
   const stream = state.stream;
-  const stale = () => generation !== state.listGeneration || project !== state.project || groups !== state.groups || stream !== state.stream;
+  const unassigned = !groups && !stream && state.unassigned;
+  const stale = () => generation !== state.listGeneration || project !== state.project || groups !== state.groups || stream !== state.stream || unassigned !== (!state.groups && !state.stream && state.unassigned);
   if (!quiet) $("list").replaceChildren(skeleton());
   $("idea").hidden = !!groups || !project;
   $("heading").replaceChildren(
-    groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : "All tasks",
+    groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : boardName(),
   );
   // Notes are context, not the board: a failed notes read hides them instead of the list.
   const notesLoad = groups ? Promise.resolve(null) : api("notes", { project, workstream_id: stream }).catch(() => null);
@@ -782,7 +812,8 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
     ? workstreams(project).then((items) => ({ items }), (error) => ({ error }))
     : Promise.resolve({ items: state.streams });
   try {
-    const board = groups ? null : await taskBoard({ project, workstream_id: state.stream });
+    // Unassigned is paged on the server over the matching tasks only.
+    const board = groups ? null : await taskBoard(unassigned ? { project, unassigned: true } : { project, workstream_id: state.stream });
     const loaded = groups
       ? await pages("groups", groups === "project" ? { project } : {})
       : board.items;
@@ -803,7 +834,8 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
     state.orderRevision = state.orderStream ? board.workstream_order_revision : null;
     $("subheading").textContent = groups
       ? `${groups === "project" ? projectName(project) : "Across projects"} · ${rows.length} group${rows.length === 1 ? "" : "s"}`
-      : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}`;
+      : `${projectName(state.project)} · ${rows.length} task${rows.length === 1 ? "" : "s"}${unassigned ? " in no workstream" : ""}`;
+    $("subheading").title = unassigned ? "Tasks here belong to no workstream. Add one to a workstream to have it built there; it then leaves Unassigned." : "";
     const shownStream = !groups && state.stream ? streams.find((s) => s.id === state.stream) : null;
     if (isArchived(shownStream)) {
       // A short tag beside the name keeps the subheading's actions visible; the reason
@@ -821,7 +853,7 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
       const matches = publicId ? rows.filter((r) => r.id === requested) : rows.filter((r) => /^tsk_[0-9a-f]{32}$/.test(r.id) && hexOf(r.id).startsWith(requested));
       if (matches.length === 1) state.selected = matches[0].id;
       else {
-        const where = stream ? streamName(stream) : "this project";
+        const where = stream ? streamName(stream) : unassigned ? "Unassigned" : "this project";
         toast((matches.length ? `That address matches more than one task in ${where}.` : `That task is not in ${where}.`) + (rows.length ? " Showing the first task." : ""));
       }
     }
@@ -836,7 +868,9 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
       $("detail").replaceChildren(
         state.groups
           ? emptyState(groups === "shared" ? "No shared task groups" : "No task groups", groups === "shared" ? "Task groups with members in more than one project appear here." : "Task groups belonging to or included in this project appear here.")
-          : emptyState("Nothing here yet", "Tasks appear here when an agent adds them. Use + Idea to save a quick idea, or pick another workstream."),
+          : unassigned
+            ? emptyState("No unassigned tasks", "Every task in this project belongs to a workstream. Tasks that belong to no workstream, such as ideas saved with + Idea, appear here until they are assigned or processed.")
+            : emptyState("Nothing here yet", "Tasks appear here when an agent adds them. Use + Idea to save a quick idea, or pick another workstream."),
       );
     }
   } catch (e) {
@@ -945,6 +979,13 @@ function row(r) {
     } else b.title = v.label;
     const title = node("span", r.title, "row-title");
     if (v.badge) title.append(" ", node("span", v.label, "badge tone-" + v.tone));
+    // In All tasks, a task in no workstream says so, so that one under Open is not taken
+    // for work an agent can pick up. Inline after the title, it never truncates it.
+    if (!state.stream && !state.unassigned && Array.isArray(r.workstream_ids) && !r.workstream_ids.length) {
+      const tag = node("span", "Unassigned", "badge tone-placement");
+      tag.title = "In no workstream: no agent picks it up until it is added to one.";
+      title.append(" ", tag);
+    }
     const main = el("span", "row-main", title, taskIdLabel(r.id));
     b.append(node("span", "", "dot tone-" + v.tone), main);
   }
@@ -1212,6 +1253,7 @@ function renderDetail(t) {
   }
   const crumbs = [node("span", projectName(t.project_id))];
   if (state.stream) crumbs.push(node("span", "/", "sep"), branchLabel(streamName(state.stream)));
+  else if (state.unassigned) crumbs.push(node("span", "/", "sep"), node("span", "Unassigned"));
 
   const head = el(
     "header",
@@ -1224,7 +1266,7 @@ function renderDetail(t) {
       pill(standing),
       t.workstream_ids?.length
         ? el("span", "meta-item", icon("branch", 13), "In " + t.workstream_ids.map(streamName).join(", "))
-        : node("span", "Inbox", "meta-item warn"),
+        : node("span", "Unassigned", "meta-item warn"),
       node("span", "Updated " + ago(t.updated_at), "meta-item"),
       t.parent_group
         ? button(t.parent_group.title, () => openGroup(t.parent_group.id), "chip")
@@ -1275,7 +1317,9 @@ function nextStep(t, standing) {
     extra = node("p", "Copy the prompt, paste it into your agent, and decide together.", "muted");
     const prompt = ideaPrompt(t);
     buttons.push(button("Go through it with an agent", (e) => copyPrompt(prompt, e.currentTarget, "walkthrough"), "btn primary"));
-  } else if (!member) {
+  } else if (!member && !passed) {
+    // A result that passed review keeps its sign-off action in any placement; Add to
+    // workstream stays in the Actions menu.
     title = "Add this task to a workstream";
     text = "Choose the branch where this task should be built. Its questions and prerequisites still apply.";
     if (canDesign(t)) text += " You can talk its unresolved items through with an agent first; that needs no workstream.";
@@ -1552,6 +1596,7 @@ async function navigateWorkstream(w) {
   state.project = w.project_id;
   state.streams = streams;
   state.stream = w.id;
+  state.unassigned = false;
   state.groups = false;
   state.linkedGroup = null;
   state.selected = null;
@@ -1579,6 +1624,7 @@ async function openGroup(id) {
   state.groups = projects.length > 1 ? "shared" : "project";
   state.linkedGroup = id;
   state.stream = null;
+  state.unassigned = false;
   state.selected = id;
   syncRoute("push");
   renderNav();
@@ -1743,7 +1789,7 @@ function taskAction(t, action, extra) {
         $("conflict").replaceChildren(el("div", "conflict-box", node("strong", latest.title),
           node("p", "Status: " + (STANDINGS[taskStanding(latest)]?.label || latest.status)),
           markdown(latest.body), markdown(latest.acceptance_criteria),
-          node("p", latest.workstream_ids?.length ? "Currently in " + latest.workstream_ids.map(streamName).join(", ") : "Currently in the inbox"),
+          node("p", latest.workstream_ids?.length ? "Currently in " + latest.workstream_ids.map(streamName).join(", ") : "Currently unassigned"),
           button("I've checked it — use this version", () => {
             revision = latest.revision;
             $("form-error").textContent = "Check your choice, then submit again.";
@@ -1768,7 +1814,7 @@ async function membershipDialog(t, adding) {
   const title = adding ? "Add to workstream" : "Remove from workstream";
   openDialog(title, adding
     ? `Add “${t.title}” to the chosen workstream. Existing memberships, results and reviews are kept.`
-    : `Remove “${t.title}” only from the chosen workstream. Other memberships, results and reviews are kept. The inbox contains tasks with no memberships.`, title);
+    : `Remove “${t.title}” only from the chosen workstream. Other memberships, results and reviews are kept. A task with no memberships is listed under Unassigned.`, title);
   const picker = node("select"); picker.id = "field-workstream_id"; picker.name = "workstream_id"; picker.required = true;
   for (const w of streams) {
     const option = node("option", (w.branch || w.name) + (adding && t.workstream_ids?.includes(w.id) ? " (already included)" : "") + (isArchived(w) ? " (archived)" : ""));
@@ -1827,9 +1873,9 @@ function resumeTask(t) {
     return { disposition: "open", note: reason, authorization: reason };
   });
 }
-// A quick idea goes to the open project's inbox, never a workstream, held by an "Idea
-// to process" item so nothing is built from it until an agent goes through it with the
-// user. Saving shows it in All tasks, under Design.
+// A quick idea is saved to the open project's Unassigned tasks (the Store's inbox), never
+// a workstream, held by an "Idea to process" item so nothing is built from it until an
+// agent goes through it with the user. Saving shows it in Unassigned, under Design.
 // Its permanent ID is prefilled from the title by the server's one short-slug rule
 // ("idea-id"), never a rule of the viewer's own. Until the user edits the ID, saving
 // sends none, so the server derives it from the final title by that same rule.
@@ -1839,7 +1885,7 @@ function captureIdea() {
   if (!project || state.groups) return;
   const name = projectName(project);
   openDialog("Save an idea",
-    `Jot it down before it's lost. It goes to the inbox of ${name}${state.stream ? ", not this workstream" : ""}, and waits under Design. Nothing is built from it until you go through it with an agent.`,
+    `Jot it down before it's lost. It is saved to Unassigned in ${name}${state.stream ? ", not this workstream" : ""}, and waits there under Design until it is assigned or processed. Nothing is built from it until you go through it with an agent.`,
     "Save idea");
   const title = field("text", "Idea title (required)", { maxLength: 200 });
   const id = field("public_id", "ID", { required: false, maxLength: 100,
@@ -1886,11 +1932,12 @@ function captureIdea() {
   };
 }
 async function showIdea(saved) {
-  toast("Idea saved to the inbox. It waits under Design.");
+  toast("Idea saved to Unassigned. It waits under Design until it is assigned or processed.");
   if (state.project !== saved.project_id) return reload({ quiet: true });
   state.groups = false;
   state.linkedGroup = null;
   state.stream = null;
+  state.unassigned = true;
   state.selected = saved.id;
   state.task = null;
   $("search").value = "";
