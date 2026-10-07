@@ -266,14 +266,28 @@ does not change `list_events`; agents keep `list_task_attempts` and
   every other action with its reason: reads (including `activity.read` itself),
   project/session/workstream/note changes that are never recorded on a task, and
   workstream ordering. Failed requests are never shown. `tests/test_activity.py`
-  reads every action the code can emit (`Store._run` literals and raw
-  `INSERT INTO events` parameters) and fails on any action in neither map.
+  reads every action the code under `src/` can emit and fails on any action in
+  neither map: `Store._run` and `Store._event` action literals (or conditionals
+  between literals), and the action column of each literal `INSERT INTO events`
+  passed to `execute` or `executemany`, as an SQL literal or a literal
+  parameter. It also fails on anything it cannot read: a non-literal action
+  (except `_run` forwarding its own to `_event`), or `INSERT INTO events` text
+  held in a variable, built at run time or given unreadable parameters.
 - **Filtering and bounds**: the meaningful-action filter runs in SQL before
-  paging, so hidden reads never shorten a page. Each query examines at most 2000
-  of the task's own newest-first events below the cursor (the busiest real task
-  had about 150 in total). If that bound is reached first, the page holds what
-  was found, `scan_limited` is set, and `next_cursor` resumes exactly where the
-  scan stopped, so nothing is skipped.
+  paging, so hidden reads never shorten a page. Each paging query examines at
+  most 2000 newest-first events below the cursor: the task's own, or for a group
+  its own and its members' together (the busiest real task had about 150 events,
+  the busiest group with its members about 600). If that bound is reached first,
+  the page holds what was found, `scan_limited` is set, and `next_cursor`
+  resumes exactly where the scan stopped, so nothing is skipped. If a first page
+  is empty because of the bound (more than 2000 hidden events in a row, never
+  seen in real data), `newest_sequence` is null until a later page finds an
+  entry. Two lookups fall outside the bound, because the events table has no
+  index on action and this read adds no schema change: telling imported results
+  from live ones (only for a task that has results), and finding a `target`'s
+  `attempt.recorded` event. Each walks the task's own events once through the
+  `task_history` index, so its cost grows with that task's event count, not
+  with the database.
 - **Stable paging**: cursors are event sequences. New events only get higher
   sequences, so writes between page loads cause no duplicates or gaps.
 - **Imported results**: attempts with no `attempt.recorded` event (the
@@ -284,9 +298,20 @@ does not change `list_events`; agents keep `list_task_attempts` and
   task with more than 19 imported results would make a page exceed 20 entries;
   the real data has at most one per task.) A result with an `attempt.recorded`
   event is shown only from that event, so each result appears once.
-- **Groups** show their own events only. A member created by decomposition
-  starts with a `created` entry at the group's decomposition event
-  (`via: "decomposition"`), since that member has no creation event of its own.
+- **Groups** show their own events, plus the membership changes recorded on a
+  member: `create_task` or `update_task` with `group_id` writes the join on the
+  new member's own task, so the group shows each as a `member_added` entry
+  (`via: "create_task"` or `"update_task"`, with `member_id` and `title`) at that
+  event's sequence, paged with the group's own events under the same cursor and
+  bound. `add_group_member` is recorded on the group (`via:
+  "add_group_member"`). Nothing else of a member's history appears on the
+  group: members' history is not aggregated. Members are found by their current
+  group; a task cannot leave or change group (`update_task` rejects
+  reassignment, and repeating the current group changes nothing and is not
+  shown; only the one-off 2026-09-26 migration correction removed members, and
+  it is recorded on the group). A member created by decomposition starts with a `created` entry at the
+  group's decomposition event (`via: "decomposition"`), since that member has no
+  creation event of its own.
 
 ## Concurrent edits
 

@@ -932,8 +932,11 @@ class Store:
         Results without an attempt.recorded event (imported by the TASKS.md migration)
         sit at the import event's sequence, just above the import entry, and are never
         split from it. A member created by decomposition starts with its group's
-        decomposition event. Each call examines at most ACTIVITY_SCAN_LIMIT of the
-        task's own events per query.
+        decomposition event. A group's feed also shows the create_task and update_task
+        events that joined a member to it (recorded on the member), and nothing else of
+        its members' history. Each paging query examines at most ACTIVITY_SCAN_LIMIT
+        events (for a group, its own and its members'); the target and imported-result
+        lookups walk the task's own events once (see _ActivityHistory.imported_results).
         """
         request = dict(task_id=task_id, cursor=cursor, target=target)
 
@@ -5191,10 +5194,34 @@ class _ActivityHistory:
         ",".join("'" + action + "'" for action in sorted(ACTIVITY_KINDS))
     )
 
+    # A member's own event that joined it to a group: create_task or update_task with
+    # group_id. These are the only membership changes recorded on the member rather
+    # than on the group (decomposition and add_group_member are recorded on the group).
+    MEMBER_JOIN_SQL = (
+        "e.outcome='ok' AND e.action IN ('task.created','task.updated') "
+        "AND json_extract(e.request_json,'$.group_id')=:group AND (e.action='task.created' "
+        "OR (json_extract(e.after_json,'$.parent_group_id')=:group "
+        "AND json_extract(e.before_json,'$.parent_group_id') IS NOT :group))"
+    )
+
     def __init__(self, db, task):
         self.db = db
         self.task = task
         self.task_id = task["id"]
+        self.group = task["object_type"] == "group"
+        if self.group:
+            # Read once: the paging queries reuse the group's and its members' IDs.
+            self.window_ids = json.dumps(
+                [
+                    self.task_id,
+                    *(
+                        row[0]
+                        for row in db.execute(
+                            "SELECT id FROM tasks WHERE parent_group_id=?", (self.task_id,)
+                        )
+                    ),
+                ]
+            )
         row = db.execute(
             "SELECT min(sequence) FROM events WHERE task_id=? AND outcome='ok' AND action IN (?,?)",
             (self.task_id, *self.IMPORTS),
@@ -5210,20 +5237,33 @@ class _ActivityHistory:
         Returns (rows, scanned_floor): scanned_floor is the oldest sequence examined
         when the scan bound was reached, else None (the task's events are exhausted).
         """
-        window = "SELECT sequence FROM events WHERE task_id=?"
-        values = [self.task_id]
+        values = {"task": self.task_id, "limit": ACTIVITY_SCAN_LIMIT}
+        if self.group:
+            # A group's window also covers its members' events, so the joins they record
+            # (MEMBER_JOIN_SQL) page with the group's own events under the same bound.
+            # Nothing else of a member's history is shown.
+            window = (
+                "SELECT sequence FROM events WHERE task_id IN (SELECT value FROM json_each(:ids))"
+            )
+            meaningful = (
+                f"((e.task_id=:task AND {self.MEANINGFUL_SQL}) OR "
+                f"(e.task_id!=:task AND {self.MEMBER_JOIN_SQL}))"
+            )
+            values |= {"group": self.task_id, "ids": self.window_ids}
+        else:
+            window = "SELECT sequence FROM events WHERE task_id=:task"
+            meaningful = self.MEANINGFUL_SQL
         if before is not None:
-            window += " AND sequence<?"
-            values.append(before)
-        window += " ORDER BY sequence DESC LIMIT ?"
-        values.append(ACTIVITY_SCAN_LIMIT)
+            window += " AND sequence<:before"
+            values["before"] = before
+        window += " ORDER BY sequence DESC LIMIT :limit"
         # Select sequences first so the bounded sort never carries the JSON payloads.
         found = [
             row[0]
             for row in self.db.execute(
                 f"SELECT e.sequence FROM ({window}) w JOIN events e ON e.sequence=w.sequence "
-                f"WHERE {self.MEANINGFUL_SQL} ORDER BY e.sequence DESC LIMIT ?",
-                (*values, limit),
+                f"WHERE {meaningful} ORDER BY e.sequence DESC LIMIT :rows",
+                values | {"rows": limit},
             )
         ]
         rows = self.db.execute(
@@ -5239,8 +5279,20 @@ class _ActivityHistory:
         return rows, floor if scanned == ACTIVITY_SCAN_LIMIT else None
 
     def imported_results(self):
-        """Attempts with no attempt.recorded event: results the migration imported."""
+        """Attempts with no attempt.recorded event: results the migration imported.
+
+        Outside ACTIVITY_SCAN_LIMIT: with no index on action (and no schema change), this
+        walks the task's own events once through task_history, only when the task has
+        results. target_sequence does the same for a target's event.
+        """
         if self._imported is None:
+            attempts = self.db.execute(
+                "SELECT * FROM attempts WHERE task_id=? ORDER BY created_at DESC, id DESC",
+                (self.task_id,),
+            ).fetchall()
+            if not attempts:
+                self._imported = []
+                return self._imported
             recorded = {
                 row[0]
                 for row in self.db.execute(
@@ -5249,14 +5301,7 @@ class _ActivityHistory:
                     (self.task_id,),
                 )
             }
-            self._imported = [
-                dict(row)
-                for row in self.db.execute(
-                    "SELECT * FROM attempts WHERE task_id=? ORDER BY created_at DESC, id DESC",
-                    (self.task_id,),
-                )
-                if row["id"] not in recorded
-            ]
+            self._imported = [dict(row) for row in attempts if row["id"] not in recorded]
         return self._imported
 
     def _tail(self, before):
@@ -5318,6 +5363,8 @@ class _ActivityHistory:
         return entries, None, False
 
     def _unit(self, row):
+        if row["task_id"] != self.task_id:
+            return [self._member_join_entry(row)]
         entry = self._entry(row)
         if row["action"] in self.IMPORTS and row["sequence"] == self.import_sequence:
             results = [self._imported_entry(a, row) for a in self.imported_results()]
@@ -5340,6 +5387,18 @@ class _ActivityHistory:
             "via": "decomposition",
             "group_id": self.task["parent_group_id"],
             "summary": f"Created by decomposing group {self.task['parent_group_id']}",
+        }
+
+    def _member_join_entry(self, row):
+        """A member's create_task or update_task that joined this group."""
+        created = row["action"] == "task.created"
+        source = row["request_json"] if created else row["after_json"]
+        title = _loads(source).get("title")
+        return self._base(row, "member_added") | {
+            "member_id": row["task_id"],
+            "title": title,
+            "via": "create_task" if created else "update_task",
+            "summary": _clip(f"Member added: {title or row['task_id']}"),
         }
 
     def _imported_entry(self, attempt, event):
@@ -5483,9 +5542,15 @@ class _ActivityHistory:
                 "member_ids": members,
                 "summary": f"Decomposed into {len(members)} members",
             }
-        # member_added: recorded on the group.
+        # member_added: add_group_member, recorded on the group.
         member = request.get("task_id")
-        return entry | {"member_id": member, "summary": f"Member added: {member}"}
+        title = (after.get("member") or {}).get("title")
+        return entry | {
+            "member_id": member,
+            "title": title,
+            "via": "add_group_member",
+            "summary": _clip(f"Member added: {title or member}"),
+        }
 
     @staticmethod
     def _update_fields(before, after):

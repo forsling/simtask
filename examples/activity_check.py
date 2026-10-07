@@ -8,8 +8,8 @@ backup API; every read below runs against the copy, which gains its own audit ev
 
 With no task IDs it checks an imported task, the busiest task and the busiest group.
 For each it walks every page, checks order, duplicates and that each result, review and
-sign-off appears exactly once, opens the oldest result as a target, and prints timings
-and the first page.
+sign-off appears exactly once (and, for a group, every member join recorded on the
+member), opens the oldest result as a target, and prints timings and the first page.
 """
 
 import argparse
@@ -105,6 +105,22 @@ def check(store, db, task_id, show):
         ).fetchone()[0]
         if sum(e["kind"] == kind for e in entries) != expected:
             problems.append(f"{kind} count differs from {expected}")
+    if pages[0]["object_type"] == "group":
+        # Joins recorded on the member (create_task or update_task with group_id).
+        joins = db.execute(
+            "SELECT count(*) FROM events WHERE outcome='ok' AND task_id<>? "
+            "AND action IN ('task.created','task.updated') "
+            "AND json_extract(request_json,'$.group_id')=? AND (action='task.created' "
+            "OR (json_extract(after_json,'$.parent_group_id')=? "
+            "AND json_extract(before_json,'$.parent_group_id') IS NOT ?))",
+            (task_id, task_id, task_id, task_id),
+        ).fetchone()[0]
+        shown_joins = sum(
+            e["kind"] == "member_added" and e["via"] != "add_group_member" for e in entries
+        )
+        if shown_joins != joins:
+            problems.append(f"member joins {shown_joins} != {joins} recorded on members")
+        print(f"  member joins recorded on members: {joins}, shown: {shown_joins}")
     total, hidden = db.execute(
         "SELECT count(*), sum(outcome<>'ok' OR action IN ('tasks.read','tasks.listed',"
         "'attempt.read','attempts.listed','events.listed','activity.read')) "

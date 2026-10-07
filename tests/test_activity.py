@@ -22,16 +22,22 @@ from task_mcp.store import (
 from task_mcp.viewer import dispatch
 
 SOURCE = Path(store_module.__file__).parent
-ACTION_SHAPE = r"[a-z_]+\.[a-z_]+"
+EVENTS_INSERT = re.compile(r"INSERT\s+(?:OR\s+\w+\s+)?INTO\s+events\b", re.IGNORECASE)
+COLUMNS = re.compile(
+    r"INTO\s+events\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)", re.IGNORECASE | re.DOTALL
+)
 
 
 def emitted_actions(sources):
     """Every audit action the code can write, read from the code itself.
 
-    Store._run(action, ...) is the audited entry point: its action must be a string
-    literal (or a conditional between literals) so this scan sees it. A raw
-    INSERT INTO events (as a migration may write) contributes the action-shaped
-    literals among its parameters.
+    Store._run(action, ...) is the audited entry point and Store._event(db, action, ...)
+    the writer: the action must be a string literal (or a conditional between
+    literals) so this scan sees it; only _run may forward its own action to _event. A
+    raw INSERT INTO events must be the literal SQL of an execute or executemany call
+    whose action column is an SQL literal or a literal parameter. Any other text that
+    inserts into events (SQL held in a variable, built at run time, or parameters that
+    cannot be read) is reported as opaque, so the classification test fails closed.
     """
     found, opaque = set(), []
 
@@ -39,42 +45,114 @@ def emitted_actions(sources):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return {node.value}
         if isinstance(node, ast.IfExp):
-            return literals(node.body) | literals(node.orelse)
+            body, orelse = literals(node.body), literals(node.orelse)
+            return None if body is None or orelse is None else body | orelse
         return None
 
+    def argument(call, index, keyword):
+        for item in call.keywords:
+            if item.arg == keyword:
+                return item.value
+        return call.args[index] if len(call.args) > index else None
+
+    def insert_actions(sql, call, function):
+        """Actions a literal INSERT INTO events writes, or None when unreadable."""
+        match = COLUMNS.search(sql)
+        if match is None:
+            return None
+        columns = [c.strip().lower() for c in match.group(1).split(",")]
+        values = [v.strip() for v in match.group(2).split(",")]
+        if "action" not in columns or len(columns) != len(values):
+            return None
+        value = values[columns.index("action")]
+        sql_literal = re.fullmatch(r"'([^']*)'", value)
+        if sql_literal:
+            return {sql_literal.group(1)}
+        if value != "?":
+            return None
+        position = values[: columns.index("action")].count("?")
+        rows = argument(call, 1, "parameters")
+        if call.func.attr == "executemany":
+            if not isinstance(rows, (ast.List, ast.Tuple)) or not rows.elts:
+                return None
+            rows = rows.elts
+        else:
+            rows = [rows]
+        actions = set()
+        for row in rows:
+            if not isinstance(row, (ast.List, ast.Tuple)) or len(row.elts) <= position:
+                return None
+            action = row.elts[position]
+            if function == "_event" and isinstance(action, ast.Name) and action.id == "action":
+                continue  # The writer itself: its callers' actions are scanned.
+            values = literals(action)
+            if values is None:
+                return None
+            actions |= values
+        return actions
+
     for path, text in sources:
-        for node in ast.walk(ast.parse(text)):
-            if not isinstance(node, ast.Call) or not node.args:
+        tree = ast.parse(text)
+        function_of, attributed = {}, set()
+        for function in ast.walk(tree):
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(function):
+                    function_of[node] = function.name  # Innermost wins (walked later).
+            if isinstance(function, ast.Expr) and isinstance(function.value, ast.Constant):
+                attributed.add(function.value)  # A docstring writes nothing.
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
                 continue
             name = getattr(node.func, "attr", getattr(node.func, "id", None))
-            if name == "_run":
-                values = literals(node.args[0])
-                if values is None:
-                    opaque.append(f"{path}:{node.lineno}")
-                else:
+            where = f"{path}:{node.lineno}"
+            if name in {"_run", "_event"}:
+                action = argument(node, 0 if name == "_run" else 1, "action")
+                values = literals(action) if action is not None else None
+                forwarded = (
+                    name == "_event"
+                    and function_of.get(node) == "_run"
+                    and isinstance(action, ast.Name)
+                    and action.id == "action"
+                )
+                if values is not None:
                     found |= values
-            first = node.args[0]
+                elif not forwarded:
+                    opaque.append(where)
+            sql = argument(node, 0, "sql")
             if (
-                name == "execute"
-                and isinstance(first, ast.Constant)
-                and isinstance(first.value, str)
-                and "INSERT INTO events" in first.value
-                and len(node.args) > 1
+                name in {"execute", "executemany"}
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(sql, ast.Constant)
+                and isinstance(sql.value, str)
+                and EVENTS_INSERT.search(sql.value)
             ):
-                for inner in ast.walk(node.args[1]):
-                    if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
-                        if re.fullmatch(ACTION_SHAPE, inner.value):
-                            found.add(inner.value)
-    return found, opaque
+                actions = insert_actions(sql.value, node, function_of.get(node))
+                if actions is None:
+                    opaque.append(where)
+                else:
+                    found |= actions
+                attributed.add(sql)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node not in attributed
+                and EVENTS_INSERT.search(node.value)
+            ):
+                opaque.append(f"{path}:{node.lineno}")
+    return found, sorted(set(opaque))
 
 
 def source_files():
-    return [(path.name, path.read_text()) for path in sorted(SOURCE.glob("*.py"))]
+    return [
+        (str(path.relative_to(SOURCE.parent)), path.read_text())
+        for path in sorted(SOURCE.rglob("*.py"))
+    ]
 
 
 def test_every_action_the_store_can_emit_is_classified():
     actions, opaque = emitted_actions(source_files())
-    assert not opaque, f"_run actions must be literals so they can be classified: {opaque}"
+    assert not opaque, f"event actions must be literals so they can be classified: {opaque}"
     # The scan really sees the store's writes and reads.
     assert {"attempt.recorded", "task.signoff", "tasks.read", "activity.read"} <= actions
     unclassified = sorted(actions - ACTIVITY_KINDS.keys() - ACTIVITY_HIDDEN.keys())
@@ -97,10 +175,41 @@ def migrate(db):
     )
 def hidden(self, action):
     return self._run(action, request, operation)
+def _run(self, action, request, operation):
+    self._event(db, action, request, scope, "ok")
+def joined(self, db, scope):
+    self._event(db, "group.member_joined", {}, scope, "ok")
+def forwarded(self, db, action, scope):
+    self._event(db, action, {}, scope, "ok")
+def many(db):
+    db.executemany(
+        "INSERT INTO events (timestamp,action,outcome) VALUES (?,?,'ok')",
+        [(timestamp(), "foo.many"), (timestamp(), "foo.more")],
+    )
+def inline(db):
+    db.execute("INSERT INTO events (action,outcome) VALUES ('foo.inline','ok')")
+def held(db):
+    sql = "INSERT INTO events (timestamp,action) VALUES (?,?)"
+    db.execute(sql, (timestamp(), "foo.raw"))
+def generated(db, rows):
+    db.executemany("INSERT INTO events (timestamp,action) VALUES (?,?)", rows)
+def _event(self, db, action, request, scope, outcome):
+    db.execute("INSERT INTO events (timestamp, action) VALUES (?, ?)", (timestamp(), action))
 """
     actions, opaque = emitted_actions([("sample.py", sample)])
-    assert actions == {"note.created", "note.archived", "note.updated", "note.migrated"}
-    assert opaque == ["sample.py:12"]
+    assert actions == {
+        "note.created",
+        "note.archived",
+        "note.updated",
+        "note.migrated",
+        "group.member_joined",
+        "foo.many",
+        "foo.more",
+        "foo.inline",
+    }
+    # hidden: an opaque _run; forwarded: _event outside _run; held: SQL in a variable;
+    # generated: executemany rows that cannot be read.
+    assert opaque == ["sample.py:12", "sample.py:18", "sample.py:27", "sample.py:30"]
 
 
 @pytest.fixture
@@ -381,7 +490,15 @@ def test_groups_show_their_own_changes_and_members_their_decomposition(ready):
     page = activity(store, group["id"])
     assert page["object_type"] == "group"
     assert [e["kind"] for e in page["items"]] == ["member_added", "created"]
-    assert page["items"][0]["member_id"] == member["id"]
+    assert (
+        page["items"][0]
+        | {
+            "member_id": member["id"],
+            "title": "Loose member",
+            "via": "add_group_member",
+        }
+        == page["items"][0]
+    )
 
     parent = store.create_task(project, "To split", workstream_id=ws)
     store.decompose_task(parent["id"], parent["revision"], [{"title": "Part one"}])
@@ -395,6 +512,101 @@ def test_groups_show_their_own_changes_and_members_their_decomposition(ready):
     group_feed = activity(store, parent["id"])["items"]
     assert group_feed[0]["kind"] == "decomposed" and group_feed[0]["member_ids"] == [part]
     assert group_feed[0]["sequence"] == feed[-1]["sequence"]
+
+
+def join(store, project, group_id, title):
+    """create_task(group_id=...): the join is recorded on the new member, not the group."""
+    group = full(store, group_id)
+    return store.create_task(
+        project, title, group_id=group_id, group_expected_revision=group["revision"]
+    )
+
+
+def test_a_group_shows_members_that_joined_it_from_their_own_task(ready):
+    store, project, ws = ready
+    group = store.create_group(ws, "Joined")
+    born = join(store, project, group["id"], "Born inside")
+    loose = store.create_task(project, "Moved in", workstream_id=ws)
+    current = full(store, group["id"])
+    store.update_task(
+        loose["id"],
+        loose["revision"],
+        {},
+        group_id=group["id"],
+        group_expected_revision=current["revision"],
+    )
+    # Already a member: update_task with the same group changes no membership.
+    current, member = full(store, group["id"]), full(store, loose["id"])
+    store.update_task(
+        loose["id"],
+        member["revision"],
+        {"summary": "Short"},
+        group_id=group["id"],
+        group_expected_revision=current["revision"],
+    )
+    # A member's other history, failed joins and another group's members stay off.
+    store.add_unresolved(born["id"], full(store, born["id"])["revision"], "Member question")
+    with pytest.raises(TaskError):
+        store.create_task(project, "Stale", group_id=group["id"], group_expected_revision=1)
+    other = store.create_group(ws, "Other")
+    join(store, project, other["id"], "Elsewhere")
+
+    page = activity(store, group["id"])
+    rows = [(e["kind"], e.get("member_id"), e.get("via"), e.get("title")) for e in page["items"]]
+    assert rows == [
+        ("member_added", loose["id"], "update_task", "Moved in"),
+        ("member_added", born["id"], "create_task", "Born inside"),
+        ("created", None, None, "Joined"),
+    ]
+    assert page["newest_sequence"] == page["items"][0]["sequence"]
+    # The members' own feeds still show the same events as their own.
+    born_feed = activity(store, born["id"])["items"]
+    assert born_feed[-1]["kind"] == "created" and born_feed[-1]["group_id"] == group["id"]
+    assert born_feed[-1]["sequence"] == page["items"][1]["sequence"]
+    moved = next(e for e in activity(store, loose["id"])["items"] if e.get("group_id"))
+    assert moved["kind"] == "updated" and moved["sequence"] == page["items"][0]["sequence"]
+
+
+def test_member_joins_page_stably_with_the_groups_own_events(ready, monkeypatch):
+    store, project, ws = ready
+    group = store.create_group(ws, "Large")
+    members = []
+    for index in range(30):
+        member = join(store, project, group["id"], f"Member {index}")
+        members.append(member["id"])
+        store.get_tasks([member["id"]])  # Member reads share the window but never show.
+        store.add_unresolved(member["id"], member["revision"], "Hidden from the group")
+        if index % 3 == 0:
+            current = full(store, group["id"])
+            store.update_task(group["id"], current["revision"], {"title": f"Large {index}"})
+    pages = walk(store, group["id"])
+    assert [len(page["items"]) for page in pages] == [20, 20, 1]
+    entries = [entry for page in pages for entry in page["items"]]
+    sequences = [entry["sequence"] for entry in entries]
+    assert sequences == sorted(set(sequences), reverse=True)
+    joined = [e["member_id"] for e in entries if e["kind"] == "member_added"]
+    assert joined == members[::-1]
+    assert [e["kind"] for e in entries].count("updated") == 10
+
+    # A small scan bound resumes without gaps.
+    monkeypatch.setattr(store_module, "ACTIVITY_SCAN_LIMIT", 7)
+    limited = walk(store, group["id"])
+    assert any(page.get("scan_limited") for page in limited)
+    assert [e["sequence"] for page in limited for e in page["items"]] == sequences
+    monkeypatch.undo()
+
+    # New members and member churn between page loads cause no duplicates or gaps.
+    first = activity(store, group["id"])
+    for index in range(5):
+        member = join(store, project, group["id"], f"Late {index}")
+        store.add_unresolved(member["id"], member["revision"], "Hidden")
+    second = activity(store, group["id"], cursor=first["next_cursor"])
+    third = activity(store, group["id"], cursor=second["next_cursor"])
+    loaded = [e["sequence"] for page in (first, second, third) for e in page["items"]]
+    assert loaded == sequences and "next_cursor" not in third
+    assert second["newest_sequence"] > first["newest_sequence"]
+    fresh = [e["sequence"] for page in walk(store, group["id"]) for e in page["items"]]
+    assert fresh[5:] == sequences and len(fresh) == len(sequences) + 5
 
 
 def test_no_mcp_tool_reads_activity(tmp_path):
