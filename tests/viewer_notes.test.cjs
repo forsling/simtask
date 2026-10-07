@@ -137,6 +137,16 @@ async function test() {
   toggle.onclick();
   await settle();
   assert.equal(find(section, "note-row").length, 1);
+  // A re-render (a refresh) shows the list's last page at once, so Spec keeps its height,
+  // and reads it again.
+  const listed = requests("note-list").length;
+  run("renderDetail(task)");
+  section = find(get("detail"), "notes-block")[0];
+  assert.deepEqual(find(section, "note-row").map((r) => find(r, "note-title")[0].textContent), ["Agreed copy"]);
+  assert.equal(find(section, "question-count")[0].textContent, "1");
+  assert.equal(requests("note-list").length, listed, "rendering still reads nothing");
+  await run("loadNoteLists()");
+  assert.equal(requests("note-list").length, listed + 1);
   // No notes: the section says so.
   responses["note-list"] = (p) => ({reference: p.reference, total: 0, items: [], next_offset: null, archived_hidden: 0});
   run("renderDetail(task)");

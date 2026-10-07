@@ -2119,6 +2119,10 @@ const NOTE_TEXT_LIMIT = 4000;
 const NOTE_REFUSALS = /^(invalid_note_title|note_title_too_long|invalid_note_text|note_too_long|references_required|invalid_reference|unknown_reference|reference_kind_mismatch): /;
 // Note lists that also show archived notes, by "kind:id", while this tab is open.
 const archivedNoteLists = new Set();
+// Each note list's last first page, by "kind:id", with whether it included archived
+// notes. A re-render of the same list (a refresh) shows it at once while it is read
+// again, so the Spec tab keeps its height and scroll position.
+const shownNoteLists = new Map();
 // Names of referenced entities this tab has read, by ID.
 const referenceNames = new Map();
 // Note lists rendered but not yet read. Rendering reads nothing; whoever shows the pane
@@ -2210,31 +2214,37 @@ function notesSection(ref, { title = "Notes", back = null, empty = "No notes ref
   let next = null, turn = 0;
   const more = button("Show more", () => load(next), "btn small note-more");
   more.hidden = true;
+  function show(page, offset, archived) {
+    if (!offset) list.replaceChildren();
+    page.items.forEach((n) => list.append(noteRow(n, back)));
+    list.hidden = !page.total;
+    next = page.next_offset;
+    more.hidden = next === null;
+    count.textContent = String(page.total);
+    count.hidden = !page.total;
+    const hidden = page.archived_hidden || 0;
+    toggle.hidden = !archived && !hidden;
+    toggle.textContent = archived ? "Hide archived" : `Show ${hidden} archived`;
+    toggle.setAttribute("aria-pressed", String(archived));
+    status.textContent = page.total ? "" : archived ? "No notes reference this, active or archived." : empty;
+    status.hidden = !!page.total;
+  }
   async function load(offset = 0) {
     const mine = ++turn;
     const archived = archivedNoteLists.has(key);
     try {
       const page = await api("note-list", { reference: ref, include_archived: archived, limit: NOTE_PAGE, offset });
       if (mine !== turn) return;
-      if (!offset) list.replaceChildren();
-      page.items.forEach((n) => list.append(noteRow(n, back)));
-      list.hidden = !page.total;
-      next = page.next_offset;
-      more.hidden = next === null;
-      count.textContent = String(page.total);
-      count.hidden = !page.total;
-      const hidden = page.archived_hidden || 0;
-      toggle.hidden = !archived && !hidden;
-      toggle.textContent = archived ? "Hide archived" : `Show ${hidden} archived`;
-      toggle.setAttribute("aria-pressed", String(archived));
-      status.textContent = page.total ? "" : archived ? "No notes reference this, active or archived." : empty;
-      status.hidden = !!page.total;
+      if (!offset) shownNoteLists.set(key, { page, archived });
+      show(page, offset, archived);
     } catch (e) {
       if (mine !== turn) return;
       status.textContent = `Couldn't load notes: ${e.message}`;
       status.hidden = false;
     }
   }
+  const shown = shownNoteLists.get(key);
+  if (shown && shown.archived === archivedNoteLists.has(key)) show(shown.page, 0, shown.archived);
   pendingNoteLists.push(() => load());
   const out = el("section", "block notes-block",
     el("div", "block-head", heading, el("div", "block-actions", toggle, add)), status, list, more);
