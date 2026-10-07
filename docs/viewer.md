@@ -220,7 +220,8 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   the task. Sign-off decisions, including historical defer decisions and
   judgment fields, remain readable.
 - Activity shows actor, action, outcome and decision notes; routine read
-  events are counted rather than listed. Task text is rendered as a safe
+  events are counted rather than listed. (The paged `activity` read below is the
+  server side for a newest-first Activity feed; this panel still uses `events`.) Task text is rendered as a safe
   Markdown subset (paragraphs, lists, headings, code, bold/italic) built from
   DOM text nodes, never parsed as HTML. Link targets are shown as text and
   never followed or fetched. A single-line acceptance criterion joined by
@@ -232,6 +233,60 @@ unresolved items, record results or reviews, sign off, pick the next
 agent action, edit group scope or membership, or handle gate proposals. Agents
 do these through MCP, with you. The browser intentionally has no general Store
 method, SQL or shell command endpoint.
+
+## Activity history read
+
+The viewer dispatch action `activity` (`Store.task_activity`) reads one task's
+or group's meaningful history, newest first, in pages. It has no MCP tool and
+does not change `list_events`; agents keep `list_task_attempts` and
+`get_attempt`.
+
+- **Input**: `task_id`, plus either `cursor` (entries older than that event
+  sequence; pass the previous page's `next_cursor`) or `target` (an attempt ID of
+  this task: the page that starts with that result, without reading newer
+  history).
+- **Output**: `items` (at most 20), `newest_sequence` (the newest meaningful
+  entry now, so the viewer can offer a refresh when it is newer than its top
+  entry), `next_cursor` (absent when exhausted), `object_type`, and
+  `scan_limited: true` only when the scan bound below was reached. Each entry has
+  `sequence`, `timestamp`, `actor`, `kind`, `action` and a one-line `summary`;
+  free text (review reasons, notes, questions) is clipped to 300 characters.
+  Results add `attempt_id`, `workstream_id`/`workstream_name`, `spec_revision`,
+  the attempt's current `state`, `implementer` and the short summary; reviews add
+  `verdict`, `reviewer` and `reasons`; sign-offs add `decision`, `reasons` and
+  the resulting `disposition`. Full proof is not included: open a result with
+  the existing attempt read (`details` with `attempt_ids`).
+- **Classification**: `ACTIVITY_KINDS` in `store.py` maps each meaningful audit
+  action to an entry kind: creation and import (`created`, `imported`, legacy
+  `corrected`), specification and card-summary edits (`updated`), questions
+  (`question_added`, `question_resolved`), prerequisites, workstream
+  membership, disposition, decomposition, group membership (`member_added`, on
+  the group), results, independent reviews, human reviews, sign-off decisions,
+  and the retired `accepted` and `proposal_dismissed`. `ACTIVITY_HIDDEN` lists
+  every other action with its reason: reads (including `activity.read` itself),
+  project/session/workstream/note changes that are never recorded on a task, and
+  workstream ordering. Failed requests are never shown. `tests/test_activity.py`
+  reads every action the code can emit (`Store._run` literals and raw
+  `INSERT INTO events` parameters) and fails on any action in neither map.
+- **Filtering and bounds**: the meaningful-action filter runs in SQL before
+  paging, so hidden reads never shorten a page. Each query examines at most 2000
+  of the task's own newest-first events below the cursor (the busiest real task
+  had about 150 in total). If that bound is reached first, the page holds what
+  was found, `scan_limited` is set, and `next_cursor` resumes exactly where the
+  scan stopped, so nothing is skipped.
+- **Stable paging**: cursors are event sequences. New events only get higher
+  sequences, so writes between page loads cause no duplicates or gaps.
+- **Imported results**: attempts with no `attempt.recorded` event (the
+  2026-09-26 TASKS.md migration) are shown as `result` entries with
+  `imported: true` at the import event's sequence, newest first, directly above
+  the import entry (which counts them in `imported_results`). That group is
+  never split across pages: if it does not fit, the page ends before it. (Only a
+  task with more than 19 imported results would make a page exceed 20 entries;
+  the real data has at most one per task.) A result with an `attempt.recorded`
+  event is shown only from that event, so each result appears once.
+- **Groups** show their own events only. A member created by decomposition
+  starts with a `created` entry at the group's decomposition event
+  (`via: "decomposition"`), since that member has no creation event of its own.
 
 ## Concurrent edits
 

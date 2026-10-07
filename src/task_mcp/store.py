@@ -206,6 +206,91 @@ INIT_WORKSTREAM_KEYS = (
 NOTE_LIMIT = 2000
 NOTE_KINDS = ("project", "workstream")
 
+# Activity: the one classification of every audit action for a task's or group's
+# history (Store.task_activity, viewer only). A meaningful action maps to the entry kind
+# the viewer renders; every other action is listed in ACTIVITY_HIDDEN with the reason it
+# never appears. Only successful events are shown. An action in neither map is not
+# shown; tests/test_activity.py fails when the Store can emit such an action, so a new
+# event type cannot silently vanish from Activity. Legacy and retired actions stay
+# classified because older databases still contain them.
+ACTIVITY_KINDS = {
+    "task.created": "created",
+    "task.idea_captured": "created",
+    "group.created": "created",
+    "legacy.task_imported": "imported",
+    "legacy.group_imported": "imported",
+    "legacy.import_corrected": "corrected",
+    "legacy.group_membership_corrected": "corrected",
+    "legacy.prerequisite_corrected": "corrected",
+    "task.updated": "updated",
+    "task.accepted": "accepted",  # Retired specification acceptance.
+    "gate.unresolved_added": "question_added",
+    "gate.unresolved_resolved": "question_resolved",
+    "gate.prerequisite_added": "prerequisite_added",
+    "gate.prerequisite_removed": "prerequisite_removed",
+    "gate.proposal_dismissed": "proposal_dismissed",  # Retired gate proposals.
+    "task.workstream_added": "workstream_added",
+    "task.workstream_removed": "workstream_removed",
+    "task.disposition_changed": "disposition",
+    "task.decomposed": "decomposed",
+    "group.member_added": "member_added",
+    "attempt.recorded": "result",
+    "attempt.reviewed": "review",
+    "attempt.human_reviewed": "human_review",
+    "task.signoff": "signoff",
+}
+ACTIVITY_HIDDEN = {
+    **dict.fromkeys(
+        (
+            "activity.read",
+            "attempt.read",
+            "attempts.listed",
+            "events.listed",
+            "group.members_listed",
+            "groups.listed",
+            "notes.read",
+            "prefixes.read",
+            "projects.listed",
+            "task.next_action_read",
+            "task.next_read",
+            "tasks.listed",
+            "tasks.read",
+            "workstream.exported",
+            "workstream.preflight",
+            "workstream.status_read",
+            "workstreams.listed",
+        ),
+        "read",
+    ),
+    # Project, session, workstream and note changes: never recorded on a task.
+    **dict.fromkeys(
+        (
+            "checkout.attached",
+            "legacy.batch_imported",
+            "legacy.migration_repair_applied",
+            "legacy.migration_repair_invoked",
+            "legacy.project_imported",
+            "legacy.scope_imported",
+            "legacy.workstream_imported",
+            "note.set",
+            "project.initialized",
+            "scope.changed",
+            "session.initialized",
+            "workstream.archived",
+            "workstream.initialized",
+            "workstream.unarchived",
+        ),
+        "not task history",
+    ),
+    # Workstream order is a property of the list, shown on the board, not task history.
+    "tasks.reordered": "order",
+}
+# Entries per Activity page, and the most task events one Activity query examines.
+ACTIVITY_PAGE = 20
+ACTIVITY_SCAN_LIMIT = 2000
+# Free text in an Activity entry is clipped to a line; the full text stays in its read.
+ACTIVITY_TEXT_LIMIT = 300
+
 
 # A quick idea captured in the browser waits in the inbox, held by this item, until an
 # agent processes it with the user. Agents and the viewer recognise ideas by its prefix.
@@ -836,6 +921,57 @@ class Store:
             }
 
         return self._run("events.listed", request, operation)
+
+    def task_activity(self, task_id, cursor=None, target=None):
+        """A task's or group's meaningful history, newest first, in stable pages.
+
+        Viewer only (no MCP tool). Entries come from successful events whose action
+        ACTIVITY_KINDS lists, filtered in SQL before paging, so hidden reads never shorten
+        a page. cursor returns entries older than that event sequence; target (an
+        attempt ID of this task) returns the page that starts with that result instead.
+        Results without an attempt.recorded event (imported by the TASKS.md migration)
+        sit at the import event's sequence, just above the import entry, and are never
+        split from it. A member created by decomposition starts with its group's
+        decomposition event. Each call examines at most ACTIVITY_SCAN_LIMIT of the
+        task's own events per query.
+        """
+        request = dict(task_id=task_id, cursor=cursor, target=target)
+
+        def operation(db, scope):
+            if cursor is not None and (type(cursor) is not int or cursor < 1):
+                raise TaskError("invalid_cursor: use next_cursor from the previous page")
+            if cursor is not None and target is not None:
+                raise TaskError("invalid_activity_request: give a cursor or a target, not both")
+            scope["task_id"] = task_id
+            task = db.execute(
+                "SELECT id,project_id,object_type,parent_group_id FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if task is None:
+                raise TaskError(f"unknown_task: {task_id}")
+            scope["project_id"] = task["project_id"]
+            history = _ActivityHistory(db, task)
+            before = cursor
+            if target is not None:
+                before = history.target_sequence(target) + 1
+            page, next_cursor, limited = history.page(before)
+            if before is None:
+                newest = page[0]["sequence"] if page else None
+            else:
+                newest = history.newest_sequence()
+            result = {
+                "task_id": task["id"],
+                "object_type": task["object_type"],
+                "items": page,
+                "newest_sequence": newest,
+            }
+            if next_cursor is not None:
+                result["next_cursor"] = next_cursor
+            if limited:
+                result["scan_limited"] = True
+            return result
+
+        return self._run("activity.read", request, operation)
 
     def _project(self, db, project, scope):
         if not isinstance(project, str) or not project.strip():
@@ -5031,3 +5167,380 @@ class Store:
             {"workstream_id": workstream_id, "include_closed": include_closed, "format": format},
             operation,
         )
+
+
+def _clip(text):
+    """One line of free text for an Activity entry; the full text stays in its own read."""
+    if not isinstance(text, str):
+        return None
+    line = " ".join(text.split())
+    if len(line) <= ACTIVITY_TEXT_LIMIT:
+        return line
+    return line[: ACTIVITY_TEXT_LIMIT - 1].rstrip() + "…"
+
+
+def _loads(raw):
+    return json.loads(raw) if raw else {}
+
+
+class _ActivityHistory:
+    """One task's or group's Activity read inside Store.task_activity's transaction."""
+
+    IMPORTS = ("legacy.task_imported", "legacy.group_imported")
+    MEANINGFUL_SQL = "e.outcome='ok' AND e.action IN ({})".format(
+        ",".join("'" + action + "'" for action in sorted(ACTIVITY_KINDS))
+    )
+
+    def __init__(self, db, task):
+        self.db = db
+        self.task = task
+        self.task_id = task["id"]
+        row = db.execute(
+            "SELECT min(sequence) FROM events WHERE task_id=? AND outcome='ok' AND action IN (?,?)",
+            (self.task_id, *self.IMPORTS),
+        ).fetchone()
+        # Imported results sit at the import event; with none (never seen in real
+        # data), at sequence 0, below everything.
+        self.import_sequence = row[0]
+        self._imported = None
+
+    def _rows(self, before, limit):
+        """Up to limit meaningful events older than before, newest first.
+
+        Returns (rows, scanned_floor): scanned_floor is the oldest sequence examined
+        when the scan bound was reached, else None (the task's events are exhausted).
+        """
+        window = "SELECT sequence FROM events WHERE task_id=?"
+        values = [self.task_id]
+        if before is not None:
+            window += " AND sequence<?"
+            values.append(before)
+        window += " ORDER BY sequence DESC LIMIT ?"
+        values.append(ACTIVITY_SCAN_LIMIT)
+        # Select sequences first so the bounded sort never carries the JSON payloads.
+        found = [
+            row[0]
+            for row in self.db.execute(
+                f"SELECT e.sequence FROM ({window}) w JOIN events e ON e.sequence=w.sequence "
+                f"WHERE {self.MEANINGFUL_SQL} ORDER BY e.sequence DESC LIMIT ?",
+                (*values, limit),
+            )
+        ]
+        rows = self.db.execute(
+            f"SELECT * FROM events WHERE sequence IN ({','.join('?' * len(found))}) "
+            "ORDER BY sequence DESC",
+            found,
+        ).fetchall()
+        if len(rows) == limit:
+            return rows, None
+        scanned, floor = self.db.execute(
+            f"SELECT count(*), min(sequence) FROM ({window})", values
+        ).fetchone()
+        return rows, floor if scanned == ACTIVITY_SCAN_LIMIT else None
+
+    def imported_results(self):
+        """Attempts with no attempt.recorded event: results the migration imported."""
+        if self._imported is None:
+            recorded = {
+                row[0]
+                for row in self.db.execute(
+                    "SELECT json_extract(after_json,'$.attempt.id') FROM events "
+                    "WHERE task_id=? AND action='attempt.recorded' AND outcome='ok'",
+                    (self.task_id,),
+                )
+            }
+            self._imported = [
+                dict(row)
+                for row in self.db.execute(
+                    "SELECT * FROM attempts WHERE task_id=? ORDER BY created_at DESC, id DESC",
+                    (self.task_id,),
+                )
+                if row["id"] not in recorded
+            ]
+        return self._imported
+
+    def _tail(self, before):
+        """Entries older than the task's own events, positioned at a real sequence."""
+        units = []
+        if self.task["parent_group_id"]:
+            for row in self.db.execute(
+                "SELECT * FROM events WHERE task_id=? AND action='task.decomposed' "
+                "AND outcome='ok' ORDER BY sequence DESC",
+                (self.task["parent_group_id"],),
+            ):
+                if self.task_id in _loads(row["after_json"]).get("members", []):
+                    units.append((row["sequence"], [self._decomposition_entry(row)]))
+                    break
+        if self.import_sequence is None and self.imported_results():
+            units.append((0, [self._imported_entry(a, None) for a in self.imported_results()]))
+        return [unit for unit in units if before is None or unit[0] < before]
+
+    def target_sequence(self, attempt_id):
+        row = self.db.execute(
+            "SELECT id FROM attempts WHERE id=? AND task_id=?", (attempt_id, self.task_id)
+        ).fetchone()
+        if row is None:
+            raise TaskError(f"unknown_attempt: {attempt_id} is not a result of {self.task_id}")
+        recorded = self.db.execute(
+            "SELECT sequence FROM events WHERE task_id=? AND action='attempt.recorded' "
+            "AND outcome='ok' AND json_extract(after_json,'$.attempt.id')=? LIMIT 1",
+            (self.task_id, attempt_id),
+        ).fetchone()
+        if recorded is not None:
+            return recorded[0]
+        return self.import_sequence or 0
+
+    def newest_sequence(self):
+        rows, _ = self._rows(None, 1)
+        if rows:
+            return rows[0]["sequence"]
+        tail = self._tail(None)
+        return tail[0][0] if tail else None
+
+    def page(self, before):
+        """(entries, next_cursor, scan_limited) for entries older than before."""
+        rows, floor = self._rows(before, ACTIVITY_PAGE + 1)
+        units = [(row["sequence"], self._unit(row)) for row in rows]
+        if len(rows) <= ACTIVITY_PAGE and floor is None:
+            units += self._tail(before)
+        entries, cut = [], False
+        for _, unit in units:
+            # Entries sharing one sequence (an import and its results) stay together.
+            if entries and len(entries) + len(unit) > ACTIVITY_PAGE:
+                cut = True
+                break
+            entries.extend(unit)
+        self._annotate(entries)
+        if cut:
+            return entries, entries[-1]["sequence"], False
+        if floor is not None:
+            return entries, floor, True
+        return entries, None, False
+
+    def _unit(self, row):
+        entry = self._entry(row)
+        if row["action"] in self.IMPORTS and row["sequence"] == self.import_sequence:
+            results = [self._imported_entry(a, row) for a in self.imported_results()]
+            entry["imported_results"] = len(results)
+            return [*results, entry]
+        return [entry]
+
+    @staticmethod
+    def _base(row, kind):
+        return {
+            "sequence": row["sequence"],
+            "timestamp": row["timestamp"],
+            "actor": row["actor"],
+            "kind": kind,
+            "action": row["action"],
+        }
+
+    def _decomposition_entry(self, row):
+        return self._base(row, "created") | {
+            "via": "decomposition",
+            "group_id": self.task["parent_group_id"],
+            "summary": f"Created by decomposing group {self.task['parent_group_id']}",
+        }
+
+    def _imported_entry(self, attempt, event):
+        entry = {
+            "sequence": event["sequence"] if event is not None else 0,
+            "timestamp": attempt["created_at"],
+            "actor": event["actor"] if event is not None else attempt["implementer"],
+            "kind": "result",
+            "action": event["action"] if event is not None else None,
+            "imported": True,
+        }
+        return entry | self._result_fields(attempt)
+
+    @staticmethod
+    def _result_fields(attempt):
+        fields = {
+            "attempt_id": attempt["id"],
+            "workstream_id": attempt["workstream_id"],
+            "spec_revision": attempt["spec_revision"],
+            "state": attempt.get("state"),
+            "implementer": attempt["implementer"],
+            "summary": _clip(attempt["summary"]),
+        }
+        if attempt.get("reviewer"):
+            fields["reviewer"] = attempt["reviewer"]
+        return fields
+
+    def _entry(self, row):
+        action = row["action"]
+        kind = ACTIVITY_KINDS[action]
+        request = _loads(row["request_json"])
+        entry = self._base(row, kind)
+        if kind == "result":
+            attempt = _loads(row["after_json"]).get("attempt", {})
+            fields = self._result_fields(attempt | {"reviewer": None})
+            return entry | fields
+        if kind in {"review", "human_review", "signoff"}:
+            entry["attempt_id"] = request.get("attempt_id")
+            if kind == "review":
+                return entry | {
+                    "verdict": request.get("verdict"),
+                    "reviewer": request.get("reviewer"),
+                    "reasons": _clip(request.get("note")),
+                    "summary": f"Independent review: {request.get('verdict')}",
+                }
+            if kind == "human_review":
+                return entry | {
+                    "reasons": _clip(request.get("user_note")),
+                    "summary": "Human review recorded",
+                }
+            after = _loads(row["after_json"])
+            # Older sign-offs recorded verdict approve/reject, rejection and user_note.
+            verdict = request.get("decision") or (
+                "approve" if request.get("verdict") == "approve" else request.get("rejection")
+            )
+            reasons = request.get("reasons") or request.get("user_note")
+            disposition = (after.get("signoff_decision") or {}).get("disposition")
+            return entry | {
+                "decision": verdict,
+                "reasons": _clip(reasons),
+                "disposition": disposition or after.get("status"),
+                "summary": f"Sign-off: {verdict}",
+            }
+        if kind == "created":
+            if action == "task.idea_captured":
+                title = (request.get("text") or "").strip()
+                return entry | {"title": title, "idea": True, "summary": f"Idea: {title}"}
+            title = request.get("title")
+            noun = "Group" if action == "group.created" else "Task"
+            entry |= {"title": title, "summary": f"{noun} created: {_clip(title)}"}
+            if request.get("group_id"):
+                entry["group_id"] = request["group_id"]
+            return entry
+        if kind == "imported":
+            return entry | {"summary": "Imported in the TASKS.md migration"}
+        if kind in {"corrected", "accepted", "proposal_dismissed"}:
+            note = request.get("note")
+            if kind == "accepted":
+                note = (request.get("approval") or {}).get("note") or request.get("user_note")
+            label = {
+                "corrected": "Migration correction",
+                "accepted": "Specification accepted",
+                "proposal_dismissed": "Gate proposal dismissed",
+            }[kind]
+            return entry | {
+                "note": _clip(note),
+                "summary": _clip(f"{label}: {note}" if note else label),
+            }
+        before, after = _loads(row["before_json"]), _loads(row["after_json"])
+        if kind == "updated":
+            return entry | self._update_fields(before, after)
+        if kind in {"question_added", "question_resolved"}:
+            if kind == "question_added":
+                added = (after.get("unresolved_items") or [])[-1:] or [{}]
+                item_id, text = added[0].get("id"), request.get("text")
+                label = "Question added"
+            else:
+                item_id = request.get("item_id")
+                text = next(
+                    (
+                        item.get("text")
+                        for item in before.get("unresolved_items") or []
+                        if item.get("id") == item_id
+                    ),
+                    None,
+                )
+                entry["note"] = _clip(request.get("user_note"))
+                label = "Question resolved"
+            return entry | {
+                "item_id": item_id,
+                "text": _clip(text),
+                "summary": _clip(f"{label}: {text}" if text else label),
+            }
+        if kind in {"prerequisite_added", "prerequisite_removed"}:
+            # Older removals named a list, blocked_by_ids.
+            blocked = request.get("blocked_by_id") or ", ".join(request.get("blocked_by_ids") or [])
+            entry["blocked_by_id"] = blocked
+            if kind == "prerequisite_added":
+                entry["milestone"] = request.get("milestone")
+                return entry | {"summary": f"Prerequisite added: {blocked}"}
+            return entry | {
+                "note": _clip(request.get("note")),
+                "summary": f"Prerequisite removed: {blocked}",
+            }
+        if kind in {"workstream_added", "workstream_removed"}:
+            label = "Added to" if kind == "workstream_added" else "Removed from"
+            return entry | {
+                "workstream_id": request.get("workstream_id"),
+                "summary": f"{label} workstream",
+            }
+        if kind == "disposition":
+            return entry | {
+                "from": before.get("status"),
+                "to": after.get("status"),
+                "note": _clip(request.get("note")),
+                "summary": f"Disposition: {before.get('status')} → {after.get('status')}",
+            }
+        if kind == "decomposed":
+            members = after.get("members", [])
+            return entry | {
+                "member_ids": members,
+                "summary": f"Decomposed into {len(members)} members",
+            }
+        # member_added: recorded on the group.
+        member = request.get("task_id")
+        return entry | {"member_id": member, "summary": f"Member added: {member}"}
+
+    @staticmethod
+    def _update_fields(before, after):
+        changed = [
+            field
+            for field in ("title", "body", "acceptance_criteria", "summary")
+            if before.get(field) != after.get(field)
+        ]
+        fields = {"changed": changed}
+        if before.get("spec_revision") != after.get("spec_revision"):
+            fields["spec_revision"] = after.get("spec_revision")
+            fields["summary"] = (
+                f"Specification edited (revision {before.get('spec_revision')} → "
+                f"{after.get('spec_revision')})"
+            )
+        elif changed:
+            fields["summary"] = "Card summary updated"
+        else:
+            fields["summary"] = "Saved without a specification change"
+        if after.get("parent_group_id") != before.get("parent_group_id"):
+            fields["group_id"] = after.get("parent_group_id")
+            fields["summary"] += f"; added to group {after.get('parent_group_id')}"
+        return fields
+
+    def _annotate(self, entries):
+        """Add current attempt state and workstream names for the page in two reads."""
+        attempts = {e["attempt_id"] for e in entries if e.get("attempt_id")}
+        states = {}
+        if attempts:
+            marks = ",".join("?" * len(attempts))
+            states = {
+                row["id"]: row
+                for row in self.db.execute(
+                    f"SELECT id,state,workstream_id,spec_revision FROM attempts "
+                    f"WHERE id IN ({marks})",
+                    tuple(attempts),
+                )
+            }
+        for entry in entries:
+            current = states.get(entry.get("attempt_id"))
+            if current is None:
+                continue
+            if entry["kind"] == "result":
+                entry["state"] = current["state"]
+            elif "workstream_id" not in entry:
+                entry["workstream_id"] = current["workstream_id"]
+                entry["spec_revision"] = current["spec_revision"]
+        workstreams = {e["workstream_id"] for e in entries if e.get("workstream_id")}
+        if workstreams:
+            marks = ",".join("?" * len(workstreams))
+            names = dict(
+                self.db.execute(
+                    f"SELECT id,name FROM workstreams WHERE id IN ({marks})", tuple(workstreams)
+                ).fetchall()
+            )
+            for entry in entries:
+                if entry.get("workstream_id"):
+                    entry["workstream_name"] = names.get(entry["workstream_id"])

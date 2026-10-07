@@ -46,6 +46,8 @@ def dispatch(store, action, data):
         "details": store.get_tasks,
         "resolve-prefix": store.resolve_prefix,
         "events": store.list_events,
+        # A task's or group's meaningful history, newest first, in pages (no MCP tool).
+        "activity": store.task_activity,
         "notes": store.read_notes,
         "reorder": store.reorder_tasks,
         "add-to-workstream": store.add_to_workstream,

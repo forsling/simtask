@@ -380,7 +380,10 @@ projection only: positions, order revisions, gate semantics, status counts and
 exports still cover every member.
 
 The optional local browser companion invokes a narrow allowlist of the same
-Store operations as MCP. It adds no task state model, business transition
+Store operations as MCP; some have no MCP tool, such as quick idea capture and the
+paged, newest-first Activity read of a task's meaningful audit events
+(docs/viewer.md, Activity history read), whose one classification of every
+audit action is enforced by a test. The companion adds no task state model, business transition
 logic, synchronization or agent dependency. Its board reads unabridged cards,
 closed tasks included, so project and workstream task lists retain their derived views; stored disposition and global group progress are labelled
 separately. The browser shows and steers: it asks questions, changes
