@@ -65,7 +65,6 @@ run(`
     if (action === "workstreams") return fixture.workstreams;
     if (action === "tasks") return fixture.boards[payload.workstream_id || ""];
     if (action === "groups") return fixture.groups;
-    if (action === "notes") return {notes: null};
     throw new Error("unexpected " + action);
   };
 `);

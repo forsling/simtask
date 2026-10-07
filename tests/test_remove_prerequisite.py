@@ -246,7 +246,7 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
         async with Client(params, read_timeout_seconds=30) as client:
             tools = {tool.name: tool for tool in (await client.list_tools()).tools}
             tool = tools["remove_prerequisite"]
-            assert len(tools) == 28
+            assert len(tools) == 31
             assert tool.annotations.read_only_hint is False
             assert tool.annotations.destructive_hint is True
             assert set(tool.input_schema["required"]) == {

@@ -46,7 +46,6 @@ def dispatch(store, action, data):
         "details": store.get_tasks,
         "resolve-prefix": store.resolve_prefix,
         "events": store.list_events,
-        "notes": store.read_notes,
         "reorder": store.reorder_tasks,
         "add-to-workstream": store.add_to_workstream,
         "remove-from-workstream": store.remove_from_workstream,

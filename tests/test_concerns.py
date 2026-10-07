@@ -415,7 +415,7 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
     async def exercise():
         async with Client(parameters, read_timeout_seconds=30) as client:
             tools = (await client.list_tools()).tools
-            assert len(tools) == 28
+            assert len(tools) == 31
             for name in ("record_result", "record_review"):
                 descriptor = next(t for t in tools if t.name == name)
                 schema = descriptor.input_schema
@@ -444,8 +444,8 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
 
             runtime = (await call("init", path=str(tmp_path / "probe"), branch="main"))["runtime"]
             assert runtime["package_path"] == str(root / "src/task_mcp")
-            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 17
-            assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 11
+            assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 18
+            assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 12
             ctx = await call(
                 "init",
                 path=str(tmp_path / "repo"),

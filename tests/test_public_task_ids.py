@@ -12,7 +12,7 @@ import pytest
 
 from task_mcp import store as store_module
 from task_mcp.server import create_server
-from task_mcp.store import Store, TaskError, short_task_slug
+from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError, short_task_slug
 
 
 @pytest.fixture
@@ -421,7 +421,7 @@ def test_identity_migration_failure_rolls_back_and_keeps_verified_backup(context
     with closing(sqlite3.connect(path)) as db:
         assert snapshot(db) == original
         assert db.execute("PRAGMA user_version").fetchone()[0] == 10
-    assert list(path.parent.glob("*.pre-schema-11.*.sqlite3"))
+    assert list(path.parent.glob(f"*.pre-schema-{DATABASE_SCHEMA_REVISION}.*.sqlite3"))
 
 
 def test_mcp_catalog_exposes_public_id_and_returns_only_public_reference(context):

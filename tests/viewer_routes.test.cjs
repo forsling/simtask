@@ -176,14 +176,14 @@ async function main() {
   assert.equal(v.count(), visited);
   assert.deepEqual(v.notices, []);
 
-  // Opening a task location reads the workstream prefix, its notes and that workstream's board only;
+  // Opening a task location reads the workstream prefix and that workstream's board only;
   // the sidebar's counts come with the workstream list, read again beside the board, and no
   // other workstream's cards are read. The detail asks for the standing in this workstream.
   v.calls.length = 0;
   await v.edit(`/w/a1a1a1a1/t/${short(T2)}`);
   assert.deepEqual(v.at(), {project: P1, stream: W1, groups: false, selected: T2});
   assert.deepEqual(v.calls.map(([a]) => a),
-    ["resolve-prefix", "workstreams", "notes", "workstreams", "tasks", "details"]);
+    ["resolve-prefix", "workstreams", "workstreams", "tasks", "details"]);
   assert.deepEqual(v.calls.filter(([a]) => a === "tasks").map(([, d]) => d.workstream_id), [W1]);
   assert.equal(JSON.stringify(v.calls.at(-1)[1]), JSON.stringify({ids: [T2], workstream_id: W1}));
 

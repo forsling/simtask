@@ -48,7 +48,6 @@ async function test() {
       calls.push([action, data]);
       if (action === "workstreams") return {items: data.include_archived ? streams : streams.filter(s => !s.archive?.archived), next_offset: null};
       if (action === "tasks") return {items: [{id: "t", title: "T", view: "ready"}], next_offset: null, workstream_order_revision: 1};
-      if (action === "notes") return {notes: {}};
       if (action === "resolve-prefix") return {items: data.prefix === "0d" ? [{id: "old", project_id: "p"}] : []};
       throw new Error("unexpected " + action);
     };`);

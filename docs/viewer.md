@@ -94,10 +94,6 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   Open is not taken for work an agent can pick up; workstream cards have none.
   Task details show the placement as *Unassigned* (agents' MCP tools call it the
   inbox, for example `state=inbox`).
-- Above the list, the project's note and, in a named workstream, that
-  workstream's note show as read-only plain text with when and by whom each was
-  last updated; empty notes are not shown. Collapse either one with its header.
-  Agents keep notes with the `set_note` MCP tool.
 - Archived workstreams are hidden from the sidebar and never opened by default.
   **Show N archived** under a project's workstreams lists them, marked
   *archived*, until **Hide archived** (remembered for the tab). A link to an

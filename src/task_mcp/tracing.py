@@ -105,6 +105,7 @@ def entity_references(value):
         "workstream_id",
         "attempt_id",
         "group_id",
+        "note_id",
         "ids",
         "attempt_ids",
     }

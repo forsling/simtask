@@ -9,8 +9,8 @@ description: Set up or resume the Task MCP binding for a checkout and branch. Us
    `workstream_name` for detached or non-Git work. The current directory
    suggests a path but does not choose it.
 
-2. When the result is ready, keep the returned project and workstream IDs,
-   read the notes and continue with the user's request.
+2. When the result is ready, keep the returned project and workstream IDs
+   and continue with the user's request.
 
 3. Otherwise, pick the fitting call from `next` and show the user the path,
    branch, project, workstream and scope it would set up. Names and history do

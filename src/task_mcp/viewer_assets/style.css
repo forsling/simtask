@@ -376,60 +376,6 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.notes {
-  margin: 0 16px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.note {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
-  font-size: 12.5px;
-}
-.note-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  cursor: pointer;
-  list-style: none;
-  color: var(--text-2);
-  min-width: 0;
-}
-.note-head::-webkit-details-marker {
-  display: none;
-}
-.note-head .i {
-  flex: none;
-  color: var(--text-3);
-  transition: transform 0.15s;
-}
-.note[open] .note-head .i {
-  transform: rotate(90deg);
-}
-.note-label {
-  font-weight: 600;
-  white-space: nowrap;
-}
-.note-meta {
-  margin-left: auto;
-  color: var(--text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-.note-text {
-  padding: 0 10px 8px;
-  max-height: 9.5em;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--text);
-  line-height: 1.45;
-}
 .search {
   margin: 0 16px 8px;
   display: flex;

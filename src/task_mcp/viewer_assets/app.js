@@ -803,8 +803,6 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
   $("heading").replaceChildren(
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : boardName(),
   );
-  // Notes are context, not the board: a failed notes read hides them instead of the list.
-  const notesLoad = groups ? Promise.resolve(null) : api("notes", { project, workstream_id: stream }).catch(() => null);
   // The workstreams, with their Needs input counts, are read again on every board,
   // group boards included. A failed read keeps the board and the previous list, and
   // marks the counts out of date until a later refresh succeeds.
@@ -819,9 +817,7 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
       : board.items;
     const rows = groups === "shared" ? loaded.filter((g) => groupProjectCount(g) > 1) : loaded;
     const listed = await streamsLoad;
-    const notes = (await notesLoad)?.notes || null;
     if (stale()) return;
-    renderNotes(notes);
     // Task cards carry the server's standing; group boards list groups, which have none.
     state.rows = rows;
     state.boardStream = groups ? null : stream;
@@ -875,36 +871,10 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
     }
   } catch (e) {
     if (stale()) return;
-    renderNotes(null);
     if (detailGeneration === state.generation) $("detail").classList.remove("loading");
     toast(e.message, true);
     $("list").replaceChildren(emptyState("Couldn't load tasks", "Refresh to try again."));
   }
-}
-
-/* ---------- notes ---------- */
-
-// Personal project/workstream notes, shown read-only; agents keep them with set_note.
-const NOTE_LABELS = { project: "Project note", workstream: "Workstream note" };
-const closedNotes = new Set();
-function renderNotes(notes) {
-  const box = $("notes");
-  const kinds = ["project", "workstream"].filter((k) => notes?.[k]?.text);
-  box.replaceChildren(
-    ...kinds.map((kind) => {
-      const n = notes[kind];
-      const d = el("details", "note");
-      d.dataset.kind = kind;
-      d.open = !closedNotes.has(kind);
-      d.addEventListener("toggle", () => (d.open ? closedNotes.delete(kind) : closedNotes.add(kind)));
-      const summary = el("summary", "note-head", icon("chevron", 12), node("span", NOTE_LABELS[kind], "note-label"),
-        node("span", `${ago(n.updated_at)} · ${n.updated_by}`, "note-meta"));
-      summary.title = `Updated ${new Date(n.updated_at).toLocaleString()} by ${n.updated_by} · revision ${n.revision}`;
-      d.append(summary, node("div", n.text, "note-text"));
-      return d;
-    }),
-  );
-  box.hidden = !kinds.length;
 }
 
 /* ---------- list ---------- */

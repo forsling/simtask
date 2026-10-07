@@ -313,7 +313,7 @@ def test_existing_database_gains_the_table_after_a_verified_backup(setup):
             "SELECT 1 FROM sqlite_master WHERE name='workstream_archive'"
         ).fetchone()
     with closing(sqlite3.connect(store.path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_REVISION == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_REVISION == 12
     assert snapshot(store.path) == before
     assert Store(store.path).migration_backup_path is None
     assert migrated.archive_workstream(old, 0, "after migration")["archive"]["revision"] == 1
@@ -409,7 +409,9 @@ def test_previous_code_keeps_working_against_the_migrated_database(tmp_path, lab
         assert running.stdout.readline().strip() == "started"
         # The newer server migrates (with a backup) and archives a workstream meanwhile.
         current = Store(database, actor="simon")
-        assert current.migration_backup_path.name.startswith("tasks.sqlite3.pre-schema-11.")
+        assert current.migration_backup_path.name.startswith(
+            f"tasks.sqlite3.pre-schema-{DATABASE_SCHEMA_REVISION}."
+        )
         current.archive_workstream(ids["old"], 0, "Inactive snapshot")
         output, _ = running.communicate("go\n", timeout=60)
     finally:
@@ -433,6 +435,6 @@ def test_previous_code_keeps_working_against_the_migrated_database(tmp_path, lab
     assert resumed["workstream"]["archive"]["revision"] == 1
     assert current.list_workstreams(ids["project"])["archived_hidden"] == 1
     with closing(sqlite3.connect(database)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_REVISION
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not db.execute("PRAGMA foreign_key_check").fetchone()
