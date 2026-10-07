@@ -1278,11 +1278,12 @@ function nextStep(t, standing) {
   } else if (!member) {
     title = "Add this task to a workstream";
     text = "Choose the branch where this task should be built. Its questions and prerequisites still apply.";
+    if (canDesign(t)) text += " You can talk its unresolved items through with an agent first; that needs no workstream.";
     buttons.push(button(membershipLabel(t), () => addToWorkstreamTask(t).catch((e) => toast(e.message, true)), "btn primary"));
   } else if (t.unresolved_items.length) {
     const n = t.unresolved_items.length;
     title = n === 1 ? "An unresolved item needs your answer" : `${n} unresolved items need your answers`;
-    text = "Work on this task waits until each question below is settled. Talk it through with an agent, who records the answer.";
+    text = "Work on this task waits until each question below is settled. Design with agent, beside the questions, copies a prompt for your agent, who records the answers with you.";
   } else if (passed) {
     signoff = true;
     title = "Ready for your sign-off";
@@ -1332,6 +1333,19 @@ function signoffPrompt(t) {
 function ideaPrompt(t) {
   return `Go through my ideas, starting with ${t.id} — ${t.title}`;
 }
+// Any open task with unresolved items can be talked through with an agent, whatever its
+// workstreams; deferred, dropped and completed tasks keep only their lifecycle actions.
+function canDesign(t) {
+  return !CLOSED.includes(t.status) && (t.unresolved_items || []).length > 0;
+}
+// The prompt names the task, not its questions, so the agent reads the current ones.
+// It asks for discussion and recorded decisions only; it authorizes no implementation.
+function designPrompt(t) {
+  return `Design with me: ${t.id} — ${t.title}. ` +
+    "Read its current specification and unresolved items, work through each item with me, and record the decisions we agree on. " +
+    "If the task is a captured feature brief, design it with the task-design skill; otherwise handle each item according to its own context, since not every question is a feature brief. " +
+    "Discuss and record decisions only; do not implement anything.";
+}
 // Copy a prompt for the user to paste into an agent. The browser launches no agent.
 // The Clipboard API needs a secure context (127.0.0.1 is one); when it is missing or
 // refused, the prompt is shown selected beside the button so the user can copy it.
@@ -1341,7 +1355,7 @@ async function copyPrompt(text, anchor, purpose = "sign-off") {
     await navigator.clipboard.writeText(text);
     toast(`Copied. Paste it into your agent to start the ${purpose}.`);
   } catch {
-    const host = anchor?.closest?.(".next");
+    const host = anchor?.closest?.(".prompt-host") || anchor?.closest?.(".next");
     let box = host?.querySelector(".prompt-copy");
     if (host && !box) {
       box = node("input", undefined, "prompt-copy");
@@ -1364,7 +1378,16 @@ function body(t) {
     t.unresolved_items.forEach((q) => {
       list.append(el("div", "question", markdown(q.text)));
     });
-    out.push(section("Unresolved items", list));
+    // The one Design with agent action sits beside this heading, not in the next step.
+    // Its row also hosts the selectable prompt when the clipboard cannot be written.
+    const title = el("h3", "block-title", node("span", "Unresolved items"));
+    let headRow = title;
+    if (canDesign(t)) {
+      const prompt = designPrompt(t);
+      headRow = el("div", "block-head prompt-host", title,
+        button("Design with agent", (e) => copyPrompt(prompt, e.currentTarget, "design discussion"), "btn small"));
+    }
+    out.push(el("section", "block", headRow, list));
   }
   if (t.blocked_by.length) {
     const list = el("div", "links");

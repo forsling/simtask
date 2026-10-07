@@ -121,6 +121,22 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   shown for reading under **Unresolved items**; you settle them with an agent,
   which records the answer. A passed result does not remove unresolved items or prerequisites;
   Store still validates every decision.
+- Every open task with unresolved items (captured feature briefs, other
+  questions, saved ideas and inbox tasks alike) offers one **Design with
+  agent** button beside the **Unresolved items** heading; the next-step panel
+  does not repeat it. It copies a prompt naming the task
+  (`Design with me: <public-id> — <title>. …`, with older tasks keeping their
+  `tsk_` ID) that asks the agent to read the current specification and
+  unresolved items, work through them with you and record the decisions you
+  agree on: a captured feature brief goes through the task-design skill, other
+  items are handled by their own context. The prompt asks for discussion only,
+  not implementation, and carries no copy of the questions. No workstream is
+  needed first: an inbox task still shows its separate placement action, and a
+  saved idea keeps **Go through it with an agent**. Copying confirms with a short
+  notice, or shows the prompt selected beside the heading when the clipboard
+  cannot be written; it launches no agent and changes no task, membership,
+  question or proof. Deferred, dropped and completed tasks keep only their
+  lifecycle actions.
 - Prerequisites show compact ID/title, project name/ID, the required review or
   sign-off milestone, satisfaction and canonical blocking/completion
   state, including blockers from any project. Rendering these rows fetches no

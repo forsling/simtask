@@ -209,7 +209,9 @@ async function test() {
   assert.match(renderedText, /New drop reasons/); assert.match(renderedText, /Reviewer reasons/);
   assert.match(renderedText, /origin-branch/);
   assert.match(renderedText, /Open question/);
-  assert.equal(context.rendered.flatMap(descendants).filter(node => node.tag === "button").length, 0, "Questions are read, not answered, here");
+  // Questions are read, not answered, here: the only control hands them to an agent.
+  assert.deepEqual(plain(context.rendered.flatMap(descendants).filter(node => node.tag === "button").map(node => node.textContent)),
+    ["Design with agent"]);
 
   // The detail offers no create, edit, review or verdict controls; a done task offers none at all.
   run("projectName = () => 'Project'; streamName = () => 'main'; ago = () => 'now';");

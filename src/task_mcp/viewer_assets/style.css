@@ -805,7 +805,7 @@ kbd {
   gap: 8px;
   flex-wrap: wrap;
 }
-/* The sign-off prompt, shown selected when the clipboard cannot be written. */
+/* A copied prompt, shown selected when the clipboard cannot be written. */
 .prompt-copy {
   flex: 1 1 100%;
   padding: 7px 10px;
@@ -818,6 +818,18 @@ kbd {
 
 .block {
   margin-top: 32px;
+}
+/* A section heading with an action beside it; wraps on narrow screens. */
+.block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+}
+.block-head .block-title {
+  margin: 0;
 }
 .block-title {
   display: flex;
