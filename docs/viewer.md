@@ -2,10 +2,10 @@
 
 Run `task-mcp ui` and open the printed private link. This works independently of
 any MCP host or model. The browser shows and steers: you read tasks, ask
-questions, save quick ideas, change workstreams, reorder and defer, resume or
-drop work there. Agents write tasks and record results, reviews and decisions
-with you; apart from quick ideas, the browser creates, edits and signs off
-nothing. `--db /absolute/path/tasks.sqlite3` selects a database at
+questions, save quick ideas, keep notes, change workstreams, reorder and defer,
+resume or drop work there. Agents write tasks and record results, reviews and
+decisions with you; apart from quick ideas and notes, the browser creates, edits
+and signs off nothing. `--db /absolute/path/tasks.sqlite3` selects a database at
 launch; the default follows `TASK_MCP_DB`, then `XDG_DATA_HOME`, then the normal
 user data directory. The browser cannot select another database. The MCP
 `open_task_viewer` tool explicitly starts/reuses the same viewer for its Store
@@ -212,6 +212,35 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   want it built), splitting it, or dropping it with your agreement, and
   resolves the idea item. This is a viewer operation only; there is no MCP tool
   for it.
+- **Notes** are titled records that reference tasks, groups, workstreams and
+  projects explicitly; agents keep the same notes with `create_note`,
+  `update_note`, `get_notes` and `list_notes`. Task and group details have a
+  **Notes** section listing the active notes that reference them, by title and
+  update time, newest-updated first. **Notes** in the list header opens the
+  open workstream's notes and its project's notes in the detail pane (only the
+  project's in All tasks, Unassigned and Task groups; Shared task groups have
+  none). Archived notes stay out of every list until **Show N archived** (per
+  list, for the tab), which lists them marked *archived*; **Hide archived**
+  hides them again. Lists show 20 notes at a time, with **Show more**.
+- Clicking a note opens it in the detail pane: its title and ID, *Active* or
+  *Archived*, when and by whom it was created and last updated, its full text
+  through the same safe Markdown rendering as task text, and its references
+  (kind, name and ID; click one to open that task, group, workstream or
+  project). Back returns to the task or the Notes panel. A refresh keeps the
+  note open; a task click, `j`/`k` or navigation closes it. Notes have no
+  address of their own.
+- **+ Note** in a notes list opens **Add a note** with that list's task, group,
+  workstream or project already referenced; **Edit** opens the same form for an
+  open note. Its title (up to 120 characters), text (up to 4,000) and references
+  are saved together in one Store call. References come only from the picker:
+  type to search this view's tasks, the project's groups and every workstream
+  and project, and press Enter or click a match to add it; a task or group from
+  elsewhere is added by its complete ID (**Look up … by ID**). Each reference is
+  a chip that can be removed. A note needs at least one reference, since notes
+  are found only through them, so the form refuses to save without one. The
+  text is never scanned for references. **Archive** and **Unarchive** take
+  effect at once. Notes cannot be pinned or deleted. Notes written here record
+  the viewer's actor, `local-browser-human`.
 - Latest rejection reasons appear with their originating attempt/workstream in
   the task. Sign-off decisions, including historical defer decisions and
   judgment fields, remain readable.
@@ -223,7 +252,7 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   semicolons is displayed as a list; the stored text is unchanged. No remote
   fonts, scripts or image services load. Light and dark themes follow the OS.
 
-Apart from **+ Idea**, the browser does not create or edit tasks, projects or workstreams, answer
+Apart from **+ Idea** and notes, the browser does not create or edit tasks, projects or workstreams, answer
 unresolved items, record results or reviews, sign off, pick the next
 agent action, edit group scope or membership, or handle gate proposals. Agents
 do these through MCP, with you. The browser intentionally has no general Store
@@ -238,6 +267,13 @@ before submitting again. **Defer** and **Resume** from the menu save nothing on 
 conflict; the task reloads and says so, and you can try again. The Store always
 makes the final eligibility check. A network failure is not proof a write
 failed: check the task's history before retrying.
+
+Notes work the same way with the note's revision. If an agent or another tab
+changed a note after you opened it, saving an edit saves nothing: the note
+reloads, and the form keeps your draft beside the current version. **Edit the
+current version** loads that version into the form; **Keep my draft** makes your
+next save replace it. **Archive** or **Unarchive** on a changed note saves
+nothing, reloads it and says so.
 
 ## Security and lifecycle
 
@@ -291,7 +327,7 @@ configured database, not just the current workstream.
 two-project initiative, a reviewed result, open question, proposal and deferred
 task. It prints the private link and exact stop command. All decisions in that
 database are synthetic. `pytest tests/test_viewer.py` covers protected access,
-the allowed membership, question, quick idea and status changes, rejection of removed
+the allowed membership, question, quick idea, note and status changes, rejection of removed
 actions, stale revisions, Store gate enforcement, local/global scope
 distinctions and cross-process launch/stop/restart.
 

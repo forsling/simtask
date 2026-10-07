@@ -1105,3 +1105,107 @@ def test_frontend_status_sections_and_sidebar_counts():
     script = Path(__file__).with_name("viewer_status.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_notes_are_listed_read_added_edited_and_archived_over_the_viewer(viewer):
+    server, store, context = viewer
+    project, workstream = context["project"]["id"], context["workstream"]["id"]
+    task = create(server, context)
+    references = [
+        {"kind": "task", "id": task["id"]},
+        {"kind": "workstream", "id": workstream},
+        {"kind": "project", "id": project},
+    ]
+    status, ack = request(
+        server,
+        "/api/note-create",
+        {
+            "title": "Agreed copy",
+            "text": f"Mentions {project} in text only.",
+            "references": references,
+        },
+    )
+    assert status == 200 and ack["revision"] == 1 and ack["reference_count"] == 3
+    note_id = ack["id"]
+    for reference in references:
+        status, page = request(server, "/api/note-list", {"reference": reference})
+        assert status == 200
+        assert [(n["id"], n["title"]) for n in page["items"]] == [(note_id, "Agreed copy")]
+        assert page["items"][0]["updated_at"] and page["archived_hidden"] == 0
+    status, read = request(server, "/api/note-read", {"ids": [note_id]})
+    note = read["items"][0]
+    assert note["text"] == f"Mentions {project} in text only."
+    assert note["references"] == references and note["created_by"] == "test-browser"
+
+    # An edit saves title, text and references together at the read revision.
+    status, ack = request(
+        server,
+        "/api/note-update",
+        {
+            "note_id": note_id,
+            "expected_revision": 1,
+            "title": "Agreed copy, v2",
+            "text": "Second text.",
+            "references": [{"kind": "project", "id": project}],
+        },
+    )
+    assert status == 200 and ack["revision"] == 2 and ack["changed"]
+    assert request(server, "/api/note-list", {"reference": references[0]})[1]["items"] == []
+
+    # A stale revision is refused with 409 and changes nothing.
+    before = store.get_notes([note_id])["items"][0]
+    status, error = request(
+        server,
+        "/api/note-update",
+        {"note_id": note_id, "expected_revision": 1, "text": "Stale overwrite"},
+    )
+    assert status == 409 and error["error"].startswith("revision_conflict")
+    assert store.get_notes([note_id])["items"][0] == before
+
+    # Archive hides the note until archived notes are requested; unarchive lists it again.
+    project_ref = {"kind": "project", "id": project}
+    archive = {"note_id": note_id, "expected_revision": 2, "archived": True}
+    assert request(server, "/api/note-update", archive)[0] == 200
+    page = request(server, "/api/note-list", {"reference": project_ref})[1]
+    assert page["items"] == [] and page["archived_hidden"] == 1
+    page = request(server, "/api/note-list", {"reference": project_ref, "include_archived": True})[
+        1
+    ]
+    assert [(n["id"], n.get("archived")) for n in page["items"]] == [(note_id, True)]
+    unarchive = {"note_id": note_id, "expected_revision": 3, "archived": False}
+    assert request(server, "/api/note-update", unarchive)[0] == 200
+    assert [
+        n["id"] for n in request(server, "/api/note-list", {"reference": project_ref})[1]["items"]
+    ] == [note_id]
+
+    # The Store's rules apply unchanged: at least one reference, no unknown fields, no delete.
+    total = len(store.list_notes(project_ref, include_archived=True)["items"])
+    status, error = request(
+        server, "/api/note-create", {"title": "No refs", "text": "Text", "references": []}
+    )
+    assert status == 400 and error["error"].startswith("references_required")
+    status, error = request(
+        server,
+        "/api/note-create",
+        {"title": "Bad", "text": "Text", "references": [{"kind": "task", "id": workstream}]},
+    )
+    assert status == 400 and error["error"].startswith("reference_kind_mismatch")
+    bad = {"title": "T", "text": "Text", "references": [project_ref], "pinned": True}
+    assert request(server, "/api/note-create", bad) == (400, {"error": "Invalid request fields"})
+    for action in ("note-delete", "delete-note", "notes", "set-note"):
+        assert request(server, "/api/" + action, {"note_id": note_id}) == (
+            400,
+            {"error": "unknown_action"},
+        ), action
+    assert len(store.list_notes(project_ref, include_archived=True)["items"]) == total
+    events = store.list_events(note_id=note_id, limit=50)["items"]
+    assert [
+        e["actor"] for e in events if e["action"] == "note.updated" and e["outcome"] == "ok"
+    ] == ["test-browser"] * 3
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional for frontend regression")
+def test_frontend_notes_lists_view_picker_and_stale_revision():
+    script = Path(__file__).with_name("viewer_notes.test.cjs")
+    result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr

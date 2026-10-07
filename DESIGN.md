@@ -152,8 +152,9 @@ titles for any one entity and hides archived notes unless `include_archived`
 Rules for a repository belong in committed AGENTS.md or user-level files, and
 workflow rules in skills, so notes carry no rule role. There is no pinning,
 automatic delivery or inline @mention parsing; pinning can be added later
-without breaking the API if titles prove too weak a signal. The viewer shows no
-notes until its own task adds them.
+without breaking the API if titles prove too weak a signal. The viewer lists,
+opens, adds, edits, archives and unarchives notes through the same Store calls;
+its reference picker sets the references, which it never infers from text.
 
 Notes live in `note_records` and `note_references` (schema 12). A reference
 spans tables and projects, so writes validate it instead of a foreign key;

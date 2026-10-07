@@ -56,6 +56,12 @@ def dispatch(store, action, data):
         "idea": store.capture_idea,
         # The ID an idea would get from its title: the Store's one short-slug rule.
         "idea-id": store.suggest_task_id,
+        # Titled notes, through the same Store calls as the note tools: their checks,
+        # explicit references, revisions and audit apply unchanged.
+        "note-list": store.list_notes,
+        "note-read": store.get_notes,
+        "note-create": store.create_note,
+        "note-update": store.update_note,
     }
     if action not in operations:
         raise TaskError("unknown_action")

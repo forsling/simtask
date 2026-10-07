@@ -92,6 +92,10 @@ const state = {
   boardStream: null,
   // Why the last workstream list (and its Needs input counts) failed to load, if it did.
   countsError: null,
+  // What the detail pane shows instead of the selected task: null, {kind: "scope"} (the
+  // open workstream's and project's notes) or {kind: "note", id, back}. Quiet refreshes
+  // keep it; navigation and a task click close it.
+  panel: null,
 };
 let submitAction = null;
 let submissionPending = false;
@@ -798,8 +802,12 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
   const stream = state.stream;
   const unassigned = !groups && !stream && state.unassigned;
   const stale = () => generation !== state.listGeneration || project !== state.project || groups !== state.groups || stream !== state.stream || unassigned !== (!state.groups && !state.stream && state.unassigned);
-  if (!quiet) $("list").replaceChildren(skeleton());
+  if (!quiet) {
+    $("list").replaceChildren(skeleton());
+    state.panel = null;
+  }
   $("idea").hidden = !!groups || !project;
+  $("notes-open").hidden = !project || groups === "shared";
   $("heading").replaceChildren(
     groups === "shared" ? "Shared task groups" : groups ? "Task groups" : state.stream ? branchLabel(streamName(state.stream)) : boardName(),
   );
@@ -861,6 +869,7 @@ async function reload({ quiet = false, requested = null, publicId = false } = {}
       state.selected = null;
       syncRoute();
       $("detail").classList.remove("loading");
+      if (state.panel) return void (await renderPanel());
       $("detail").replaceChildren(
         state.groups
           ? emptyState(groups === "shared" ? "No shared task groups" : "No task groups", groups === "shared" ? "Task groups with members in more than one project appear here." : "Task groups belonging to or included in this project appear here.")
@@ -1170,6 +1179,7 @@ async function includedWorkstreams(groupId) {
 
 async function selectTask(id, { open = false, quiet = false, entry = "replace" } = {}) {
   const generation = ++state.generation;
+  if (!quiet) state.panel = null;
   state.selected = id;
   syncRoute(entry);
   document.querySelectorAll(".row").forEach((r) => {
@@ -1193,9 +1203,12 @@ async function selectTask(id, { open = false, quiet = false, entry = "replace" }
       if (state.selected !== id || generation !== state.generation) return;
     }
     state.task = t;
+    // A refresh keeps an open note or Notes panel, read again.
+    if (state.panel) return void (await renderPanel());
     const scroll = $("detail").scrollTop;
     renderDetail(t);
     $("detail").scrollTop = quiet ? scroll : 0;
+    loadNoteLists();
   } catch (e) {
     if (generation === state.generation) toast(e.message, true);
   } finally {
@@ -1211,6 +1224,7 @@ function topBar(crumbs, actions) {
 }
 function renderDetail(t) {
   const d = $("detail");
+  pendingNoteLists = [];
   if (t.object_type === "group") return renderGroup(t);
   const standing = taskStanding(t);
   // A completed task cannot change, so it offers no actions.
@@ -1442,6 +1456,7 @@ function body(t) {
   criteria.classList.add("criteria");
   out.push(section("Acceptance criteria", criteria));
   if (t.user_request) out.push(section(`Request (${t.source || "unknown"} origin)`, markdown(t.user_request)));
+  out.push(notesSection({ kind: "task", id: t.id }, { empty: "No notes reference this task yet." }));
   if (t.signoff_decisions?.length) {
     const history = el("details", "fold", node("summary", `Sign-off decisions (${t.signoff_decisions.length})`));
     for (const d of t.signoff_decisions) {
@@ -1560,6 +1575,7 @@ function renderGroup(t) {
       t.summary ? section(t.summary_stale ? "Descriptive summary (predates current specification)" : "Descriptive summary", node("p", t.summary)) : null,
       section("Context", markdown(t.body)),
       section("Done when", markdown(t.acceptance_criteria, { checklist: true })),
+      notesSection({ kind: "group", id: t.id }, { empty: "No notes reference this group yet." }),
       section("Included in workstreams", workstreams),
       section("Members", members),
       node("p", "Group progress counts members in every project. It doesn't mean one workstream delivered them all.", "footnote"),
@@ -1669,6 +1685,516 @@ function activity(t) {
   return wrap;
 }
 
+/* ---------- notes ---------- */
+
+// Titled notes are separate records that reference tasks, groups, workstreams and projects
+// explicitly. The viewer lists the active notes where they are referenced (task and group
+// details, and the Notes panel of the open workstream and project), opens one in the detail
+// pane, and adds, edits, archives and unarchives notes through the Store's note calls at the
+// note's revision. References come only from the picker; note text is never searched for them.
+const NOTE_KINDS = { task: "Task", group: "Group", workstream: "Workstream", project: "Project" };
+const NOTE_PAGE = 20;
+const NOTE_TITLE_LIMIT = 120;
+const NOTE_TEXT_LIMIT = 4000;
+// Store refusals of a note's own fields, shown in plain words with the draft kept.
+const NOTE_REFUSALS = /^(invalid_note_title|note_title_too_long|invalid_note_text|note_too_long|references_required|invalid_reference|unknown_reference|reference_kind_mismatch): /;
+// Note lists that also show archived notes, by "kind:id", while this tab is open.
+const archivedNoteLists = new Set();
+// Names of referenced entities this tab has read, by ID.
+const referenceNames = new Map();
+// Note lists rendered but not yet read. Rendering reads nothing; whoever shows the pane
+// calls loadNoteLists() once the lists are in the page.
+let pendingNoteLists = [];
+const localError = (message) => Object.assign(new Error(message), { local: true });
+
+function fullTime(iso) {
+  return iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
+}
+function timeNode(iso, text) {
+  const t = node("time", text, "muted");
+  t.dateTime = iso;
+  t.title = fullTime(iso);
+  return t;
+}
+function noteKind(item) {
+  return item.object_type === "group" ? "group" : "task";
+}
+// A reference's display name and project, from what this tab has loaded.
+function referenceInfo(ref) {
+  if (ref.kind === "project") {
+    const p = state.projects.find((x) => x.id === ref.id);
+    if (p) return { title: p.name, project_id: p.id };
+  } else if (ref.kind === "workstream") {
+    const s = state.streams.find((x) => x.id === ref.id);
+    if (s) return { title: s.branch || s.name, project_id: s.project_id };
+  } else {
+    const t = [state.task, ...state.rows].find((x) => x?.id === ref.id && noteKind(x) === ref.kind);
+    if (t) return { title: t.title, project_id: t.project_id };
+  }
+  return referenceNames.get(ref.id) || null;
+}
+function rememberWorkstreams(list) {
+  list.forEach((w) => referenceNames.set(w.id, { title: w.branch || w.name, project_id: w.project_id }));
+}
+// Read the names of references this tab has not loaded: task and group details 20 at a
+// time, every workstream, and the project list. A failed read leaves the bare ID shown.
+async function nameReferences(refs) {
+  const missing = refs.filter((r) => !referenceInfo(r));
+  const ids = missing.filter((r) => r.kind === "task" || r.kind === "group").map((r) => r.id);
+  for (let i = 0; i < ids.length; i += 20) {
+    try {
+      (await api("details", { ids: ids.slice(i, i + 20) })).items.forEach((t) =>
+        referenceNames.set(t.id, { title: t.title, project_id: t.project_id }));
+    } catch {}
+  }
+  if (missing.some((r) => r.kind === "workstream")) {
+    try { rememberWorkstreams(await workstreams()); } catch {}
+  }
+  if (missing.some((r) => r.kind === "project")) {
+    try { state.projects = await pages("projects"); } catch {}
+  }
+}
+// Open the referenced task, group, workstream or project where it lives.
+function openReference(ref) {
+  const info = referenceInfo(ref);
+  const go = ref.kind === "project" ? () => chooseProject(ref.id)
+    : ref.kind === "workstream" ? () => navigateWorkstream({ id: ref.id, project_id: info.project_id })
+    : ref.kind === "group" ? () => openGroup(ref.id)
+    : () => navigateMember({ id: ref.id, project_id: info.project_id });
+  return go().catch((e) => toast(e.message, true));
+}
+
+// The notes that reference one entity, by title and update time, newest-updated first.
+// Archived notes appear only after Show archived. back says where an opened note's Back
+// returns: null for the task or group in view, "scope" for the Notes panel.
+function notesSection(ref, { title = "Notes", back = null, empty = "No notes reference this yet." } = {}) {
+  const key = ref.kind + ":" + ref.id;
+  const headingId = `notes-${ref.kind}-title`;
+  // A neutral count: notes are context, not something waiting for the user.
+  const count = node("span", "", "question-count note-count");
+  count.hidden = true;
+  const heading = el("h3", "block-title", node("span", title), count);
+  heading.id = headingId;
+  const list = el("div", "links note-list");
+  list.setAttribute("role", "list");
+  list.setAttribute("aria-labelledby", headingId);
+  list.hidden = true;
+  const status = node("p", "Loading notes…", "empty-text");
+  const toggle = button("", () => {
+    if (archivedNoteLists.has(key)) archivedNoteLists.delete(key);
+    else archivedNoteLists.add(key);
+    load();
+  }, "btn small");
+  toggle.hidden = true;
+  const add = button("+ Note", () => noteDialog(null, { references: [ref], saved: (ack) => openNote(ack.id, back) }), "btn small");
+  add.title = `Add a note that references this ${ref.kind}`;
+  let next = null, turn = 0;
+  const more = button("Show more", () => load(next), "btn small note-more");
+  more.hidden = true;
+  async function load(offset = 0) {
+    const mine = ++turn;
+    const archived = archivedNoteLists.has(key);
+    try {
+      const page = await api("note-list", { reference: ref, include_archived: archived, limit: NOTE_PAGE, offset });
+      if (mine !== turn) return;
+      if (!offset) list.replaceChildren();
+      page.items.forEach((n) => list.append(noteRow(n, back)));
+      list.hidden = !page.total;
+      next = page.next_offset;
+      more.hidden = next === null;
+      count.textContent = String(page.total);
+      count.hidden = !page.total;
+      const hidden = page.archived_hidden || 0;
+      toggle.hidden = !archived && !hidden;
+      toggle.textContent = archived ? "Hide archived" : `Show ${hidden} archived`;
+      toggle.setAttribute("aria-pressed", String(archived));
+      status.textContent = page.total ? "" : archived ? "No notes reference this, active or archived." : empty;
+      status.hidden = !!page.total;
+    } catch (e) {
+      if (mine !== turn) return;
+      status.textContent = `Couldn't load notes: ${e.message}`;
+      status.hidden = false;
+    }
+  }
+  pendingNoteLists.push(() => load());
+  const out = el("section", "block notes-block",
+    el("div", "block-head", heading, el("div", "block-actions", toggle, add)), status, list, more);
+  out.setAttribute("aria-labelledby", headingId);
+  return out;
+}
+function loadNoteLists() {
+  const loads = pendingNoteLists;
+  pendingNoteLists = [];
+  return Promise.all(loads.map((load) => load()));
+}
+function noteRow(n, back) {
+  const b = button("", () => openNote(n.id, back), "link-row note-row");
+  b.setAttribute("role", "listitem");
+  b.append(node("span", n.title, "grow note-title"));
+  if (n.archived) b.append(node("span", "archived", "tag-archived"));
+  b.append(timeNode(n.updated_at, "Updated " + ago(n.updated_at)));
+  return b;
+}
+
+// The open workstream's and project's notes, in the detail pane.
+function openScopeNotes() {
+  if (!state.project || state.groups === "shared") return;
+  state.generation++;
+  state.panel = { kind: "scope" };
+  closeMenu();
+  $("shell").classList.add("detail-open");
+  $("detail").classList.remove("loading");
+  renderScopeNotes();
+  $("detail").scrollTop = 0;
+}
+function renderScopeNotes() {
+  pendingNoteLists = [];
+  const crumbs = [node("span", projectName(state.project))];
+  if (state.stream) crumbs.push(node("span", "/", "sep"), branchLabel(streamName(state.stream)));
+  crumbs.push(node("span", "/", "sep"), node("span", "Notes"));
+  const lists = [];
+  if (state.stream)
+    lists.push(notesSection({ kind: "workstream", id: state.stream }, { title: "Workstream notes", back: "scope", empty: "No notes reference this workstream yet." }));
+  lists.push(notesSection({ kind: "project", id: state.project }, { title: "Project notes", back: "scope", empty: "No notes reference this project yet." }));
+  const actions = state.selected ? [button(state.groups ? "Back to group" : "Back to task", () => selectTask(state.selected), "btn small")] : [];
+  $("detail").replaceChildren(topBar(crumbs, actions), el("div", "content",
+    el("header", "detail-head",
+      node("h2", `Notes · ${state.stream ? streamName(state.stream) : projectName(state.project)}`, "title"),
+      node("p", state.stream
+        ? "Notes that reference this workstream, and those that reference its project. Agents read and write the same notes through Task MCP."
+        : "Notes that reference this project. Agents read and write the same notes through Task MCP.", "muted")),
+    ...lists));
+  return loadNoteLists();
+}
+function renderPanel() {
+  if (state.panel?.kind === "note") return openNote(state.panel.id, state.panel.back, { quiet: true });
+  return renderScopeNotes();
+}
+
+// One note in the detail pane: its title, full text, references and times.
+async function openNote(id, back = null, { quiet = false } = {}) {
+  const generation = ++state.generation;
+  state.panel = { kind: "note", id, back };
+  $("shell").classList.add("detail-open");
+  if (!quiet) $("detail").classList.add("loading");
+  try {
+    const note = (await api("note-read", { ids: [id] })).items[0];
+    await nameReferences(note.references);
+    if (generation !== state.generation) return;
+    const scroll = $("detail").scrollTop;
+    renderNote(note, back);
+    $("detail").scrollTop = quiet ? scroll : 0;
+  } catch (e) {
+    if (generation === state.generation) toast(e.message, true);
+  } finally {
+    if (generation === state.generation) $("detail").classList.remove("loading");
+  }
+}
+function closeNote(back) {
+  if (back === "scope") return openScopeNotes();
+  state.panel = null;
+  if (state.selected) return selectTask(state.selected);
+  return reload({ quiet: true });
+}
+function renderNote(note, back) {
+  const backLabel = back === "scope" ? "Notes" : state.task?.title || "Back";
+  const backLink = button("", () => closeNote(back), "crumb-link");
+  backLink.append(icon("back", 14), node("span", backLabel));
+  backLink.title = back === "scope" ? "Back to the notes list" : "Back to " + backLabel;
+  const edit = button("Edit", () => noteDialog(note, { saved: () => openNote(note.id, back, { quiet: true }) }), "btn small");
+  const archive = button(note.archived ? "Unarchive" : "Archive", () => archiveNote(note, back, !note.archived), "btn small");
+  archive.title = note.archived ? "List this note again" : "Hide this note from note lists; it can be shown and unarchived later";
+  const refs = el("div", "links");
+  refs.setAttribute("role", "list");
+  note.references.forEach((r) => {
+    const info = referenceInfo(r);
+    const b = button("", () => openReference(r), "link-row");
+    b.setAttribute("role", "listitem");
+    b.disabled = !info;
+    const where = info && info.project_id && r.kind !== "project" && info.project_id !== state.project ? " · " + projectName(info.project_id) : "";
+    b.append(node("span", NOTE_KINDS[r.kind], "ref-kind"),
+      el("span", "grow prerequisite-ref note-ref", node("span", info?.title || r.id), node("small", r.id + where, "muted")),
+      icon("link", 14));
+    b.title = info ? `Open this ${r.kind}` : "Not found in this viewer";
+    refs.append(b);
+  });
+  const id = node("code", note.id, "task-id");
+  id.setAttribute("aria-label", "Note ID: " + note.id);
+  const meta = (label, iso, who) => el("span", "meta-item", label + " ", timeNode(iso, fullTime(iso)), who ? " by " + who : "");
+  const head = el("header", "detail-head",
+    node("h2", note.title, "title"),
+    el("div", "task-id-header", id),
+    el("div", "meta",
+      note.archived ? pill("dropped", "Archived") : pill("open", "Active"),
+      meta("Created", note.created_at, note.created_by),
+      meta("Updated", note.updated_at, note.updated_by)));
+  $("detail").replaceChildren(
+    topBar([backLink], [edit, archive]),
+    el("div", "content", head,
+      note.archived ? node("p", "Archived: note lists hide it until archived notes are shown. Unarchive lists it again.", "muted") : null,
+      section("Text", markdown(note.text)),
+      section(`References (${note.references.length})`, refs)));
+}
+// Archive and unarchive take effect at once, at the revision shown. A note changed
+// meanwhile saves nothing and reloads.
+async function archiveNote(note, back, archived) {
+  if (submissionPending) return;
+  submissionPending = true;
+  try {
+    await api("note-update", { note_id: note.id, expected_revision: note.revision, archived });
+    toast(archived ? "Note archived. Note lists hide it until you show archived notes." : "Note unarchived. It is listed again.");
+  } catch (e) {
+    toast(e.conflict ? "This note changed elsewhere, so nothing was saved. Showing its current version; try again if you still want to." : e.message, true);
+  } finally {
+    submissionPending = false;
+  }
+  await openNote(note.id, back, { quiet: true });
+}
+
+// Choices for the reference picker: what is in view first (the task or group, its group,
+// the open workstream and project), then this view's cards, the project's workstreams and
+// every project. referenceCandidates adds every workstream and the project's groups.
+function candidate(kind, item) {
+  const title = kind === "workstream" ? item.branch || item.name : kind === "project" ? item.name : item.title;
+  return { kind, id: item.id, title, project_id: kind === "project" ? item.id : item.project_id };
+}
+function contextCandidates() {
+  const out = [];
+  const t = state.task;
+  if (t) {
+    out.push(candidate(noteKind(t), t));
+    if (t.parent_group) out.push(candidate("group", { project_id: t.project_id, ...t.parent_group }));
+  }
+  const stream = state.streams.find((s) => s.id === state.stream);
+  if (stream) out.push(candidate("workstream", stream));
+  const project = state.projects.find((p) => p.id === state.project);
+  if (project) out.push(candidate("project", project));
+  state.rows.forEach((r) => out.push(candidate(state.groups ? "group" : noteKind(r), r)));
+  state.streams.filter((s) => !isArchived(s)).forEach((s) => out.push(candidate("workstream", s)));
+  state.projects.forEach((p) => out.push(candidate("project", p)));
+  return out;
+}
+function uniqueCandidates(list) {
+  const seen = new Set();
+  return list.filter((c) => c.id && !seen.has(c.id) && seen.add(c.id));
+}
+async function referenceCandidates() {
+  const extra = [];
+  try {
+    const all = await workstreams();
+    rememberWorkstreams(all);
+    all.filter((w) => !isArchived(w)).forEach((w) => extra.push(candidate("workstream", w)));
+  } catch {}
+  if (state.project) {
+    try { (await pages("groups", { project: state.project })).forEach((g) => extra.push(candidate("group", g))); } catch {}
+  }
+  return uniqueCandidates([...contextCandidates(), ...extra]);
+}
+// The explicit references of a note being written: chips that can be removed, and a search
+// over the choices above. A complete ID that is not listed is looked up as a task or group.
+function referencePicker(get, set) {
+  const wrap = el("div", "field note-refs");
+  const label = node("span", "References", "field-label");
+  label.id = "refs-label";
+  const chips = el("ul", "ref-chips");
+  chips.setAttribute("aria-labelledby", "refs-label");
+  const searchLabel = node("label", "Add a reference");
+  searchLabel.htmlFor = "field-ref-search";
+  const search = node("input");
+  search.id = "field-ref-search";
+  search.type = "search";
+  search.autocomplete = "off";
+  search.spellcheck = false;
+  search.placeholder = "Search titles and names, or paste a complete ID";
+  const hint = node("p", "Type to search this view's tasks, the project's groups, and every workstream and project; add a task from elsewhere by its complete ID. The text is never scanned for references.", "field-hint");
+  hint.id = "field-ref-search-hint";
+  search.setAttribute("aria-describedby", hint.id);
+  const options = el("div", "ref-options");
+  options.setAttribute("role", "group");
+  options.setAttribute("aria-label", "Matching references");
+  const status = node("p", "", "field-hint ref-status");
+  status.setAttribute("role", "status");
+  let candidates = uniqueCandidates(contextCandidates());
+  let first = null;
+  const nameOf = (r) => referenceInfo(r)?.title || candidates.find((c) => c.id === r.id)?.title || r.id;
+  function choose(c) {
+    if (!get().some((r) => r.id === c.id)) set([...get(), { kind: c.kind, id: c.id }]);
+    referenceNames.set(c.id, { title: c.title, project_id: c.project_id });
+    search.value = "";
+    status.textContent = `Added ${NOTE_KINDS[c.kind].toLowerCase()} “${c.title}”.`;
+    render();
+    search.focus();
+  }
+  async function lookUp(id) {
+    const known = candidates.find((c) => c.id === id);
+    if (known) return choose(known);
+    status.textContent = `Looking up ${id}…`;
+    try {
+      const t = (await api("details", { ids: [id] })).items[0];
+      choose(candidate(noteKind(t), t));
+    } catch {
+      status.textContent = `No task, group, workstream or project has the ID “${id}”. Use its complete ID.`;
+    }
+  }
+  function render() {
+    const refs = get();
+    chips.replaceChildren(...refs.map((r) => {
+      const name = nameOf(r);
+      const remove = iconButton("close", `Remove reference: ${NOTE_KINDS[r.kind]} ${name}`, () => {
+        set(get().filter((x) => x.id !== r.id));
+        status.textContent = `Removed ${NOTE_KINDS[r.kind].toLowerCase()} “${name}”.`;
+        render();
+        search.focus();
+      }, "icon-btn chip-remove");
+      const chip = el("li", "ref-chip", node("span", NOTE_KINDS[r.kind], "ref-kind"), node("span", name, "ref-title"), remove);
+      chip.title = `${NOTE_KINDS[r.kind]} ${r.id}`;
+      return chip;
+    }));
+    if (!refs.length) chips.append(el("li", "ref-empty warn-text", "None yet. Add at least one: a note is found only through what it references."));
+    const query = search.value.trim().toLowerCase();
+    const words = query.split(/\s+/).filter(Boolean);
+    const chosen = new Set(refs.map((r) => r.id));
+    // Nothing is suggested until the user types, which keeps the dialog short.
+    const found = !words.length ? [] : candidates
+      .filter((c) => !chosen.has(c.id))
+      .filter((c) => words.every((w) => `${NOTE_KINDS[c.kind]} ${c.title} ${c.id} ${projectName(c.project_id)}`.toLowerCase().includes(w)))
+      .slice(0, 8);
+    const buttons = found.map((c) => {
+      const b = button("", () => choose(c), "ref-option");
+      const where = c.kind !== "project" && c.project_id && c.project_id !== state.project ? " · " + projectName(c.project_id) : "";
+      b.append(node("span", NOTE_KINDS[c.kind], "ref-kind"), el("span", "grow prerequisite-ref note-ref", node("span", c.title), node("small", c.id + where, "muted")));
+      b.setAttribute("aria-label", `Add ${NOTE_KINDS[c.kind].toLowerCase()} ${c.title}`);
+      return b;
+    });
+    const raw = search.value.trim();
+    first = found[0] ? () => choose(found[0]) : null;
+    // A typed complete ID that is not listed can be looked up; a plain word that already
+    // matches something is taken as a search.
+    const idLike = /^[A-Za-z][A-Za-z0-9_-]*$/.test(raw) && (/[-_0-9]/.test(raw) || !found.length);
+    if (idLike && !candidates.some((c) => c.id === raw) && !chosen.has(raw)) {
+      buttons.push(button(`Look up “${raw}” by ID`, () => lookUp(raw), "ref-option lookup"));
+      first ||= () => lookUp(raw);
+    }
+    options.replaceChildren(...buttons);
+    options.hidden = !buttons.length;
+  }
+  search.oninput = () => {
+    status.textContent = "";
+    render();
+  };
+  // Enter adds the first match instead of submitting the form.
+  search.onkeydown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    first?.();
+  };
+  wrap.append(label, chips, searchLabel, search, options, status, hint);
+  $("fields").append(wrap);
+  render();
+  referenceCandidates().then((list) => {
+    candidates = list;
+    render();
+  });
+  return { render };
+}
+
+// Add or edit a note: its title, text and references are saved together in one call. An
+// edit carries the revision it read; if the note changed meanwhile, nothing is saved: the
+// note reloads and its current version is shown beside the draft, for the user to edit
+// that version or deliberately keep the draft.
+function noteDialog(note, { references = [], saved } = {}) {
+  if (submissionPending) return;
+  openDialog(note ? "Edit note" : "Add a note",
+    note
+      ? "Change the title, text or references. They are saved together."
+      : "A note is found through the tasks, groups, workstreams or projects it references. Agents read the same notes through Task MCP.",
+    note ? "Save note" : "Add note");
+  $("dialog").classList.add("wide");
+  const title = field("title", "Title", { maxLength: NOTE_TITLE_LIMIT });
+  const text = field("text", "Text", { maxLength: NOTE_TEXT_LIMIT, multiline: true,
+    hint: "Up to 4,000 characters, shown with simple Markdown: paragraphs, lists, headings, code, bold and italic." });
+  text.rows = 8;
+  let chosen = (note ? note.references : references).map((r) => ({ kind: r.kind, id: r.id }));
+  let revision = note ? note.revision : null;
+  if (note) {
+    title.value = note.title;
+    text.value = note.text;
+  }
+  const picker = referencePicker(() => chosen, (next) => { chosen = next; });
+  const adopt = (latest, replace) => {
+    revision = latest.revision;
+    if (!replace) return;
+    title.value = latest.title;
+    text.value = latest.text;
+    chosen = latest.references.map((r) => ({ kind: r.kind, id: r.id }));
+    picker.render();
+  };
+  submitAction = async (values) => {
+    const payload = {
+      title: values.get("title") || "",
+      text: values.get("text") || "",
+      references: chosen.map((r) => ({ kind: r.kind, id: r.id })),
+    };
+    if (!payload.title.trim()) throw localError(`Give the note a title of up to ${NOTE_TITLE_LIMIT} characters.`);
+    if (!payload.text.trim()) throw localError("Write the note's text, up to 4,000 characters.");
+    if (!payload.references.length)
+      throw localError("Add at least one reference. A note is found only through the tasks, groups, workstreams or projects it references.");
+    let ack;
+    try {
+      ack = note
+        ? await api("note-update", { note_id: note.id, expected_revision: revision, ...payload })
+        : await api("note-create", payload);
+    } catch (e) {
+      if (note && e.conflict) {
+        await showNoteConflict(note.id, adopt);
+        throw localError("This note changed elsewhere, so nothing was saved. Its current version is shown below; your draft is still in the form.");
+      }
+      const refusal = NOTE_REFUSALS.exec(e.message);
+      if (refusal) throw localError("Nothing was saved. " + e.message.slice(refusal[0].length).replace(/^./, (c) => c.toUpperCase()) + ".");
+      throw e;
+    }
+    return {
+      afterSave: () => {
+        toast(note ? (ack.changed ? "Note saved." : "No changes to save.") : "Note added.");
+        return saved?.(ack);
+      },
+    };
+  };
+}
+// After a stale save: read the current note, show it in place of the stale one, and set it
+// beside the draft with two explicit choices. Nothing is overwritten without one.
+async function showNoteConflict(id, adopt) {
+  let latest;
+  try {
+    latest = (await api("note-read", { ids: [id] })).items[0];
+  } catch (e) {
+    $("conflict").replaceChildren(node("p", `Couldn't read the current version: ${e.message}`, "warn-text"));
+    return;
+  }
+  await nameReferences(latest.references);
+  if (state.panel?.kind === "note" && state.panel.id === id) renderNote(latest, state.panel.back);
+  const refs = latest.references.map((r) => `${NOTE_KINDS[r.kind]} ${referenceInfo(r)?.title || r.id}`).join(" · ");
+  const done = (message) => {
+    $("form-error").textContent = message;
+    $("conflict").replaceChildren();
+  };
+  $("conflict").replaceChildren(el("div", "conflict-box",
+    node("strong", "Current version: " + latest.title),
+    node("p", `Updated ${fullTime(latest.updated_at)} by ${latest.updated_by}${latest.archived ? " · archived" : ""}`, "muted"),
+    node("p", "References: " + (refs || "none")),
+    markdown(latest.text),
+    el("div", "conflict-actions",
+      button("Edit the current version", () => {
+        adopt(latest, true);
+        done("The form now holds the current version. Make your change again, then save.");
+      }, "btn small"),
+      button("Keep my draft", () => {
+        adopt(latest, false);
+        done("Saving now replaces the current version with your draft.");
+      }, "btn small"))));
+  $("conflict").scrollIntoView?.({ block: "nearest" });
+}
+
 /* ---------- menus ---------- */
 
 function actionsMenu(anchor, t) {
@@ -1743,6 +2269,7 @@ function openDialog(title, description, saveLabel, danger = false) {
   $("conflict").replaceChildren();
   $("submit").textContent = saveLabel;
   $("submit").className = "btn " + (danger ? "danger" : "primary");
+  $("dialog").classList.remove("wide");
   $("dialog").showModal();
   setTimeout(() => $("fields").querySelector("input,select")?.focus(), 0);
 }
@@ -1919,6 +2446,7 @@ async function showIdea(saved) {
   state.unassigned = true;
   state.selected = saved.id;
   state.task = null;
+  state.panel = null;
   $("search").value = "";
   syncRoute("push");
   renderNav();
@@ -1945,6 +2473,8 @@ $("form").onsubmit = async (e) => {
       (e.local ? "" : e.conflict
         ? " This task changed elsewhere. What you entered is kept; check the current task before trying again."
         : " If you're unsure whether it saved, check the task before retrying.");
+    // A long form (a note's) may have scrolled the message out of view.
+    $("form-error").scrollIntoView?.({ block: "nearest" });
   } finally {
     submissionPending = false;
     $("submit").disabled = $("cancel").disabled = $("close").disabled = false;
@@ -1962,6 +2492,7 @@ $("dialog").oncancel = (e) => {
 
 $("search").oninput = renderList;
 $("idea").onclick = captureIdea;
+$("notes-open").onclick = openScopeNotes;
 $("refresh").onclick = () => reload({ quiet: true }).then(() => toast("Up to date"));
 $("menu").onclick = () => $("shell").classList.add("drawer-open");
 $("scrim").onclick = closeDrawer;

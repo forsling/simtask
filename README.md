@@ -110,9 +110,11 @@ short ID that is prefilled from the line and editable, becomes
 an Unassigned task (in no workstream) held by an "Idea to process" item, shown
 under Design in the project's **Unassigned** view until it is assigned, or
 processed when you ask an agent to "go through my ideas" (the task-capture skill
-turns each into a brief or task with you, splits it, or drops it). Apart from these quick ideas,
-the browser does not create or edit tasks, answer questions, record reviews or
-sign off.
+turns each into a brief or task with you, splits it, or drops it). Task and
+group details, and **Notes** for the open workstream and project, list the notes
+that reference them; you can open, add, edit, archive and unarchive notes there,
+choosing references with a picker. Apart from quick ideas and notes, the browser
+does not create or edit tasks, answer questions, record reviews or sign off.
 Concurrent changes keep what you entered and offer reconciliation.
 The app uses the existing Store and database; it has no synchronized copy.
 Task text is displayed as safe, whitespace-preserving text, including Markdown
@@ -348,6 +350,11 @@ Find them by title:
 - `get_notes(ids)` reads 1 to 20 complete notes: title, text, references,
   `created_at`/`updated_at`, `created_by`/`updated_by`, `revision` and
   `archived`.
+
+In the local viewer (docs/viewer.md), task and group details and the **Notes**
+panel of a workstream and its project list the same titles; a note opens with
+its full text, references and times, and the viewer adds, edits, archives and
+unarchives notes at their revision, with references chosen in a picker.
 
 Notes live in the `note_records` and `note_references` tables of database
 schema 12, which replaces the earlier one-note-per-project/workstream slot

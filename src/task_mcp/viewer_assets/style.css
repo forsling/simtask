@@ -1457,3 +1457,147 @@ dialog footer {
 .task-id-header .task-id {
   flex: 1 1 180px;
 }
+
+/* ---------- notes ---------- */
+
+dialog.wide {
+  width: min(640px, calc(100vw - 32px));
+}
+.question-count.note-count {
+  background: var(--muted-bg);
+  color: var(--text-2);
+}
+.block-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.note-row time {
+  flex: none;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+/* Note titles and reference names wrap in full rather than truncate. */
+.note-title,
+.note-ref {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.note-more {
+  margin-top: 8px;
+}
+.ref-kind {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.link-row:disabled {
+  cursor: default;
+}
+.link-row:disabled:hover {
+  background: none;
+}
+.crumb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-2);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+.crumb-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crumb-link:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.field-label {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-2);
+}
+.ref-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 1px 1px 1px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 13px;
+}
+.ref-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.icon-btn.chip-remove {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+}
+.ref-empty {
+  margin: 0;
+  font-size: 13px;
+}
+.ref-options {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.ref-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  text-align: left;
+  border-top: 1px solid var(--line);
+}
+.ref-option:first-child {
+  border-top: 0;
+}
+.ref-option:hover,
+.ref-option:focus-visible {
+  background: var(--hover);
+}
+.ref-option .muted {
+  font-size: 12px;
+}
+.ref-option.lookup {
+  color: var(--accent);
+}
+.ref-status:empty {
+  display: none;
+}
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.links .ref-kind,
+.ref-options .ref-kind {
+  width: 84px;
+}
