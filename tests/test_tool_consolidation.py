@@ -224,6 +224,9 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         made = await call("init", path=repo, branch="main", action="create_project", confirmed=True)
         project = made["project"]["id"]
         ids = {"main": made["workstream"]["id"], "project": project}
+        # Each workstream as created, so the exact arguments of every offered call that
+        # targets it (its own binding, revision and archive state) can be predicted.
+        ids["bindings"] = {"main": made["workstream"]}
         for key, extra in (
             ("feature", {"path": repo, "branch": "feature", "action": "new_workstream"}),
             ("notes", {"path": repo, "workstream_name": "notes", "action": "new_workstream"}),
@@ -256,40 +259,48 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         ):
             made = await call("init", confirmed=True, **extra)
             ids[key], ids[f"{key}_project"] = made["workstream"]["id"], made["project"]["id"]
+            ids["bindings"][key] = made["workstream"]
         archived_ack = await call(
             "archive_workstream", workstream_id=ids["old"], expected_revision=0, reason="snapshot"
         )
         assert archived_ack["archive"]["archived"]
+        ids["old_archive_revision"] = archived_ack["archive"]["revision"]
         return ids
 
-    rebinds = ["rebind"] * 7  # every unarchived workstream of the project can move here
-    # label: (request built from the setup IDs, state, the choices of next in order, and
+    # Every unarchived workstream of the project can move here, in creation order.
+    keys = ("main", "feature", "notes", "release", "wip", "rel_two", "rel2_name")
+    rebinds = [f"rebind:{key}" for key in keys]
+    # label: (request built from the setup IDs, state, the calls of next in order, and
     # calls left out because they would fail: an action, or the setup key of a workstream
     # whose rebind collides on its name; each is attempted and must fail as reported).
+    # A call in next is choice:target, built by expected() into its exact arguments:
+    # resume:KEY resumes that workstream here, resume:KEY@own at its own binding,
+    # rebind:KEY moves it here, create:ACTION makes a new one, check:PROJECT (or check)
+    # repeats the request within that project, and unarchive:KEY restores it.
     scenarios = {
         "bound_here_same_project": (
             lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume", "resume"],
+            ["resume:main", "resume:feature@own"],
             [],
         ),
         "bound_here_name_bound_target": (
             lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["notes"]},
             "mismatch",
-            ["resume", "resume"],
+            ["resume:main", "resume:notes@own"],
             [],
         ),
         "bound_here_foreign": (
             lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["foreign"]},
             "mismatch",
-            ["resume", "resume"],
+            ["resume:main", "resume:foreign@own"],
             [],
         ),
         # Rebinding never crosses projects, so a foreign workstream is only resumed.
         "unbound_branch_foreign": (
             lambda ids: {"path": repo, "branch": "topic", "workstream_id": ids["foreign"]},
             "mismatch",
-            ["resume", "create"],
+            ["resume:foreign@own", "create:new_workstream"],
             ["rebind:foreign"],
         ),
         "unregistered_with_project_foreign": (
@@ -298,19 +309,19 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 | {"workstream_id": ids["foreign"]}
             ),
             "mismatch",
-            ["resume", "create"],
+            ["resume:foreign@own", "create:attach_workstream"],
             [],
         ),
         "unbound_branch_same_project": (
             lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume", "create", "rebind"],
+            ["resume:feature@own", "create:new_workstream", "rebind:feature"],
             [],
         ),
         "unbound_branch_name_bound_target": (
             lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["notes"]},
             "mismatch",
-            ["resume", "create", "rebind"],
+            ["resume:notes@own", "create:new_workstream", "rebind:notes"],
             [],
         ),
         "unbound_name_same_project": (
@@ -318,32 +329,32 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 {"path": repo, "workstream_name": "scratch"} | {"workstream_id": ids["feature"]}
             ),
             "mismatch",
-            ["resume", "create", "rebind"],
+            ["resume:feature@own", "create:new_workstream", "rebind:feature"],
             [],
         ),
         "unregistered_without_project": (
             lambda ids: {"path": loose, "branch": "topic", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume", "create", "rebind"],
+            ["resume:feature@own", "create:attach_workstream", "rebind:feature"],
             [],
         ),
         # Another workstream named while this branch is bound at another checkout.
         "branch_bound_elsewhere_same_project": (
             lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:feature@own", "rebind:release"],
             [],
         ),
         "branch_bound_elsewhere_name_bound_target": (
             lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["notes"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:notes@own", "rebind:release"],
             [],
         ),
         "branch_bound_elsewhere_foreign": (
             lambda ids: {"path": repo, "branch": "release", "workstream_id": ids["foreign"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:foreign@own", "rebind:release"],
             [],
         ),
         # An unregistered checkout naming a workstream is checked within that workstream's
@@ -351,33 +362,33 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         "unregistered_without_project_branch_bound_elsewhere": (
             lambda ids: {"path": loose, "branch": "release", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:feature@own", "rebind:release"],
             [],
         ),
         "unregistered_without_project_branch_bound_to_requested": (
             lambda ids: {"path": loose, "branch": "release", "workstream_id": ids["release"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:release@own", "rebind:release"],
             [],
         ),
         # The branch is bound at another checkout and no other workstream is named.
         "branch_bound_to_other_checkout": (
             lambda ids: {"path": repo, "branch": "release"},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:release@own", "rebind:release"],
             [],
         ),
         "unregistered_with_project_branch_bound_to_other_checkout": (
             lambda ids: {"path": loose, "branch": "release", "project": ids["project"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:release@own", "rebind:release"],
             [],
         ),
         # project= names another project than the one this checkout is attached to.
         "attached_to_another_project": (
             lambda ids: {"path": repo, "branch": "main", "project": ids["foreign_project"]},
             "mismatch",
-            ["resume"],
+            ["resume:main"],
             [],
         ),
         "attached_to_another_project_with_workstream": (
@@ -386,7 +397,7 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 | {"workstream_id": ids["foreign"]}
             ),
             "mismatch",
-            ["resume", "resume"],
+            ["resume:main", "resume:foreign@own"],
             [],
         ),
         "attached_to_another_project_unbound_branch": (
@@ -400,19 +411,19 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         "unbound_branch_name_taken_by_other": (
             lambda ids: {"path": other, "branch": "wip", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume"],
+            ["resume:feature@own"],
             ["new_workstream", "rebind:feature"],
         ),
         "unbound_branch_name_taken_by_target": (
             lambda ids: {"path": other, "branch": "wip", "workstream_id": ids["wip"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:wip@own", "rebind:wip"],
             ["new_workstream"],
         ),
         "unregistered_without_project_name_taken": (
             lambda ids: {"path": loose, "branch": "wip", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume"],
+            ["resume:feature@own"],
             ["attach_workstream", "rebind:feature"],
         ),
         "unregistered_with_project_foreign_name_taken": (
@@ -421,25 +432,25 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
                 | {"workstream_id": ids["foreign"]}
             ),
             "mismatch",
-            ["resume"],
+            ["resume:foreign@own"],
             ["attach_workstream"],
         ),
         "unbound_branch_foreign_name_taken": (
             lambda ids: {"path": repo, "branch": "wip", "workstream_id": ids["foreign"]},
             "mismatch",
-            ["resume"],
+            ["resume:foreign@own"],
             ["new_workstream"],
         ),
         "branch_bound_elsewhere_rebind_name_taken": (
             lambda ids: {"path": repo, "branch": "rel2", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume"],
+            ["resume:feature@own"],
             ["rebind:rel_two"],
         ),
         "branch_bound_to_other_checkout_rebind_name_taken": (
             lambda ids: {"path": repo, "branch": "rel2"},
             "mismatch",
-            ["resume"],
+            ["resume:rel_two@own"],
             ["rebind:rel_two"],
         ),
         # Discovery: a new workstream here, or any listed workstream of the project moved
@@ -447,25 +458,25 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         "new_branch": (
             lambda ids: {"path": repo, "branch": "topic"},
             "new_branch",
-            ["create"] + rebinds,
+            ["create:new_workstream"] + rebinds,
             [],
         ),
         "new_branch_name_taken": (
             lambda ids: {"path": repo, "branch": "wip"},
             "new_branch",
-            ["rebind"],
+            ["rebind:wip"],
             ["new_workstream", "rebind:feature"],
         ),
         "unregistered_checkout_with_project": (
             lambda ids: {"path": loose, "branch": "topic", "project": ids["project"]},
             "unregistered_checkout",
-            ["create"] + rebinds,
+            ["create:attach_workstream"] + rebinds,
             [],
         ),
         "unregistered_checkout_with_project_name_taken": (
             lambda ids: {"path": loose, "branch": "wip", "project": ids["project"]},
             "unregistered_checkout",
-            ["rebind"],
+            ["rebind:wip"],
             ["attach_workstream", "rebind:feature"],
         ),
         # Without project=, a new project, or a check of one project, which then lists the
@@ -473,19 +484,19 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         "unregistered_checkout": (
             lambda ids: {"path": loose, "branch": "topic"},
             "unregistered_checkout",
-            ["create", "check", "check"],
+            ["create:create_project", "check:foreign_project", "check:project"],
             [],
         ),
         "unregistered_checkout_name_taken": (
             lambda ids: {"path": loose, "branch": "wip"},
             "unregistered_checkout",
-            ["create", "check", "check"],
+            ["create:create_project", "check:foreign_project", "check:project"],
             [],
         ),
         "unregistered_checkout_branch_bound": (
             lambda ids: {"path": loose, "branch": "release"},
             "unregistered_checkout",
-            ["create", "check", "check"],
+            ["create:create_project", "check:foreign_project", "check:project"],
             [],
         ),
         # Archived workstreams: an archived binding is reported, never silently resumed, and
@@ -493,55 +504,55 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         "archived_binding_here": (
             lambda ids: {"path": attic, "branch": "old-branch"},
             "archived",
-            ["resume", "unarchive"],
+            ["resume:old", "unarchive:old"],
             [],
         ),
         "archived_binding_here_named": (
             lambda ids: {"path": attic, "branch": "old-branch", "workstream_id": ids["old"]},
             "archived",
-            ["resume", "unarchive"],
+            ["resume:old", "unarchive:old"],
             [],
         ),
         "bound_here_requested_archived": (
             lambda ids: {"path": repo, "branch": "main", "workstream_id": ids["old"]},
             "mismatch",
-            ["resume", "resume"],
+            ["resume:main", "resume:old@own"],
             [],
         ),
         "archived_bound_here_other_requested": (
             lambda ids: {"path": attic, "branch": "old-branch", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume", "resume"],
+            ["resume:old", "resume:feature@own"],
             [],
         ),
         "branch_bound_to_archived_elsewhere": (
             lambda ids: {"path": repo, "branch": "old-branch"},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:old@own", "rebind:old"],
             [],
         ),
         "branch_bound_to_archived_elsewhere_other_requested": (
             lambda ids: {"path": repo, "branch": "old-branch", "workstream_id": ids["feature"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:feature@own", "rebind:old"],
             [],
         ),
         "unbound_branch_requested_archived": (
             lambda ids: {"path": other, "branch": "hotfix", "workstream_id": ids["old"]},
             "mismatch",
-            ["resume", "create", "rebind"],
+            ["resume:old@own", "create:new_workstream", "rebind:old"],
             [],
         ),
         "unbound_branch_name_held_by_archived_target": (
             lambda ids: {"path": other, "branch": "old", "workstream_id": ids["old"]},
             "mismatch",
-            ["resume", "rebind"],
+            ["resume:old@own", "rebind:old"],
             ["new_workstream"],
         ),
         "unregistered_checkout_with_project_name_held_by_archived": (
             lambda ids: {"path": loose, "branch": "old", "project": ids["project"]},
             "unregistered_checkout",
-            ["rebind"],
+            ["rebind:old"],
             ["attach_workstream"],
         ),
     }
@@ -549,6 +560,39 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
     def here(request):
         keys = ("path", "branch", "workstream_name")
         return {key: request[key] for key in keys if key in request}
+
+    def own(ws):
+        # A workstream's own binding: its checkout and branch, or its name without one.
+        where = {"branch": ws["branch"]} if ws["branch"] else {"workstream_name": ws["name"]}
+        return {"path": ws["checkout_path"]} | where
+
+    def expected(call, request, ids):
+        # The exact offered call for choice:target, so a call that targets another
+        # workstream (a swap) or another binding fails the scenario.
+        choice, _, target = call.partition(":")
+        key, _, where = target.partition("@")
+        if choice == "check":
+            into = {"project": ids[key]} if key else {}
+            return {"choice": choice, "tool": "init", "arguments": here(request) | into}
+        if choice == "create":
+            into = {"project": ids["project"]} if key == "attach_workstream" else {}
+            arguments = here(request) | {"action": key} | into | {"confirmed": True}
+            return {"choice": choice, "tool": "init", "arguments": arguments}
+        ws = ids["bindings"][key]
+        if choice == "unarchive":
+            arguments = {"workstream_id": ws["id"], "archived": False}
+            arguments["expected_revision"] = ids["old_archive_revision"]
+            return {"choice": choice, "tool": "archive_workstream", "arguments": arguments}
+        flag = {"include_archived": True} if key == "old" else {}
+        if choice == "resume":
+            where = own(ws) if where == "own" else here(request)
+            arguments = where | {"workstream_id": ws["id"]} | flag
+        else:
+            assert choice == "rebind", call
+            arguments = here(request) | {"action": "rebind_workstream"}
+            arguments |= {"workstream_id": ws["id"], "expected_revision": ws["revision"]}
+            arguments |= {"confirmed": True} | flag
+        return {"choice": choice, "tool": "init", "arguments": arguments}
 
     def left_out(request, response, ids, call):
         # The arguments of a call init left out: a new workstream here, or a rebind.
@@ -572,19 +616,37 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
         assert response["path"] == request["path"]
         assert response["branch"] == request.get("branch")
         roles = {ws["id"]: ws["roles"] for ws in response["workstreams"]}
+        listed = {ws["id"]: ws for ws in response["workstreams"]}
         if "workstream_id" in request:
-            # A requested workstream is reported as itself, never swapped for another.
+            # A requested workstream is reported as itself, never swapped for another,
+            # and a mismatch offers to resume it (here, or at its own binding).
             assert "requested" in roles[request["workstream_id"]]
+            if response["state"] == "mismatch":
+                assert any(
+                    item["choice"] == "resume"
+                    and item["arguments"]["workstream_id"] == request["workstream_id"]
+                    for item in response["next"]
+                ), response["next"]
         for item in response["next"]:
             assert set(item) == {"choice", "tool", "arguments"}
             assert item["choice"] in {"resume", "check", "create", "rebind", "unarchive"}
             arguments = item["arguments"]
-            if item["tool"] == "init":
-                # A resume or rebind of an archived workstream says include_archived=true.
-                moved = arguments.get("workstream_id")
-                listed = next((w for w in response["workstreams"] if w["id"] == moved), None)
-                if listed and item["choice"] in {"resume", "rebind"}:
-                    assert bool(arguments.get("include_archived")) == archived(listed)
+            if item["choice"] in {"resume", "rebind"}:
+                # A resume or rebind targets a listed workstream with its own revision,
+                # here or (resume only) at its own binding, and an archived one says
+                # include_archived=true.
+                assert item["tool"] == "init", item
+                ws = listed[arguments["workstream_id"]]
+                flag = {"include_archived": True} if archived(ws) else {}
+                target = {"workstream_id": ws["id"]} | flag
+                if item["choice"] == "resume":
+                    assert arguments in (here(request) | target, own(ws) | target), item
+                else:
+                    moved = {"action": "rebind_workstream", "confirmed": True}
+                    moved["expected_revision"] = ws["revision"]
+                    assert arguments == here(request) | moved | target, item
+            elif item["tool"] == "init":
+                assert item["choice"] in {"check", "create"}, item
             else:
                 assert item == {
                     "choice": "unarchive",
@@ -678,9 +740,10 @@ def test_every_offered_init_mismatch_choice_works_when_followed(tmp_path):
 
     async def exercise():
         followed = withheld_count = 0
-        for label, (_, _, choices, withheld) in scenarios.items():
-            _, _, _, response = await reach(label)
-            assert [item["choice"] for item in response["next"]] == choices, label
+        for label, (_, _, calls, withheld) in scenarios.items():
+            _, ids, request, response = await reach(label)
+            # Each offered call targets exactly the workstream, binding or project stated.
+            assert response["next"] == [expected(call, request, ids) for call in calls], label
             # A rebind across projects fails on the project; every other left-out call
             # fails on the name, which the message then mentions.
             codes = {
