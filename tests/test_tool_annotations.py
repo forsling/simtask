@@ -22,13 +22,16 @@ ADDITIVE = {
     "get_next_action",
     "record_result",
     "list_events",
+    "create_note",
+    "get_notes",
+    "list_notes",
 }
 
 # `init` can rebind an existing workstream, so its single descriptor must take
 # the most conservative classification among its possible actions.
 DESTRUCTIVE = {
     "init",
-    "set_note",
+    "update_note",
     "archive_workstream",
     "update_task",
     "add_to_workstream",

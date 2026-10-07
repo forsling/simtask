@@ -187,8 +187,11 @@ async function test() {
   const renderedText = texts(context.rendered);
   assert.doesNotMatch(renderedText, /Old defer reasons|New drop reasons|Reviewer reasons|Sign-off decisions|Latest rejection/);
   assert.match(renderedText, /Open question/);
-  // Questions are read, not answered, here: the only control hands them to an agent.
-  assert.deepEqual(plain(context.rendered.flatMap(descendants).filter(node => node.tag === "button").map(node => node.textContent)),
+  // Questions are read, not answered, here: the only control hands them to an agent. The
+  // Notes section is separate: its controls add and open notes, never task changes.
+  const notes = context.rendered.filter(node => (node.className || "").split(" ").includes("notes-block"));
+  assert.equal(notes.length, 1);
+  assert.deepEqual(plain(context.rendered.filter(node => !notes.includes(node)).flatMap(descendants).filter(node => node.tag === "button").map(node => node.textContent)),
     ["Design with agent"]);
 
   // The detail offers no create, edit, review or verdict controls; a done task offers none at all.

@@ -58,7 +58,6 @@ function viewer(initialPath, {stubDetail = true} = {}) {
     calls.push([action, JSON.parse(JSON.stringify(data))]);
     if (action === "projects") return {items: [{id: P, name: "One"}, {id: Q, name: "Two"}], next_offset: null};
     if (action === "workstreams") return {items: data.project === P ? [{id: W, project_id: P, branch: "main", status: {scoped_count: 2, standings: {}}}] : [], next_offset: null};
-    if (action === "notes") return {notes: {}};
     if (action === "tasks") {
       const rows = data.project !== P ? [] : data.unassigned ? context.board.unassigned : data.workstream_id ? context.board[data.workstream_id] : context.board.all;
       // Pages of two, as the server pages over matches only.

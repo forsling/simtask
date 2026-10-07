@@ -90,10 +90,9 @@ uses POSIX file locking (Linux/macOS).
 Browse projects and workstreams, search/filter task titles, and read
 specifications, evidence and audit history. Each project's **Unassigned** view,
 below **All tasks**, lists its tasks in no workstream (what MCP tools call the
-inbox), and All tasks marks those cards **Unassigned**. The project note and, in a
-workstream, its workstream note appear read-only above the task list. Archived
-workstreams are hidden from navigation until **Show archived**. Each project's **Task groups** page shows
-its discoverable groups, including shared groups and empty groups included in
+inbox), and All tasks marks those cards **Unassigned**. The viewer does not show
+notes yet. Archived workstreams are hidden from navigation until **Show archived**.
+Each project's **Task groups** page shows its discoverable groups, including shared groups and empty groups included in
 that project's scope. **Shared task groups** shows only groups with task members in
 more than one project. Both show whole-group progress and project counts;
 **Project group**, **Shared group** and **Empty group** labels distinguish them.
@@ -111,9 +110,11 @@ short ID that is prefilled from the line and editable, becomes
 an Unassigned task (in no workstream) held by an "Idea to process" item, shown
 under Design in the project's **Unassigned** view until it is assigned, or
 processed when you ask an agent to "go through my ideas" (the task-capture skill
-turns each into a brief or task with you, splits it, or drops it). Apart from these quick ideas,
-the browser does not create or edit tasks, answer questions, record reviews or
-sign off.
+turns each into a brief or task with you, splits it, or drops it). Task and
+group details, and **Notes** for the open workstream and project, list the notes
+that reference them; you can open, add, edit, archive and unarchive notes there,
+choosing references with a picker. Apart from quick ideas and notes, the browser
+does not create or edit tasks, answer questions, record reviews or sign off.
 Concurrent changes keep what you entered and offer reconciliation.
 The app uses the existing Store and database; it has no synchronized copy.
 Task text is displayed as safe, whitespace-preserving text, including Markdown
@@ -299,44 +300,80 @@ unchanged. A new workstream's
 scope expression copies another workstream's references and exclusions. No scope change transfers tasks
 from another workstream. Remote members stay outside the local task list.
 
-## Project and workstream notes
+## Notes
 
-Each project and each workstream can hold one personal, uncommitted, plain-text
-note of at most 2,000 characters. Use the project note for your own rules for
-that repository and the workstream note for that branch's current situation and
-rules, such as what is deployed and how to roll it back. Rules about the code
-belong in committed repository files, personal rules for every repository in
-user-level files, and Task MCP workflow rules in the skills.
-
-A ready `init` response includes `notes.project` and `notes.workstream`, each with
-`text`, `revision`, `updated_at` and `updated_by` (the configured actor); empty
-notes are omitted. Read them before working.
+A note is a separate record with a title, text and references to the tasks,
+groups, workstreams and projects it concerns. The title (1 to 120 characters)
+says what the note is about, so an agent can judge relevance without reading the
+text (1 to 4,000 characters). Rules for a repository belong in committed files
+such as AGENTS.md, personal rules for every repository in user-level files, and
+Task MCP workflow rules in the skills.
 
 ```text
-set_note(kind="workstream", target_id=workstream_id,
-         expected_revision=notes.workstream.revision,  # 0 when init shows none
-         text="Staging runs build 41; roll back with deploy.sh 40.")
+create_note(title="Staging deploy and rollback",
+            text="Staging runs build 41; roll back with deploy.sh 40.",
+            references=[{"kind": "workstream", "id": workstream_id},
+                        {"kind": "task", "id": "deploy-pipeline"},
+                        {"kind": "project", "id": other_project_id}])
+update_note(note_id, expected_revision=1, text="Rolled back to build 40.")
+update_note(note_id, expected_revision=2, archived=true)   # hide; false restores
 ```
 
-`kind` is `project` (target a project ID or path) or `workstream` (a workstream
-ID). The text replaces the whole note; empty text clears it. A save over the
-limit fails with `note_too_long`, stating the limit and the submitted length.
-A stale `expected_revision` fails with `revision_conflict`; re-read with `init`
-and reconcile. Identical text is a no-op. Every save, failed or not, is audited
-as `note.set` with the before/after text. Update the workstream note when the
-live state it describes changes (for example on deploy or rollback) and when the
-user asks; keep it within the limit by replacing outdated content, not appending.
-The browser viewer shows both notes above the task list.
+A reference is `{kind, id}` with kind `task`, `group`, `workstream` or `project`
+and the entity's complete public ID (a project's `prj_…` ID, not its path or
+name). Give at least one; any number and any mix of kinds and projects is fine,
+and the note stays one record. Repeated references are saved once. Every
+referenced entity must exist with that kind: an unknown ID fails with
+`unknown_reference`, a wrong kind with `reference_kind_mismatch`, and either
+saves nothing. Text never creates references, even when it mentions an ID.
 
-Notes live in their own `notes` table. The original schema10-only notes rollout
-was additive and compatible with older servers. This combined development
-version also migrates task identity to schema11: startup takes a verified
-`*.pre-schema-11.*.sqlite3` backup, and all processes must use the newer code
-before reopening that database. A schema10 server already running can continue
-its existing operations, but cannot restart on schema11. Rollback to schema10
-requires restoring the pre-migration backup; writes made after it are not included.
-At schema11, a missing notes table alone still gets a verified backup named after
-the missing tables, such as `*.pre-notes.*.sqlite3`.
+`update_note` changes any of `title`, `text`, `references` and `archived` at the
+note's `revision`; a stale one fails with `revision_conflict` (re-read with
+`get_notes` and reconcile). Omitted fields stay. Supplied `references` replace
+the whole set in the same atomic write. An edit keeps `created_at` and updates
+`updated_at`, `updated_by` and `revision`; values equal to the current ones are a
+no-op. Over-long text fails with `note_too_long`, stating the limit and length.
+Every write, failed or not, is audited as `note.created` or `note.updated` with
+the before/after note; `list_events(note_id=...)` returns a note's history.
+Archiving hides a note from task reads and `list_notes`; there is no deletion.
+
+Notes are never sent automatically: `init` returns no notes, titles or counts.
+Find them by title:
+
+- `get_tasks(specification=true)` and `get_next_action` list the active notes
+  that reference the task or group as `notes` (`id`, `title`, `updated_at`),
+  newest-updated first, at most 20, with `note_total`.
+- `list_notes(reference={"kind": ..., "id": ...})` pages the same titles for any
+  task, group, workstream or project (`limit`, `offset`, `next_offset`, `total`).
+  Archived notes are counted in `archived_hidden` unless `include_archived=true`,
+  which lists them with `archived: true`.
+- `get_notes(ids)` reads 1 to 20 complete notes: title, text, references,
+  `created_at`/`updated_at`, `created_by`/`updated_by`, `revision` and
+  `archived`.
+
+In the local viewer (docs/viewer.md), task and group details and the **Notes**
+panel of a workstream and its project list the same titles; a note opens with
+its full text, references and times, and the viewer adds, edits, archives and
+unarchives notes at their revision, with references chosen in a picker.
+
+Notes live in the `note_records` and `note_references` tables of database
+schema 12, which replaces the earlier one-note-per-project/workstream slot
+(`set_note` and the notes in `init`). On first start, new code takes a verified
+`*.pre-schema-12.*.sqlite3` online backup, then migrates each nonempty project or
+workstream note to a note titled "Project note" or "Workstream note" that
+references its owner and keeps its text, time and author (`note.migrated` in the
+history). The old `notes` table stays as frozen private history. A schema-11
+server already running keeps working, including its `set_note`, until it stops,
+but cannot reopen schema 12, and its later note writes are not carried over.
+Restart every MCP server and the viewer on the new code. Rollback to schema 11
+requires restoring the backup; writes made after it are not included.
+
+Earlier schemas follow the same rule. Schema 11 migrated task identity with a
+verified `*.pre-schema-11.*.sqlite3` backup: a schema-10 server already running
+could continue, but cannot restart on schema 11. At the current schema, a
+database missing an additive table (`workstream_archive`, `task_picks`) gets a
+verified backup named after the missing tables, such as
+`*.pre-workstream_archive.*.sqlite3`, before it is created.
 
 ## Archived workstreams
 
@@ -382,8 +419,8 @@ Its `archive` block (`archived`, `reason`, `revision`, `updated_at`,
 The viewer hides archived workstreams from navigation until **Show archived**.
 
 Archive state lives in its own `workstream_archive` table. Its original
-schema10-only rollout was additive; the combined schema11 rollout follows the
-migration and restart requirements described under notes. An existing schema11
+schema10-only rollout was additive; later schema migrations follow the
+migration and restart requirements described under [Notes](#notes). An existing
 database lacking only this table gets a verified
 `*.pre-workstream_archive.*.sqlite3` backup first.
 
@@ -405,8 +442,8 @@ hours.
 
 Markers live in their own `task_picks` table. Older already-running servers
 ignore it and keep selecting and recording; a result they record still ends the
-marker. Restart compatibility follows the schema11 requirements under notes.
-An existing schema11 database lacking only this table gets a verified
+marker. Restart compatibility follows the schema requirements under [Notes](#notes).
+An existing database lacking only this table gets a verified
 `*.pre-task_picks.*.sqlite3` backup first; expired markers are pruned when the
 next action is picked.
 
@@ -749,7 +786,8 @@ those rare workflows are deferred.
 
 | Area | Tools |
 | --- | --- |
-| Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity; notes), `set_note`, `archive_workstream`, `list_projects`, `list_workstreams`, `workstream_status` (archived workstreams hidden unless `include_archived`) |
+| Project and workstream | `init` (actions `create_project`, `new_workstream`, `attach_workstream`, `rebind_workstream`; checkout/branch match check; `runtime` identity), `archive_workstream`, `list_projects`, `list_workstreams`, `workstream_status` (archived workstreams hidden unless `include_archived`) |
+| Notes | `create_note`, `update_note`, `get_notes`, `list_notes`; task reads list note titles |
 | Scope and order | `add_to_workstream`, `remove_from_workstream` (task or group IDs), `list_tasks`, `get_tasks`, `list_task_attempts`, `get_attempt`, `reorder_tasks`, `get_next_action` |
 | Groups | `create_task(kind="group")`, `update_task(group_id=...)`, `list_tasks(state="group")`, `list_tasks(group_id=...)`, `decompose_task` |
 | Specification and gates | `create_task`, `update_task`, `set_disposition`, `add_unresolved`, `resolve_unresolved`, `add_prerequisite`, `remove_prerequisite`, `decompose_task` |

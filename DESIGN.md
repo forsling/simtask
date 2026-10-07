@@ -118,31 +118,55 @@ Local task lists, status counts and exports include only concrete tasks from the
 workstream's project. Group references and whole-group progress are separate;
 an empty local slice does not imply global completion.
 
-Each project and each workstream has at most one note: personal, uncommitted
-plain text of at most 2,000 characters. The project note holds the user's rules
-for that repository; the workstream note holds that branch's current situation
-(for example what is deployed and how to roll back) and its rules. They carry
-what a handover would otherwise carry, so a fresh session reads them from the
-ready `init` response, which includes each nonempty note with its text, revision,
-update time and configured actor, and omits empty ones. Other knowledge lives
-elsewhere: rules about the code in committed repository files, personal rules
-for every repository in user-level files, and Task MCP workflow rules in skills.
-The bound keeps notes a current summary rather than an unbounded, stale log:
-saves over the limit are rejected with the limit and the submitted length, and
-agents replace outdated content instead of appending. Group notes are not
-supported.
+A note is a separate record with a title, text and a set of references. The
+title (1 to 120 characters) says what the note is about, so an agent can judge
+relevance without reading the text (1 to 4,000 characters). A reference is
+`{kind, id}`: kind `task`, `group`, `workstream` or `project`, and the entity's
+complete public ID. A note can reference any number of entities (at least one,
+since notes are found through their references), in any combination of kinds and
+across projects, and stays one record however many it references. Each write
+validates every referenced entity and its kind, deduplicates repeated references
+and never infers references from the text. A note records its creation and
+update times, the configured actor of each and a revision.
 
-`set_note(kind, target_id, expected_revision, text)` replaces either kind; empty
-or whitespace-only text clears. The note's own revision guards saves: an absent
-or empty note accepts 0, and a cleared note keeps its row so a revision is never
-reused for different text. Identical text is a no-op. Every save is audited
-(`note.set`) with before/after text, like task mutations; it changes no task,
-scope or workstream revision. The viewer shows both notes read-only above the
-task list. Notes live in a separate `notes` table. Because schema 10 servers
-never read it, it is added without a schema revision bump, so a previous server
-keeps running against, and restarting on, the upgraded database. An existing
-database without the table gets a verified `*.pre-notes.*.sqlite3` online backup
-before the table is created.
+`create_note(title, text, references)` saves a note in one call.
+`update_note(note_id, expected_revision, title, text, references, archived)`
+changes any of these, guarded by the note's own revision: omitted fields stay,
+and supplied references replace the whole set together with the other changes.
+Each write is atomic, so an invalid reference rejects it and nothing is saved.
+An edit keeps the creation time and records the update time; values equal to
+the current ones are a no-op. Every write, failed or not, is audited
+(`note.created`, `note.updated`) with the before/after note, so
+`list_events(note_id)` returns its edit history; a note whose references all
+belong to one project is also in that project's history. Archiving hides a
+note and unarchiving restores it; there is no hard delete.
+
+Notes are never sent to agents automatically: `init` returns no notes, titles
+or counts, because notes bloat context and outlive their usefulness. Discovery
+is by titles only, and the agent decides what to read. A task or group read with
+its specification (`get_tasks(specification=true)`, `get_next_action`) lists
+the active notes that reference it as `{id, title, updated_at}`, newest-updated
+first, at most 20, with `note_total`. `list_notes(reference)` pages the same
+titles for any one entity and hides archived notes unless `include_archived`
+(counted in `archived_hidden`). `get_notes(ids)` reads up to 20 complete notes.
+Rules for a repository belong in committed AGENTS.md or user-level files, and
+workflow rules in skills, so notes carry no rule role. There is no pinning,
+automatic delivery or inline @mention parsing; pinning can be added later
+without breaking the API if titles prove too weak a signal. The viewer lists,
+opens, adds, edits, archives and unarchives notes through the same Store calls;
+its reference picker sets the references, which it never infers from text.
+
+Notes live in `note_records` and `note_references` (schema 12). A reference
+spans tables and projects, so writes validate it instead of a foreign key;
+tasks, groups, workstreams and projects are never deleted. Schema 12 replaces
+the schema-11 per-project and per-workstream note slot (`set_note` and init
+notes). Its migration takes the usual verified `*.pre-schema-12.*.sqlite3`
+online backup, then turns each nonempty slot into a note titled "Project note"
+or "Workstream note" that references its owner and keeps its text, time and
+author, audited as `note.migrated`. The legacy `notes` table stays as frozen
+private history: a schema-11 server still running keeps its `init` notes and
+`set_note` on it until it stops, and cannot restart on schema 12. Writes it
+makes there after the migration are not carried over.
 
 A workstream can be archived when its binding is stale, such as a snapshot
 folder that would otherwise be found by path, branch or name and mislead a new
@@ -163,9 +187,9 @@ or moves an archived workstream carries `include_archived=true`. The
 archived workstream keeps its branch and name, which therefore stay unavailable
 to new workstreams in that project. The viewer hides archived workstreams from
 navigation unless the user shows them. Archive state lives in a separate
-`workstream_archive` table, added without a schema revision bump like `notes`
-(and after a verified `*.pre-workstream_archive.*` backup when missing); a
-previous server ignores it and keeps listing archived workstreams.
+`workstream_archive` table, added without a schema revision bump (and after a
+verified `*.pre-workstream_archive.*` backup when missing); a previous server
+ignores it and keeps listing archived workstreams.
 
 ## Tasks and groups
 

@@ -27,7 +27,7 @@ def test_fresh_client_packaged_skills_match_the_discovered_tool_contract(tmp_pat
     async def exercise():
         async with Client(params, read_timeout_seconds=30) as client:
             tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-            assert len(tools) == 28
+            assert len(tools) == 31
             arguments_anywhere = {
                 argument for tool in tools.values() for argument in tool.input_schema["properties"]
             }

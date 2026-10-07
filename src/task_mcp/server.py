@@ -36,6 +36,12 @@ class ConcernInput(BaseModel):
     text: str
 
 
+class NoteReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["task", "group", "workstream", "project"]
+    id: str
+
+
 class ArtifactInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["artifact", "commit"]
@@ -78,7 +84,7 @@ def create_server(
         instructions=(
             "The user directs the work: explicit user instructions override all workflow "
             "guidance.\n"
-            "Call init first for the checkout and branch, and read the notes it returns.\n"
+            "Call init first for the checkout and branch.\n"
             "Workflows are skills read with get_default_skills: superdevloop, task-signoff, "
             "task-capture, task-design, proposal-review and init.\n"
             'For "go through my ideas", read task-capture.\n'
@@ -179,7 +185,7 @@ def create_server(
         include_archived: bool = False,
     ) -> dict[str, Any]:
         """Call first with an absolute checkout path and branch (workstream_name if detached);
-        ready returns cards, notes and runtime, else make one call from next with its
+        ready returns cards and runtime, else make one call from next with its
         arguments. workstream_id checks the binding. A new workstream's scope_expression:
         none or a base workstream, then +/-task/group.
         """
@@ -198,20 +204,60 @@ def create_server(
         )
         return {**result, "runtime": runtime_identity()}
 
+    @tool(additive)
+    @domain_errors
+    def create_note(title: str, text: str, references: list[NoteReference]) -> dict[str, Any]:
+        """Save a note: a title (1-120 characters) saying what it is about, text (1-4,000) and
+        references to the tasks, groups, workstreams or projects it concerns, by complete
+        public ID, across projects. An invalid reference saves nothing; text never adds
+        references.
+        """
+        return store.create_note(title, text, [r.model_dump() for r in references])
+
     @tool(editing)
     @domain_errors
-    def set_note(
-        kind: Literal["project", "workstream"],
-        target_id: str,
+    def update_note(
+        note_id: str,
         expected_revision: int,
-        text: str,
+        title: str | None = None,
+        text: str | None = None,
+        references: list[NoteReference] | None = None,
+        archived: bool | None = None,
     ) -> dict[str, Any]:
-        """Replace a personal, uncommitted project or workstream note (at most 2,000 characters;
-        empty clears). Update the workstream note when the live state it describes changes or
-        the user directs, rewriting rather than appending. expected_revision is the note's, or
-        0.
+        """Change a note's title, text, references or archived state at its revision. Given
+        references replace the whole set; omitted fields stay. archived=true hides the note
+        from task reads and list_notes; false restores it. Edit history: list_events(note_id).
         """
-        return store.set_note(kind, target_id, expected_revision, text)
+        return store.update_note(
+            note_id,
+            expected_revision,
+            title,
+            text,
+            [r.model_dump() for r in references] if references is not None else None,
+            archived,
+        )
+
+    @tool(additive)
+    @domain_errors
+    def get_notes(ids: list[str]) -> dict[str, Any]:
+        """Read 1-20 complete notes: title, text, references, timestamps, actors, revision and
+        archived state.
+        """
+        return store.get_notes(ids)
+
+    @tool(additive)
+    @domain_errors
+    def list_notes(
+        reference: NoteReference,
+        include_archived: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List {id, title, updated_at} of the notes that reference one task, group, workstream
+        or project, newest-updated first. Archived notes are only counted (archived_hidden)
+        unless include_archived=true.
+        """
+        return store.list_notes(reference.model_dump(), include_archived, limit, offset)
 
     @tool(editing)
     @domain_errors
@@ -331,9 +377,9 @@ def create_server(
         include: list[CardInclude] | None = None,
     ) -> dict[str, Any]:
         """Read 1-20 cards (include as list_tasks). specification=true adds full requirements,
-        questions, concerns and the specification_etag; attempt_ids (up to 20) add exactly
-        those complete attempts in the same call. A parent_group gives only id, title and
-        summary: add its ID for the group's body.
+        questions, concerns, titles of notes referencing it and the specification_etag;
+        attempt_ids (up to 20) add exactly those complete attempts in the same call. A
+        parent_group gives only id, title and summary: add its ID for the group's body.
         """
         return store.read_tasks(ids, specification, workstream_id, attempt_ids, include)
 
@@ -606,12 +652,13 @@ def create_server(
         through_sequence: int | None = None,
         limit: int = 20,
         include_details: bool = False,
+        note_id: str | None = None,
     ) -> dict[str, Any]:
-        """Page the local audit history for a project or task. Pass the returned through_sequence
-        to keep pages stable.
+        """Page the local audit history for a project, task or note. Pass the returned
+        through_sequence to keep pages stable.
         """
         return store.list_events(
-            project, task_id, after_sequence, through_sequence, limit, include_details
+            project, task_id, after_sequence, through_sequence, limit, include_details, note_id
         )
 
     @tool(catalog)

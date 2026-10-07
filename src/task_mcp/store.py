@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from task_mcp.export import FORMAT, render_markdown
 
-DATABASE_SCHEMA_REVISION = 11
+DATABASE_SCHEMA_REVISION = 12
 COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
 # Concerns have explicit provenance in their own column, never in arbitrary proof text.
 CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
@@ -136,19 +136,24 @@ SCHEMA = (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id), source_schema INTEGER NOT NULL,
         task_json TEXT NOT NULL, scopes_json TEXT NOT NULL,
         unresolved_id TEXT)""",
-    # Personal project/workstream notes. An additive table that schema 10 servers never
-    # read, so it needs no schema revision bump; a cleared note keeps its row (empty text)
-    # so its revision never repeats.
-    """CREATE TABLE IF NOT EXISTS notes (
-        owner_id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK(kind IN ('project','workstream')),
-        project_id TEXT NOT NULL REFERENCES projects(id),
-        workstream_id TEXT REFERENCES workstreams(id),
-        text TEXT NOT NULL CHECK(length(text) <= 2000),
-        revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
-        CHECK(owner_id = coalesce(workstream_id, project_id)),
-        CHECK((kind = 'workstream') = (workstream_id IS NOT NULL)))""",
-    # Workstream archive state, additive like notes: schema 10 servers never read it, so
+    # Titled notes (schema 12). A note is one record however many entities it references;
+    # archiving hides it and keeps the row, and its revision guards every edit.
+    """CREATE TABLE IF NOT EXISTS note_records (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 120),
+        text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 4000),
+        archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+        revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL, updated_by TEXT NOT NULL)""",
+    # A reference names one task, group, workstream or project by its complete public ID.
+    # Kinds span tables (and projects), so writes validate the entity instead of a foreign key.
+    """CREATE TABLE IF NOT EXISTS note_references (
+        note_id TEXT NOT NULL REFERENCES note_records(id),
+        kind TEXT NOT NULL CHECK(kind IN ('task','group','workstream','project')),
+        target_id TEXT NOT NULL, position INTEGER NOT NULL,
+        PRIMARY KEY(note_id, kind, target_id))""",
+    "CREATE INDEX IF NOT EXISTS note_reference_target ON note_references(kind, target_id)",
+    # Workstream archive state, added without a schema bump: schema 10 servers never read it, so
     # they keep listing an archived workstream as before. Unarchiving keeps the row
     # (archived=0) so its revision never repeats; no row means never archived.
     """CREATE TABLE IF NOT EXISTS workstream_archive (
@@ -157,8 +162,8 @@ SCHEMA = (
         reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 200),
         revision INTEGER NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)""",
     # When get_next_action last handed a task out in a workstream: information only,
-    # never a lock. Additive like notes; a newer pick replaces the row, and reads ignore
-    # it once it is older than PICK_TTL or a result/review in that workstream is newer.
+    # never a lock. Additive like workstream_archive; a newer pick replaces the row, and
+    # reads ignore it once it is older than PICK_TTL or a result/review there is newer.
     """CREATE TABLE IF NOT EXISTS task_picks (
         task_id TEXT NOT NULL REFERENCES tasks(id),
         workstream_id TEXT NOT NULL REFERENCES workstreams(id),
@@ -171,7 +176,7 @@ SCHEMA = (
 )
 # Tables added after schema 10 without a revision bump, so older servers keep opening
 # the database. An existing database missing one is backed up before it is created.
-ADDITIVE_TABLES = ("notes", "workstream_archive", "task_picks")
+ADDITIVE_TABLES = ("workstream_archive", "task_picks")
 # A picked marker counts as work in progress for this long without a newer result.
 PICK_TTL = timedelta(hours=4)
 # Archive reasons are a short label for why a workstream left discovery.
@@ -202,9 +207,14 @@ INIT_WORKSTREAM_KEYS = (
     "revision",
     "archive",
 )
-# Notes are bounded so they stay a current summary rather than a growing log.
-NOTE_LIMIT = 2000
-NOTE_KINDS = ("project", "workstream")
+# Titled notes: the title says what a note is about, so a reader can judge relevance from
+# the title alone. Task specification reads list at most NOTE_TITLE_WINDOW titles.
+NOTE_TITLE_LIMIT = 120
+NOTE_TEXT_LIMIT = 4000
+NOTE_REFERENCE_KINDS = ("task", "group", "workstream", "project")
+NOTE_TITLE_WINDOW = 20
+# Schema 12 turns each nonempty schema-11 project/workstream note into a titled note.
+LEGACY_NOTE_TITLES = {"project": "Project note", "workstream": "Workstream note"}
 
 # Activity: the one classification of every audit action for a task's or group's
 # history (Store.task_activity, viewer only). A meaningful action maps to the entry kind
@@ -466,6 +476,8 @@ class Store:
             "SELECT id FROM tasks WHERE id NOT IN (SELECT public_id FROM task_identities)"
         ).fetchall():
             db.execute("INSERT INTO task_identities VALUES (?,?)", (uuid4().hex, row["id"]))
+        if source_version < 12:
+            Store._migrate_notes(db)
         for statement in SCHEMA:
             if statement.startswith("CREATE TRIGGER"):
                 db.execute(statement)
@@ -473,6 +485,58 @@ class Store:
             raise RuntimeError("task database has invalid foreign keys")
         if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise RuntimeError("task database failed integrity check")
+
+    @staticmethod
+    def _migrate_notes(db):
+        """Turn each nonempty schema-11 project/workstream note into a titled note.
+
+        The note keeps its text, time and author and references its owner. The legacy
+        notes table stays as frozen private history: a schema-11 server that is still
+        running keeps reading and writing it until it stops, and cannot restart on schema 12.
+        """
+        if not db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes'"
+        ).fetchone():
+            return
+        for row in db.execute(
+            "SELECT * FROM notes WHERE text<>'' ORDER BY updated_at,owner_id"
+        ).fetchall():
+            legacy = dict(row)
+            note = {
+                "id": _id("note_"),
+                "title": LEGACY_NOTE_TITLES[legacy["kind"]],
+                "text": legacy["text"],
+                "archived": False,
+                "revision": 1,
+                "created_at": legacy["updated_at"],
+                "updated_at": legacy["updated_at"],
+                "created_by": legacy["updated_by"],
+                "updated_by": legacy["updated_by"],
+            }
+            db.execute(
+                "INSERT INTO note_records (id,title,text,archived,revision,created_at,updated_at,"
+                "created_by,updated_by) VALUES (:id,:title,:text,:archived,:revision,"
+                ":created_at,:updated_at,:created_by,:updated_by)",
+                note,
+            )
+            note["references"] = [{"kind": legacy["kind"], "id": legacy["owner_id"]}]
+            Store._save_note_references(db, note["id"], note["references"])
+            db.execute(
+                "INSERT INTO events (timestamp,actor,action,outcome,project_id,task_id,"
+                "request_json,before_json,after_json,error) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    timestamp(),
+                    "schema-12-migration",
+                    "note.migrated",
+                    "ok",
+                    legacy["project_id"],
+                    None,
+                    json.dumps({"owner_id": legacy["owner_id"], "kind": legacy["kind"]}),
+                    json.dumps(legacy, ensure_ascii=False),
+                    json.dumps(note, ensure_ascii=False),
+                    None,
+                ),
+            )
 
     @staticmethod
     def _migrate_membership(db, source_version):
@@ -865,6 +929,7 @@ class Store:
         through_sequence=None,
         limit=20,
         include_details=False,
+        note_id=None,
     ):
         request = dict(
             project=project,
@@ -873,6 +938,7 @@ class Store:
             through_sequence=through_sequence,
             limit=limit,
             include_details=include_details,
+            note_id=note_id,
         )
 
         def operation(db, scope):
@@ -896,6 +962,15 @@ class Store:
                     "json_each(events.request_json, '$.ids') WHERE value=?))"
                 )
                 values.extend([task_id, task_id])
+            if note_id is not None:
+                self._note(db, note_id)
+                # Every write to a note, failed or not, names it in its request or after value.
+                where.append(
+                    "action IN ('note.created','note.updated','note.migrated') AND "
+                    "(json_extract(after_json,'$.id')=? "
+                    "OR json_extract(request_json,'$.note_id')=?)"
+                )
+                values.extend([note_id, note_id])
             columns = (
                 "*"
                 if include_details
@@ -1783,120 +1858,286 @@ class Store:
             "groups": self._scope_group_ids(db, ws["id"])[:10],
             "groups_total": len(self._scope_group_ids(db, ws["id"])),
             "status": self._status_summary(db, ws["id"]),
-            **({"notes": notes} if (notes := self._notes(db, project["id"], ws["id"])) else {}),
         }
 
     @staticmethod
-    def _notes(db, project_id, workstream_id=None):
-        """The nonempty project/workstream notes with their revision, time and author."""
-        notes = {}
-        for kind, owner_id in (("project", project_id), ("workstream", workstream_id)):
-            if owner_id is None:
-                continue
-            row = db.execute(
-                "SELECT * FROM notes WHERE owner_id=? AND kind=?", (owner_id, kind)
-            ).fetchone()
-            if row and row["text"]:
-                notes[kind] = {
-                    "text": row["text"],
-                    "revision": row["revision"],
-                    "updated_at": row["updated_at"],
-                    "updated_by": row["updated_by"],
-                }
-        return notes
+    def _note_title_value(title):
+        if not isinstance(title, str) or not title.strip():
+            raise TaskError(
+                f"invalid_note_title: give a title of 1 to {NOTE_TITLE_LIMIT} characters that "
+                "says what the note is about"
+            )
+        title = title.strip()
+        if len(title) > NOTE_TITLE_LIMIT:
+            raise TaskError(
+                f"note_title_too_long: a title holds at most {NOTE_TITLE_LIMIT} characters; "
+                f"this one has {len(title):,}"
+            )
+        return title
 
-    def read_notes(self, project, workstream_id=None):
-        """Read a project's note and optionally one of its workstreams' (viewer display)."""
+    @staticmethod
+    def _note_text_value(text):
+        if not isinstance(text, str) or not text.strip():
+            raise TaskError(f"invalid_note_text: give text of 1 to {NOTE_TEXT_LIMIT:,} characters")
+        if len(text) > NOTE_TEXT_LIMIT:
+            raise TaskError(
+                f"note_too_long: a note holds at most {NOTE_TEXT_LIMIT:,} characters; this "
+                f"text has {len(text):,}"
+            )
+        return text
 
-        def operation(db, scope):
-            selected = self._project(db, project, scope)
-            if workstream_id is not None:
-                self._workstream(db, workstream_id, selected["id"])
-            return {"notes": self._notes(db, selected["id"], workstream_id)}
+    @staticmethod
+    def _reference_entity(db, identity):
+        """The kind and project of the entity with this complete public ID, or None."""
+        row = db.execute(
+            "SELECT object_type,project_id FROM tasks WHERE id=?", (identity,)
+        ).fetchone()
+        if row:
+            return row["object_type"], row["project_id"]
+        row = db.execute("SELECT project_id FROM workstreams WHERE id=?", (identity,)).fetchone()
+        if row:
+            return "workstream", row["project_id"]
+        if db.execute("SELECT 1 FROM projects WHERE id=?", (identity,)).fetchone():
+            return "project", identity
+        return None
 
-        return self._run(
-            "notes.read", {"project": project, "workstream_id": workstream_id}, operation
+    @staticmethod
+    def _note_reference(db, reference):
+        """Validate one {kind, id} reference against the entity it names."""
+        if (
+            not isinstance(reference, dict)
+            or set(reference) != {"kind", "id"}
+            or reference["kind"] not in NOTE_REFERENCE_KINDS
+            or not isinstance(reference["id"], str)
+            or not reference["id"]
+        ):
+            raise TaskError(
+                "invalid_reference: each reference is {kind, id}, with kind task, group, "
+                "workstream or project and the entity's complete public ID"
+            )
+        kind, identity = reference["kind"], reference["id"]
+        found = Store._reference_entity(db, identity)
+        if found is None:
+            raise TaskError(
+                f"unknown_reference: no task, group, workstream or project has the ID "
+                f"{identity!r}; use the complete public ID"
+            )
+        if found[0] != kind:
+            raise TaskError(f"reference_kind_mismatch: {identity} is a {found[0]}, not a {kind}")
+        return {"kind": kind, "id": identity}, found[1]
+
+    @staticmethod
+    def _note_references(db, references):
+        """Validated, deduplicated references in first-given order, and their projects."""
+        if not isinstance(references, list) or not references:
+            raise TaskError(
+                "references_required: give at least one {kind, id} reference to a task, group, "
+                "workstream or project"
+            )
+        result, projects = [], set()
+        for reference in references:
+            checked, project_id = Store._note_reference(db, reference)
+            projects.add(project_id)
+            if checked not in result:
+                result.append(checked)
+        return result, projects
+
+    @staticmethod
+    def _note(db, note_id):
+        """One complete note, archived or not."""
+        row = (
+            db.execute("SELECT * FROM note_records WHERE id=?", (note_id,)).fetchone()
+            if isinstance(note_id, str)
+            else None
+        )
+        if row is None:
+            raise TaskError(f"unknown_note: {note_id}")
+        note = dict(row)
+        note["archived"] = bool(note["archived"])
+        note["references"] = [
+            {"kind": r["kind"], "id": r["target_id"]}
+            for r in db.execute(
+                "SELECT kind,target_id FROM note_references WHERE note_id=? ORDER BY position",
+                (note_id,),
+            )
+        ]
+        return note
+
+    @staticmethod
+    def _note_scope(scope, projects):
+        """Audit a note write under its project when all its references share one."""
+        if len(projects) == 1 and None not in projects:
+            scope["project_id"] = next(iter(projects))
+
+    @staticmethod
+    def _note_ack(note, changed):
+        return {
+            "id": note["id"],
+            "revision": note["revision"],
+            "title": note["title"],
+            "archived": note["archived"],
+            "reference_count": len(note["references"]),
+            "created_at": note["created_at"],
+            "updated_at": note["updated_at"],
+            "changed": changed,
+        }
+
+    @staticmethod
+    def _save_note_references(db, note_id, references):
+        db.execute("DELETE FROM note_references WHERE note_id=?", (note_id,))
+        db.executemany(
+            "INSERT INTO note_references (note_id,kind,target_id,position) VALUES (?,?,?,?)",
+            [(note_id, r["kind"], r["id"], i) for i, r in enumerate(references)],
         )
 
-    def set_note(self, kind, target_id, expected_revision, text):
-        """Replace (or with empty text clear) one project or workstream note."""
-        request = dict(
-            kind=kind, target_id=target_id, expected_revision=expected_revision, text=text
-        )
+    def create_note(self, title, text, references):
+        """Save one titled note that references any tasks, groups, workstreams or projects."""
+        request = dict(title=title, text=text, references=references)
 
         def operation(db, scope):
-            if kind not in NOTE_KINDS:
-                raise TaskError("invalid_note_kind: use project or workstream")
-            if kind == "project":
-                project_id = self._project(db, target_id, scope)["id"]
-                workstream_id = None
-            else:
-                if not isinstance(target_id, str) or not target_id.strip():
-                    raise TaskError("workstream_id_required: provide a workstream ID")
-                ws = self._workstream(db, target_id.strip())
-                project_id, workstream_id = ws["project_id"], ws["id"]
-                scope["project_id"] = project_id
-            if not isinstance(text, str):
-                raise TaskError("invalid_note_text: provide plain text, or empty text to clear")
-            if len(text) > NOTE_LIMIT:
-                raise TaskError(
-                    f"note_too_long: a note holds at most {NOTE_LIMIT:,} characters; this "
-                    f"text has {len(text):,}. Replace outdated content instead of appending"
-                )
-            owner_id = workstream_id or project_id
-            row = db.execute("SELECT * FROM notes WHERE owner_id=?", (owner_id,)).fetchone()
-            before = dict(row) if row else None
-            current_text = before["text"] if before else ""
-            current_revision = before["revision"] if before else 0
-            # A note that init omits (empty) is saved with expected_revision 0.
-            if type(expected_revision) is not int or not (
-                expected_revision == current_revision
-                or (not current_text and expected_revision == 0)
-            ):
-                raise TaskError(
-                    f"revision_conflict: expected {expected_revision}, current "
-                    f"{current_revision if current_text else 0}; re-read the note with init "
-                    "and reconcile your text with it before saving"
-                )
-            new_text = text if text.strip() else ""
-            ack = {"kind": kind, "target_id": owner_id, "project_id": project_id}
-            if new_text == current_text:
-                return ack | {
-                    "revision": current_revision,
-                    "length": len(current_text),
-                    "limit": NOTE_LIMIT,
-                    "changed": False,
-                }
-            after = {
-                "owner_id": owner_id,
-                "kind": kind,
-                "project_id": project_id,
-                "workstream_id": workstream_id,
-                "text": new_text,
-                "revision": current_revision + 1,
-                "updated_at": timestamp(),
+            title_value = self._note_title_value(title)
+            self._note_text_value(text)
+            checked, projects = self._note_references(db, references)
+            now = timestamp()
+            note = {
+                "id": _id("note_"),
+                "title": title_value,
+                "text": text,
+                "archived": False,
+                "revision": 1,
+                "created_at": now,
+                "updated_at": now,
+                "created_by": self.actor,
                 "updated_by": self.actor,
             }
             db.execute(
-                "INSERT INTO notes (owner_id,kind,project_id,workstream_id,text,revision,"
-                "updated_at,updated_by) VALUES (:owner_id,:kind,:project_id,:workstream_id,"
-                ":text,:revision,:updated_at,:updated_by) ON CONFLICT(owner_id) DO UPDATE SET "
-                "text=excluded.text,revision=excluded.revision,updated_at=excluded.updated_at,"
-                "updated_by=excluded.updated_by",
+                "INSERT INTO note_records (id,title,text,archived,revision,created_at,updated_at,"
+                "created_by,updated_by) VALUES (:id,:title,:text,:archived,:revision,"
+                ":created_at,:updated_at,:created_by,:updated_by)",
+                note,
+            )
+            self._save_note_references(db, note["id"], checked)
+            note["references"] = checked
+            self._note_scope(scope, projects)
+            scope["after"] = note
+            return self._note_ack(note, True)
+
+        return self._run("note.created", request, operation)
+
+    def update_note(
+        self, note_id, expected_revision, title=None, text=None, references=None, archived=None
+    ):
+        """Change a note's title, text, references or archived state at its revision.
+
+        Omitted fields stay; supplied references replace the whole set.
+        """
+        request = dict(
+            note_id=note_id,
+            expected_revision=expected_revision,
+            title=title,
+            text=text,
+            references=references,
+            archived=archived,
+        )
+
+        def operation(db, scope):
+            before = self._note(db, note_id)
+            if type(expected_revision) is not int or before["revision"] != expected_revision:
+                raise TaskError(
+                    f"revision_conflict: expected {expected_revision}, current "
+                    f"{before['revision']}; re-read the note with get_notes and reconcile "
+                    "your edit with it before saving"
+                )
+            if title is None and text is None and references is None and archived is None:
+                raise TaskError("no_note_changes: give title, text, references or archived")
+            after = dict(before)
+            if title is not None:
+                after["title"] = self._note_title_value(title)
+            if text is not None:
+                after["text"] = self._note_text_value(text)
+            if references is not None:
+                after["references"], projects = self._note_references(db, references)
+            else:
+                projects = {self._reference_entity(db, r["id"])[1] for r in before["references"]}
+            if archived is not None:
+                if type(archived) is not bool:
+                    raise TaskError("invalid_archived: use true or false")
+                after["archived"] = archived
+            self._note_scope(scope, projects)
+            if after == before:
+                return self._note_ack(before, False)
+            after.update(
+                revision=before["revision"] + 1, updated_at=timestamp(), updated_by=self.actor
+            )
+            db.execute(
+                "UPDATE note_records SET title=:title,text=:text,archived=:archived,"
+                "revision=:revision,updated_at=:updated_at,updated_by=:updated_by WHERE id=:id",
                 after,
             )
+            if after["references"] != before["references"]:
+                self._save_note_references(db, note_id, after["references"])
             scope.update(before=before, after=after)
-            return ack | {
-                "revision": after["revision"],
-                "length": len(new_text),
-                "limit": NOTE_LIMIT,
-                "cleared": not new_text,
-                "updated_at": after["updated_at"],
-                "updated_by": after["updated_by"],
-                "changed": True,
-            }
+            return self._note_ack(after, True)
 
-        return self._run("note.set", request, operation)
+        return self._run("note.updated", request, operation)
+
+    def get_notes(self, ids):
+        """Read 1-20 complete notes, archived ones included, in the requested order."""
+
+        def operation(db, scope):
+            if (
+                not isinstance(ids, list)
+                or not 1 <= len(ids) <= 20
+                or len(set(map(str, ids))) != len(ids)
+            ):
+                raise TaskError("invalid_ids: request 1–20 distinct note IDs")
+            return {"items": [self._note(db, identity) for identity in ids]}
+
+        return self._run("notes.read", {"ids": ids}, operation)
+
+    @staticmethod
+    def _note_titles(db, kind, target_id, include_archived=False, limit=None, offset=0):
+        """Titles of the notes that reference one entity, newest-updated first, and a count."""
+        where = (
+            "FROM note_records n JOIN note_references r ON r.note_id=n.id "
+            "WHERE r.kind=? AND r.target_id=?" + ("" if include_archived else " AND n.archived=0")
+        )
+        total = db.execute(f"SELECT count(*) {where}", (kind, target_id)).fetchone()[0]
+        rows = db.execute(
+            f"SELECT n.id,n.title,n.updated_at,n.archived {where} "
+            "ORDER BY n.updated_at DESC, n.id DESC LIMIT ? OFFSET ?",
+            (kind, target_id, -1 if limit is None else limit, offset),
+        ).fetchall()
+        items = [
+            {"id": r["id"], "title": r["title"], "updated_at": r["updated_at"]}
+            | ({"archived": True} if r["archived"] else {})
+            for r in rows
+        ]
+        return items, total
+
+    def list_notes(self, reference, include_archived=False, limit=20, offset=0):
+        """Page the titles of notes that reference one task, group, workstream or project."""
+        request = dict(
+            reference=reference, include_archived=include_archived, limit=limit, offset=offset
+        )
+
+        def operation(db, scope):
+            self._page(limit, offset)
+            self._validate_include_archived(include_archived)
+            checked, project_id = self._note_reference(db, reference)
+            if project_id:
+                scope["project_id"] = project_id
+            items, total = self._note_titles(
+                db, checked["kind"], checked["id"], include_archived, limit + 1, offset
+            )
+            page = {"reference": checked, "total": total} | self._paged(items, limit, offset)
+            if not include_archived:
+                page["archived_hidden"] = (
+                    self._note_titles(db, checked["kind"], checked["id"], True, 0)[1] - total
+                )
+            return page
+
+        return self._run("notes.listed", request, operation)
 
     def archive_workstream(self, workstream_id, expected_revision, reason, archived=True):
         """Archive (or with archived=False unarchive) one workstream, with a short reason.
@@ -2797,6 +3038,10 @@ class Store:
             concern_attempt_total=sum(bool(row["concern_count"]) for row in rows),
             concerns=Store._concern_window(db, rows[:3]),
             concerns_has_more=any(row["concern_count"] for row in rows[3:]),
+        )
+        # Titles only: the reader decides which notes to read with get_notes.
+        detail["notes"], detail["note_total"] = Store._note_titles(
+            db, task["object_type"], task["id"], limit=NOTE_TITLE_WINDOW
         )
         if task["object_type"] == "group":
             detail.update(

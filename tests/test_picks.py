@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from task_mcp.store import Store
+from task_mcp.store import DATABASE_SCHEMA_REVISION, Store
 from task_mcp.viewer import dispatch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -231,7 +231,7 @@ def test_previous_code_keeps_working_against_a_database_with_picks(tmp_path, lab
         assert running.stdout.readline().strip() == "started"
         current = Store(database, actor="simon")
         backup = current.migration_backup_path
-        assert backup.name.startswith("tasks.sqlite3.pre-schema-11.")
+        assert backup.name.startswith(f"tasks.sqlite3.pre-schema-{DATABASE_SCHEMA_REVISION}.")
         with closing(sqlite3.connect(backup)) as db:
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='task_picks'").fetchone()
@@ -253,6 +253,6 @@ def test_previous_code_keeps_working_against_a_database_with_picks(tmp_path, lab
     card = viewer_card(current, ids["project"], ids["task"], ids["workstream"])
     assert "picked" not in card and card["attempt_counts"]["review"] == 1
     with closing(sqlite3.connect(database)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DATABASE_SCHEMA_REVISION
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not db.execute("PRAGMA foreign_key_check").fetchone()

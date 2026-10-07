@@ -261,7 +261,6 @@ async function sidebar() {
         return {items: harness.streams, next_offset: null};
       }
       if (action === "groups") return {items: [], next_offset: null};
-      if (action === "notes") return {notes: null};
       if (action === "tasks") return {items: payload.workstream_id ? harness.boards[payload.workstream_id] : harness.project,
         next_offset: null, workstream_order_revision: 1};
       throw new Error("unexpected " + action);
@@ -296,16 +295,16 @@ async function sidebar() {
   assert.deepEqual(navCount("main"), {count: "2", attention: false, stale: false}, "nothing needs input: the task total");
   assert.match(navItem("main").title, /2 tasks · none need you$/);
   assert.match(navItem("side").title, /3 tasks · 2 need you$/);
-  assert.deepEqual([...requests].sort(), ["notes:w", "tasks:w", "workstreams:"]);
+  assert.deepEqual([...requests].sort(), ["tasks:w", "workstreams:"]);
   // From All tasks: the same single workstream read.
   await visit(null);
   assert.deepEqual(navCount("side"), {count: "2", attention: true, stale: false});
-  assert.deepEqual([...requests].sort(), ["notes:", "tasks:", "workstreams:"]);
+  assert.deepEqual([...requests].sort(), ["tasks:", "workstreams:"]);
   // Opening side: both input sections total exactly the sidebar count.
   await visit("s");
   assert.equal(inputRows(), 2);
   assert.deepEqual(navCount("side"), {count: "2", attention: true, stale: false});
-  assert.deepEqual([...requests].sort(), ["notes:s", "tasks:s", "workstreams:"]);
+  assert.deepEqual([...requests].sort(), ["tasks:s", "workstreams:"]);
 
   // A group board refreshes the counts too: a change made meanwhile shows.
   context.harness.streams = streams();

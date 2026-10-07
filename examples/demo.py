@@ -21,7 +21,7 @@ async def exercise(database: Path):
     async with Client(server, read_timeout_seconds=60) as client:
         assert client.instructions
         tools = (await client.list_tools()).tools
-        assert len(tools) == 28
+        assert len(tools) == 31
         assert "open_task_viewer" in {tool.name for tool in tools}
         assert {"init", "workstream_status", "list_tasks", "update_task"} <= {
             tool.name for tool in tools
