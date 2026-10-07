@@ -46,7 +46,7 @@ remain valid and cannot shadow those bookmarks.
 Projects are initialized explicitly at a canonical path. A project may attach
 other checkout paths. Each workstream has a durable ID and a mutable branch or
 explicit name binding. Each session calls `init` with its explicit target path
-and branch/name; an exact binding returns its scoped queue idempotently.
+and branch/name; an exact binding returns its ordered task list idempotently.
 Discovery returns `new_branch`, `unregistered_checkout`, `mismatch` or
 `archived` when setup needs a choice, always in one shape: a fixed message, what
 exists (`workstreams` with roles) and `next`, the calls that work with their exact
@@ -64,7 +64,7 @@ A session can retain multiple returned workstream IDs, one per repository or
 branch as needed. Separate repositories keep independent task specifications,
 attempts, reviews and sign-off. No global current-project state or persisted
 session object is needed. Global `list_workstreams` can be project-filtered and
-paged; `workstream_status` drills into one scoped queue without binding the
+paged; `workstream_status` drills into one workstream's tasks without binding the
 caller. Workstream summaries expose registered identity/binding/revision and
 disjoint task view counts, plus explicitly overlapping active gate diagnostics.
 Only open/rework tasks contribute active gates; done, dropped and deferred tasks retain
@@ -113,7 +113,7 @@ drop within the selected workstream's list, sending the prefix through the moved
 task with the loaded order revision; conflicts reload rather than overwrite.
 No automatic priority rules, normalization or consumer reporting calls exist.
 Every explicit scope change increments the workstream revision atomically.
-Local queues, status counts and exports include only concrete tasks from the
+Local task lists, status counts and exports include only concrete tasks from the
 workstream's project. Group references and whole-group progress are separate;
 an empty local slice does not imply global completion.
 
@@ -245,7 +245,7 @@ only the dependent gate revision, never specification revision, local scope,
 attempts, reviews or code integration. Compact prerequisite references expose
 ID, title, project identity, required milestone, satisfaction and canonical
 blocking/completion facts in full
-details and queues, without fetching remote proof/history. Cycle checks include
+details and workstream task lists, without fetching remote proof/history. Cycle checks include
 prerequisite links and implicit group-to-member completion edges for additions
 and membership/decomposition changes. SQLite write
 serialization and revision checks protect a race between membership changes and
@@ -259,7 +259,7 @@ the same transaction. It immediately recomputes the gate and advances only the
 dependent task revision, once for a real deletion. An absent link returns
 `changed=false` with the original revision/timestamp, while stale revisions and
 completed/group targets still fail under the same mutability rules as additions.
-Specifications, queue membership, attempts, reviews and other link milestones
+Specifications, workstream membership, attempts, reviews and other link milestones
 survive. Schema 5 already supports removal; no migration is needed.
 Replace known prose gates only after verifying actual IDs/meaning and adding
 real links before resolving the old item; no automatic parsing or state repair.
@@ -285,11 +285,13 @@ verdict for a generic rejection with reasons.
 Implementers follow the spec and record worth-doing or approach concerns
 (stored kinds `value`/`design`) instead of substituting a different design.
 Unexpected blockers/questions are saved before moving on. Independent review
-assumes the agreed approach is substantially right: an unattended fix within
-goal/scope/decided approach/criteria is rework, including poor choices left open
-to the implementer. A real problem caused by faithful specification is a
-concern, so well-built work passes with it. Concerns never fail review; optional
-additions are new ideas. Explicit user instructions override this reference
+checks the work against the specification and judges how well it is built.
+Anything an implementer could fix without changing what the task says
+(goal/scope/decided approach/criteria) is rework, including poor choices left
+open to the implementer; doubts about the task itself are concerns. When
+following the specification faithfully causes a real problem, the review passes
+with a serious concern. Concerns never fail review; optional additions are new
+ideas. Explicit user instructions override this reference
 workflow guidance.
 
 Continuation keeps the durable workstream ID, scope and history through
@@ -313,11 +315,11 @@ required alongside implementer/context proof; the new proof envelope lives in
 the existing evidence TEXT column, with old text evidence/history preserved.
 Recording changes only the attempt and task record revision, never authority,
 disposition, gates or completion. ACKs omit proof and expose attempt/task revisions
-plus unchanged queue membership/disposition and active gate diagnostics.
+plus unchanged workstream membership/disposition and active gate diagnostics.
 
 `get_next_action` replaces the old implementation-only selector with no alias or
 extra tool. It follows local workstream order across eligible implementation and review,
-requiring queue membership, active disposition and clear unresolved/prerequisite
+requiring workstream membership, active disposition and clear unresolved/prerequisite
 gates. Within a task, pending current-spec local review precedes implementation;
 newest first then ID ascending is deterministic. Passed/human_review waits for
 human sign-off; rework implementation carries its attempt/findings. One selected
@@ -363,7 +365,7 @@ Cheap research and reversible choices proceed without ceremony.
 ## Surface and boundary
 
 Agent boards are for choosing active work. `list_tasks`, `workstream_status` and
-the `init` queue list open and rework tasks (including those awaiting review or
+the task list `init` returns show open and rework tasks (including those awaiting review or
 sign-off) and count done, deferred and dropped tasks per status instead of listing
 them; `include_inactive=true` or an explicit closed `state` filter lists them.
 Cards are slim: identity, title, summary, one state word, revision, workstream
@@ -379,7 +381,7 @@ exports still cover every member.
 The optional local browser companion invokes a narrow allowlist of the same
 Store operations as MCP. It adds no task state model, business transition
 logic, synchronization or agent dependency. Its board reads unabridged cards,
-closed tasks included, so project/workstream queues retain their derived views; stored disposition and global group progress are labelled
+closed tasks included, so project and workstream task lists retain their derived views; stored disposition and global group progress are labelled
 separately. The browser shows and steers: it asks questions, changes
 membership, order and disposition, and hands sign-off to an agent as a copied
 prompt; it creates, edits, answers, reviews and signs off nothing. Text is
@@ -432,7 +434,7 @@ writes its private SQLite database; it does not edit project files, client
 configuration, or installed skills.
 
 The default `task-mcp/v5` export is human-readable Markdown with the same derived
-workflow views as the scoped queue, readable specifications/gates/result history,
+workflow views as the workstream's task list, readable specifications/gates/result history,
 and a separate global group summary. Stored disposition is labelled separately.
 Only local scoped concrete tasks receive full entries. Other-workstream and
 superseded-specification attempts remain visible as labelled history, not as
@@ -453,7 +455,7 @@ open question; drop closes without approval. A single reasons field is required
 for rework/revise, optional for approve/drop. Deferral remains an ordinary status
 change. Signoff records only the actual verdict and reasons with provenance;
 there are no separate purpose/technical judgments. Revise uses the reasons as
-the open question without fabricating a specification revision. Queue membership,
+the open question without fabricating a specification revision. Workstream membership,
 context and factual proof survive; revival from dropped needs actual authority.
 Current-spec reviewed proof and answered questions govern approval. An
 unsatisfied prerequisite does not refuse it: a reviewed result stays awaiting
@@ -490,15 +492,15 @@ Conflicts reconcile against complete requirements before replacement.
 Schema 4 adds nullable task/group summary and summary_spec_revision, preserving all
 prior columns/rows without backfill. Summaries are optional, non-normative one-line
 intent/constraints up to 240 Unicode characters. Null clears; omitted values persist.
-Summary-only corrections change ordinary revision while preserving queue membership/spec/
+Summary-only corrections change ordinary revision while preserving workstream membership/spec/
 proof, even after completion. Later spec edits make summaries stale; explicitly
 reaffirmed or simultaneous edits stamp the current spec. Freshness tracks revisions,
-not descriptive accuracy. Init queues/candidates are bounded to ten; ordinary task/
+not descriptive accuracy. Init task lists/candidates are bounded to ten; ordinary task/
 group/event pages to twenty; default scope/group/member expansions are bounded.
 
 Schema 6–8 pending-intent classification uses the archived migration reason,
 so frozen acceptance columns cannot withdraw adoption after candidate spec edits.
-A candidate queue membership that contradicts a retained task exclusion aborts
+A candidate `queue_members` row that contradicts a retained task exclusion aborts
 with `membership_migration_conflict`, leaving the database unchanged and its
 verified backup available. Resolve the intended scope on a disposable copy and
 rerun; the migration never guesses or erases an original exclusion. Archives

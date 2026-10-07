@@ -23,18 +23,17 @@ loop ends at review; sign-off is the user's (task-signoff).
    concern and carry on, never improvising another design. For a bug, they
    demonstrate it before changing code, or else add a question
    (`add_unresolved`) listing the steps tried and move on. If unexpectedly
-   blocked, they add a blocker (`add_prerequisite`) or question.
+   blocked, they add a blocker (`add_prerequisite`) or question and move on.
 
 4. The implementer records the result (`record_result`), naming the artifact
    paths and the exact command that takes the user to the thing being judged.
    If none exists, creating it is part of the task.
 
 5. For a review action, dispatch a fresh reviewer who did not implement the
-   attempt. They treat the agreed approach as correct and judge whether the
-   work is built well within it. For each problem: could an implementer fix it
-   unattended without changing what the task says (goal, scope, decided
-   approach, acceptance criteria)? Then it is rework; otherwise a concern. When
-   faithfully following the specification causes a real problem, pass with a
+   attempt. They check the work against the specification and judge how well
+   it is built. Anything an implementer could fix without changing what the
+   task says is rework; doubts about the task itself are concerns. When
+   following the specification faithfully causes a real problem, pass with a
    serious concern. "Nice to also add X" is a new idea, not a concern.
 
 6. Record the verdict, findings, concerns and evidence handles with

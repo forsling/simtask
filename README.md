@@ -181,10 +181,10 @@ in a parent directory can call `init(path="/work/service-a", branch="main")`
 and then `init(path="/work/service-b", branch="feature")`. Keep both returned
 project/workstream IDs for subsequent task calls; there is no global current
 project or persistent session entity. Repeating either call returns its own
-`ready` context and scoped queue without changing the other.
+`ready` context and workstream task list without changing the other.
 
 An exact existing path/branch binding returns `ready` with project and
-workstream identities, revision, binding and compact scoped queue. No confirmation
+workstream identities, revision, binding and a compact list of the workstream's tasks (`queue`). No confirmation
 is needed for ordinary resume. Passing a known `workstream_id` also checks that it
 is bound to this checkout and branch; an unknown ID is an `unknown_workstream`
 error.
@@ -249,9 +249,9 @@ counts; archived ones are only counted (`archived_hidden`) unless
 `include_archived=true`. `workstream_status(workstream_id, limit?, offset?, include_inactive?)` returns that
 workstream's active slim cards (see [Boards and cards](#boards-and-cards)) and count
 diagnostics without init or rebind; its `concern_tasks` page follows the same
-active-only default. Init returns at most ten active queue cards with
+active-only default. Init returns at most ten active cards of the workstream's tasks with
 total/next-page information and `queue_hidden` counts. Task/group
-lists and status queues default to twenty; events default to twenty metadata entries.
+lists and status task lists default to twenty; events default to twenty metadata entries.
 Workstream scope/group references are bounded; `workstream_status(include_scope=true)`
 pages explicit members, group references and exclusions using limit/offset.
 Its `counts` are disjoint task views (ready, unresolved,
@@ -474,7 +474,7 @@ Explicit proof retains its original task, workstream and specification provenanc
 
 ### Boards and cards
 
-`list_tasks`, `workstream_status` and the `init` queue show active work only: open
+`list_tasks`, `workstream_status` and the task list `init` returns show active work only: open
 and rework tasks, including those awaiting review or sign-off. Done, deferred and
 dropped tasks are omitted and counted per status in `hidden` (`queue_hidden` on
 init), for example `{"done": 217, "deferred": 150}`. Pass `include_inactive=true`
@@ -542,7 +542,7 @@ link's required milestone.
 
 Use `decompose_task` to turn a task into a first-class group while retaining its
 ID, description and audit history. The call atomically
-creates required members in the parent queue, or inbox members from an inbox parent. Groups cannot nest, have no implementation
+creates required members in the parent's workstreams, or inbox members from an inbox parent. Groups cannot nest, have no implementation
 attempts or execution gates, and derive completion from all members being
 complete. An empty group is incomplete and mutable. `create_task(kind="group",
 workstream_id=..., title=...)` creates the same kind of group directly, without
@@ -599,7 +599,7 @@ diagnostics include the same link facts. Duplicate links with a different
 milestone fail rather than silently replacing it. A global group's project
 identity is null and its state is complete/incomplete. These references do not
 expand remote specifications,
-attempts, evidence, history or queues; use explicit task reads to inspect them.
+attempts, evidence, history or workstream task lists; use explicit task reads to inspect them.
 The viewer renders these references directly and opens remote details only on
 deliberate navigation. Verify actual IDs and meaning before replacing a known
 prose gate: add the real links first, then resolve the old unresolved item.
@@ -616,7 +616,7 @@ full current spec, check the actual checkout/artifacts, and send the last-read
 `expected_revision` and `specification_etag`, actual `implementer`, `summary`,
 context `evidence`, concrete `artifacts=[{kind: "commit"|"artifact", reference: ...}]`
 and `verification` describing actual checks/outcomes and limits. It records a local
-unreviewed attempt even when queue, unresolved or prerequisite gates remain,
+unreviewed attempt even when workstream membership, unresolved or prerequisite gates remain,
 or the task is deferred/dropped. This factual record never grants approval,
 resumes work, clears a gate or satisfies prerequisites. Groups and completed tasks
 are protected. The concise ACK includes attempt `id`/`revision`, `task_revision`,
@@ -633,11 +633,12 @@ accepts a current-spec result still awaiting review, its reasons must say so, an
 the attempt records that human review. Agents must not self-issue it.
 Implementers follow the specification, record worth-doing or approach concerns
 and carry on, or save an unexpected blocker and move on. Independent review
-judges "Built well?" within the agreed approach: unattended fixes within the
-specification are rework; problems requiring a different specification are
-concerns. Well-built work passes with serious concerns, and optional extra
-features are new ideas. Use the task's `latest_rejection` reasons when
-implementing/reviewing.
+checks the work against the specification and judges how well it is built:
+anything an implementer could fix without changing what the task says is
+rework; doubts about the task itself are concerns. When following the
+specification faithfully causes a real problem, the review passes with a
+serious concern, and optional extra features are new ideas. Use the task's
+`latest_rejection` reasons when implementing/reviewing.
 
 "Sign off X" requests asked/built/verified presentation followed by the user's
 verdict; explicit "approve X" is valid without a walkthrough. Address every
@@ -849,7 +850,7 @@ Decomposition includes the parent group in every direct parent scope so all new
 members enter those workstreams. Bulk scope changes advance the named workstream
 revision and leave specifications/proof unchanged. Each workstream now keeps its independent local order (protocol 14/schema 10).
 
-Protocol 13/schema 9 replace exclusive queue tools with `add_to_workstream` and
+Protocol 13/schema 9 replace the rejected exclusive membership tools with `add_to_workstream` and
 `remove_from_workstream` (42 tools total). Separate acceptance operations/notes,
 basis and spec-acceptance tracking are absent from current payloads. Adoption is
 derived from effective membership. Autonomous eligibility requires membership
@@ -927,7 +928,7 @@ optional inputs and concern projections.
 
 Schema 6–8 pending-intent classification uses the archived migration reason,
 so frozen acceptance columns cannot withdraw adoption after candidate spec edits.
-A candidate queue membership that contradicts a retained task exclusion aborts
+A candidate `queue_members` row that contradicts a retained task exclusion aborts
 with `membership_migration_conflict`, leaving the database unchanged and its
 verified backup available. Resolve the intended scope on a disposable copy and
 rerun; the migration never guesses or erases an original exclusion. Archives
