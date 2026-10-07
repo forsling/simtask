@@ -355,14 +355,16 @@ async function api(action, data = {}) {
   }
   return result;
 }
-async function pages(action, data = {}) {
+// Every page of a listing, 100 at a time; maxPages bounds a read that is only a convenience.
+async function pages(action, data = {}, maxPages = Infinity) {
   let items = [],
-    offset = 0;
+    offset = 0,
+    read = 0;
   do {
     const p = await api(action, { ...data, limit: 100, offset });
     items.push(...p.items);
     offset = p.next_offset;
-  } while (offset !== null);
+  } while (offset !== null && ++read < maxPages);
   return items;
 }
 async function taskBoard(data) {
@@ -1218,8 +1220,9 @@ async function selectTask(id, { open = false, quiet = false, entry = "replace" }
 function section(title, content, extra) {
   return el("section", "block", el("h3", "block-title", node("span", title), extra), content);
 }
-function topBar(crumbs, actions) {
-  const back = iconButton("back", "Back to list", () => $("shell").classList.remove("detail-open"), "icon-btn only-mobile");
+// listBack: false leaves out the phone-only Back to list where the crumbs already lead back.
+function topBar(crumbs, actions, { listBack = true } = {}) {
+  const back = listBack ? iconButton("back", "Back to list", () => $("shell").classList.remove("detail-open"), "icon-btn only-mobile") : null;
   return el("div", "topbar", back, el("div", "crumbs", ...crumbs), el("div", "top-actions", ...actions));
 }
 function renderDetail(t) {
@@ -1929,7 +1932,7 @@ function renderNote(note, back) {
       meta("Created", note.created_at, note.created_by),
       meta("Updated", note.updated_at, note.updated_by)));
   $("detail").replaceChildren(
-    topBar([backLink], [edit, archive]),
+    topBar([backLink], [edit, archive], { listBack: false }),
     el("div", "content", head,
       note.archived ? node("p", "Archived: note lists hide it until archived notes are shown. Unarchive lists it again.", "muted") : null,
       section("Text", markdown(note.text)),
@@ -1953,7 +1956,8 @@ async function archiveNote(note, back, archived) {
 
 // Choices for the reference picker: what is in view first (the task or group, its group,
 // the open workstream and project), then this view's cards, the project's workstreams and
-// every project. referenceCandidates adds every workstream and the project's groups.
+// every project. referenceCandidates adds every workstream and the project's groups and
+// tasks; otherProjectTasks adds the other projects' tasks once the user starts typing.
 function candidate(kind, item) {
   const title = kind === "workstream" ? item.branch || item.name : kind === "project" ? item.name : item.title;
   return { kind, id: item.id, title, project_id: kind === "project" ? item.id : item.project_id };
@@ -1987,8 +1991,28 @@ async function referenceCandidates() {
   } catch {}
   if (state.project) {
     try { (await pages("groups", { project: state.project })).forEach((g) => extra.push(candidate("group", g))); } catch {}
+    // The project's tasks outside this view, so a task in another workstream can be found by
+    // title. All tasks already shows every one of them.
+    const allTasks = !state.stream && !state.unassigned && !state.groups;
+    if (!allTasks) extra.push(...await projectTasks(state.project));
   }
   return uniqueCandidates([...contextCandidates(), ...extra]);
+}
+// One project's tasks as picker choices, through the board's read-only tasks action (the
+// note API is unchanged). A failed read leaves them out; a complete ID can still be looked up.
+async function projectTasks(project, maxPages) {
+  try {
+    return (await pages("tasks", { project }, maxPages)).map((t) => candidate(noteKind(t), t));
+  } catch {
+    return [];
+  }
+}
+// Other projects' tasks, at most OTHER_PROJECT_PAGES pages (100 each) per project.
+const OTHER_PROJECT_PAGES = 5;
+async function otherProjectTasks() {
+  const out = [];
+  for (const p of state.projects) if (p.id !== state.project) out.push(...await projectTasks(p.id, OTHER_PROJECT_PAGES));
+  return out;
 }
 // The explicit references of a note being written: chips that can be removed, and a search
 // over the choices above. A complete ID that is not listed is looked up as a task or group.
@@ -2006,7 +2030,7 @@ function referencePicker(get, set) {
   search.autocomplete = "off";
   search.spellcheck = false;
   search.placeholder = "Search titles and names, or paste a complete ID";
-  const hint = node("p", "Type to search this view's tasks, the project's groups, and every workstream and project; add a task from elsewhere by its complete ID. The text is never scanned for references.", "field-hint");
+  const hint = node("p", "Type to search by title: this project's tasks and groups, other projects' tasks, and every workstream and project. A task or group that isn't found can be added by its complete ID. The text is never scanned for references.", "field-hint");
   hint.id = "field-ref-search-hint";
   search.setAttribute("aria-describedby", hint.id);
   const options = el("div", "ref-options");
@@ -2014,7 +2038,9 @@ function referencePicker(get, set) {
   options.setAttribute("aria-label", "Matching references");
   const status = node("p", "", "field-hint ref-status");
   status.setAttribute("role", "status");
-  let candidates = uniqueCandidates(contextCandidates());
+  // This project's choices come first; other projects' tasks follow once they are read.
+  let here = contextCandidates(), there = [];
+  let candidates = uniqueCandidates(here);
   let first = null;
   const nameOf = (r) => referenceInfo(r)?.title || candidates.find((c) => c.id === r.id)?.title || r.id;
   function choose(c) {
@@ -2078,8 +2104,15 @@ function referencePicker(get, set) {
     options.replaceChildren(...buttons);
     options.hidden = !buttons.length;
   }
+  // Other projects' tasks are read only once the user starts typing, once per picker.
+  let elsewhere = null;
+  const merge = () => {
+    candidates = uniqueCandidates([...here, ...there]);
+    render();
+  };
   search.oninput = () => {
     status.textContent = "";
+    if (!elsewhere && search.value.trim()) elsewhere = otherProjectTasks().then((list) => { there = list; merge(); });
     render();
   };
   // Enter adds the first match instead of submitting the form.
@@ -2091,13 +2124,11 @@ function referencePicker(get, set) {
   wrap.append(label, chips, searchLabel, search, options, status, hint);
   $("fields").append(wrap);
   render();
-  referenceCandidates().then((list) => {
-    candidates = list;
-    render();
-  });
+  referenceCandidates().then((list) => { here = list; merge(); });
   return { render };
 }
 
+const NO_REFERENCES = "Add at least one reference. A note is found only through the tasks, groups, workstreams or projects it references.";
 // Add or edit a note: its title, text and references are saved together in one call. An
 // edit carries the revision it read; if the note changed meanwhile, nothing is saved: the
 // note reloads and its current version is shown beside the draft, for the user to edit
@@ -2120,7 +2151,11 @@ function noteDialog(note, { references = [], saved } = {}) {
     title.value = note.title;
     text.value = note.text;
   }
-  const picker = referencePicker(() => chosen, (next) => { chosen = next; });
+  const picker = referencePicker(() => chosen, (next) => {
+    chosen = next;
+    // Adding a reference answers the missing-reference error at once.
+    if (next.length && $("form-error").textContent === NO_REFERENCES) $("form-error").textContent = "";
+  });
   const adopt = (latest, replace) => {
     revision = latest.revision;
     if (!replace) return;
@@ -2138,7 +2173,7 @@ function noteDialog(note, { references = [], saved } = {}) {
     if (!payload.title.trim()) throw localError(`Give the note a title of up to ${NOTE_TITLE_LIMIT} characters.`);
     if (!payload.text.trim()) throw localError("Write the note's text, up to 4,000 characters.");
     if (!payload.references.length)
-      throw localError("Add at least one reference. A note is found only through the tasks, groups, workstreams or projects it references.");
+      throw localError(NO_REFERENCES);
     let ack;
     try {
       ack = note

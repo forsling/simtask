@@ -181,6 +181,8 @@ async function test() {
     "TaskSync settings between devicesbeta-sync · beta"]);
   assert.ok(buttonNamed(detail, "Edit") && buttonNamed(detail, "Archive"));
   assert.ok(!buttons(detail).some((b) => /Delete|Pin/.test(texts(b))), "no delete or pin");
+  // One way back on a phone: the crumb link, not also the list's Back button.
+  assert.ok(buttonNamed(detail, "Notes") && !buttonNamed(detail, "Back to list"));
   assert.deepEqual(plain(run("state.panel")), {kind: "note", id: "note_1", back: "scope"});
 
   // Adding: the context reference is prefilled; at least one reference is required.
@@ -235,6 +237,64 @@ async function test() {
   error = await local({title: "x".repeat(121), text: "Body"});
   assert.equal(error.local, true);
   assert.equal(error.message, "Nothing was saved. A title holds at most 120 characters; this one has 121.");
+
+  // In a workstream view the picker also finds the project's tasks outside the view by
+  // title (read through the board's tasks listing when it opens), and other projects' tasks
+  // once the user types; the complete-ID lookup stays the fallback.
+  run(`state.stream = ${JSON.stringify(STREAM)}; state.unassigned = false; state.groups = false;
+    state.rows = [{id: "login-form", title: "Redesign the login form", project_id: ${JSON.stringify(PROJECT)}, standing: "open"}];`);
+  reset();
+  const boardTasks = responses.tasks;
+  responses.tasks = (p) => ({next_offset: null, items: p.project === PROJECT
+    ? [{id: "login-form", title: "Redesign the login form", project_id: PROJECT, object_type: "task"},
+       {id: "csv-export", title: "Export the board as CSV", project_id: PROJECT, object_type: "task"}]
+    : [{id: "beta-sync", title: "Sync settings between devices", project_id: OTHER, object_type: "task"}]});
+  run(`noteDialog(null, {references: [{kind: "workstream", id: ${JSON.stringify(STREAM)}}]})`);
+  const pickerFields = get("fields");
+  const pickerSearch = get("field-ref-search");
+  const offered = () => find(pickerFields, "ref-option").map((b) => b.attributes["aria-label"] || texts(b));
+  pickerSearch.value = "export";
+  pickerSearch.oninput();
+  assert.deepEqual(offered(), ["Look up “export” by ID"], "before the read, only the ID lookup");
+  await settle();
+  assert.deepEqual(offered(), ["Add task Export the board as CSV"]);
+  assert.deepEqual(requests("tasks").sort((x, y) => x.project.localeCompare(y.project)),
+    [{project: PROJECT, limit: 100, offset: 0}, {project: OTHER, limit: 100, offset: 0}],
+    "the project's tasks on open, the other project's once typing starts");
+  pickerSearch.value = "sync settings";
+  pickerSearch.oninput();
+  await settle();
+  assert.deepEqual(offered(), ["Add task Sync settings between devices"]);
+  assert.match(texts(find(pickerFields, "ref-option")[0]), /beta-sync · beta/);
+  assert.equal(requests("tasks").length, 2, "other projects are read once per picker");
+  // Adding a reference clears the missing-reference error at once.
+  get("form-error").textContent = run("NO_REFERENCES");
+  pickerSearch.value = "export";
+  pickerSearch.oninput();
+  pickerSearch.onkeydown({key: "Enter", preventDefault() {}});
+  assert.deepEqual(find(pickerFields, "ref-chip").map((c) => find(c, "ref-title")[0].textContent), ["notes-ui", "Export the board as CSV"]);
+  assert.equal(get("form-error").textContent, "");
+  // A failed tasks read leaves the ID lookup; All tasks already shows every project task.
+  reset();
+  responses.tasks = () => { throw new Error("tasks unavailable"); };
+  run(`noteDialog(null, {references: [{kind: "workstream", id: ${JSON.stringify(STREAM)}}]})`);
+  await settle();
+  get("field-ref-search").value = "csv-export";
+  get("field-ref-search").oninput();
+  await settle();
+  assert.deepEqual(find(get("fields"), "ref-option").map((b) => texts(b)), ["Look up “csv-export” by ID"]);
+  run("state.stream = null");
+  reset();
+  run(`noteDialog(null, {references: [{kind: "project", id: ${JSON.stringify(PROJECT)}}]})`);
+  await settle();
+  assert.deepEqual(requests("tasks"), [], "All tasks reads no extra tasks when the picker opens");
+  // Other projects' tasks are bounded: at most 5 pages of 100 per project.
+  reset();
+  responses.tasks = (p) => ({items: [{id: "t" + p.offset, title: "T", project_id: OTHER, object_type: "task"}], next_offset: p.offset + 100});
+  assert.equal((await run("otherProjectTasks()")).length, 5);
+  assert.deepEqual(requests("tasks").map((r) => [r.project, r.offset]), [0, 100, 200, 300, 400].map((o) => [OTHER, o]));
+  responses.tasks = boardTasks;
+  run(`state.stream = ${JSON.stringify(STREAM)}`);
 
   // Editing at a stale revision: nothing is overwritten; the note reloads beside the draft.
   reset();

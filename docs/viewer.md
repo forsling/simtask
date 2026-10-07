@@ -232,13 +232,15 @@ earlier `#/project/...` addresses are not supported; they open the default view.
 - **+ Note** in a notes list opens **Add a note** with that list's task, group,
   workstream or project already referenced; **Edit** opens the same form for an
   open note. Its title (up to 120 characters), text (up to 4,000) and references
-  are saved together in one Store call. References come only from the picker:
-  type to search this view's tasks, the project's groups and every workstream
-  and project, and press Enter or click a match to add it; a task or group from
-  elsewhere is added by its complete ID (**Look up … by ID**). Each reference is
-  a chip that can be removed. A note needs at least one reference, since notes
-  are found only through them, so the form refuses to save without one. The
-  text is never scanned for references. **Archive** and **Unarchive** take
+  are saved together in one Store call. References come only from the picker.
+  Type to search by title: the project's tasks and groups (in any workstream),
+  every workstream and project, and other projects' tasks (read once you start
+  typing, up to 500 per project). Press Enter or click a match to add it. A
+  task or group that isn't found is added by its complete ID (**Look up … by
+  ID**). Tasks are read through the board's read-only task listing. Each
+  reference is a chip that can be removed. A note needs at least one
+  reference, since notes are found only through them, so the form refuses to
+  save without one. The text is never scanned for references. **Archive** and **Unarchive** take
   effect at once. Notes cannot be pinned or deleted. Notes written here record
   the viewer's actor, `local-browser-human`.
 - Latest rejection reasons appear with their originating attempt/workstream in
