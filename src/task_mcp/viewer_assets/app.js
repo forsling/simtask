@@ -58,12 +58,6 @@ const IDEA_PREFIX = "Idea to process:";
 function isIdea(t) {
   return !CLOSED.includes(t.status) && (t.unresolved_items || []).some((i) => i.text.startsWith(IDEA_PREFIX));
 }
-// The latest rejection stays in view only while it is current: no newer result exists.
-function currentRejection(t) {
-  const r = t.latest_rejection;
-  if (!r) return null;
-  return (t.attempts || []).some((a) => a.id !== r.attempt_id && (a.created_at || "") > (r.timestamp || "")) ? null : r;
-}
 
 const state = {
   projects: [],
@@ -185,29 +179,28 @@ function branchLabel(name) {
   return wrap;
 }
 
-const EVENTS = {
-  "task.created": "Created",
-  "task.idea_captured": "Idea saved",
-  "task.updated": "Edited",
-  "task.workstream_added": "Added to workstream",
-  "task.workstream_removed": "Removed from workstream",
-  "task.disposition_changed": "Status changed",
-  "task.signoff": "Sign-off decision",
-  "task.decomposed": "Split into a group",
-  "tasks.reordered": "Reordered",
-  "attempt.recorded": "Result recorded",
-  "attempt.reviewed": "Reviewed",
-  "attempt.human_reviewed": "Human review",
-  "gate.unresolved_added": "Unresolved item added",
-  "gate.unresolved_resolved": "Unresolved item resolved",
-  "gate.prerequisite_added": "Prerequisite added",
-  "gate.prerequisite_proposed": "Gate proposed",
-  "gate.proposal_accepted": "Proposal accepted",
-  "gate.proposal_dismissed": "Proposal dismissed",
-  "group.member_added": "Added to group",
-  "scope.changed": "Scope changed",
+// Activity entry kinds (the server's ACTIVITY_KINDS) in plain words.
+const ACTIVITY_LABELS = {
+  created: "Created",
+  imported: "Imported",
+  corrected: "Corrected",
+  updated: "Edited",
+  accepted: "Specification accepted",
+  question_added: "Question added",
+  question_resolved: "Question answered",
+  prerequisite_added: "Prerequisite added",
+  prerequisite_removed: "Prerequisite removed",
+  proposal_dismissed: "Gate proposal dismissed",
+  workstream_added: "Added to workstream",
+  workstream_removed: "Removed from workstream",
+  disposition: "Status changed",
+  decomposed: "Split into a group",
+  member_added: "Member added",
+  result: "Result",
+  review: "Independent review",
+  human_review: "Your review",
+  signoff: "Sign-off decision",
 };
-const isRead = (action) => /(\.read|\.listed|_read)$/.test(action);
 
 /* ---------- safe Markdown-ish rendering ---------- */
 
@@ -1277,7 +1270,8 @@ function renderDetail(t) {
     head.append(node("p", t.summary, "muted"));
     if (t.summary_stale) head.append(node("p", "Descriptive summary predates the current specification.", "muted"));
   }
-  d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, standing), ...body(t)));
+  // Identity, status and the next step stay above both tabs.
+  d.replaceChildren(topBar(crumbs, actions), el("div", "content", head, nextStep(t, standing), ...detailTabs(t, body(t))));
 }
 function currentAttempt(t, requiredStates = null) {
   if (!requiredStates && t.status === "done" && t.selected_attempt_id)
@@ -1360,7 +1354,7 @@ function nextStep(t, standing) {
   }
   if (!signoff && !isIdea(t) && (!member || t.unresolved_items.length || blocking || ["deferred", "dropped"].includes(t.status))) {
     if (t.attempts.some((x) => x.spec_revision === t.spec_revision && (!state.stream || x.workstream_id === state.stream)))
-      text += " A recorded result is kept below; it does not change this.";
+      text += " A recorded result is kept in Activity; it does not change this.";
   }
   const tone = (STANDINGS[standing] || STANDINGS.open).tone;
   return el(
@@ -1459,41 +1453,14 @@ function body(t) {
     });
     out.push(section("Prerequisites", list));
   }
-  const rejection = currentRejection(t);
-  if (rejection) {
-    const r = rejection;
-    out.push(section("Latest rejection", el("div", "",
-      node("p", `${r.source} · ${r.verdict} · ${r.timestamp}`),
-      node("p", `Attempt ${r.attempt_id} · workstream ${r.workstream_id} · spec ${r.spec_revision}.`, "muted"),
-      markdown(r.reasons || ""))));
-  }
+  // The one result shown on Spec; every result, review and decision is in Activity.
+  const current = relevantResult(t);
+  if (current) out.push(resultCard(current, t));
   out.push(section("Specification", markdown(t.body)));
   const criteria = markdown(t.acceptance_criteria, { checklist: true });
   criteria.classList.add("criteria");
   out.push(section("Acceptance criteria", criteria));
   if (t.user_request) out.push(section(`Request (${t.source || "unknown"} origin)`, markdown(t.user_request)));
-  if (t.signoff_decisions?.length) {
-    const history = el("details", "fold", node("summary", `Sign-off decisions (${t.signoff_decisions.length})`));
-    for (const d of t.signoff_decisions) {
-      history.append(el("div", "sub",
-        node("h4", `${d.decision} · ${d.disposition}`),
-        node("p", `Task revision ${d.task_revision}, spec ${d.spec_revision}; attempt ${d.attempt_id}, revision ${d.attempt_revision}. Decision ${d.decision_ref}.`),
-        d.purpose_judgment ? node("p", `Historical purpose: ${d.purpose_judgment} (${(d.purpose_source || "unknown").replaceAll("_", " ")}).`) : null,
-        d.result_judgment ? node("p", `Historical human result quality: ${d.result_judgment.replaceAll("_", " ")}.`) : null,
-        markdown(d.reasons ?? d.user_note ?? ""), d.result_note ? markdown(d.result_note) : null));
-    }
-    out.push(history);
-  }
-  const standing = taskStanding(t);
-  const requiredStates = standing === "signoff" ? ["passed", "human_review"] : standing === "progress" ? ["review"] : null;
-  const a = (t.status !== "done" && requiredStates && currentAttempt(t, requiredStates)) || currentAttempt(t);
-  const earlier = t.attempts.filter((x) => x !== a).reverse();
-  if (a) out.push(section("Result", attemptCard(a, t)));
-  if (earlier.length) {
-    const fold = el("details", "fold", node("summary", `Other results (${earlier.length})`));
-    earlier.forEach((x) => fold.append(attemptCard(x, t)));
-    out.push(fold);
-  }
   if (t.gate_proposals.length) {
     const list = el("div", "proposals");
     t.gate_proposals.forEach((p) =>
@@ -1501,7 +1468,57 @@ function body(t) {
     );
     out.push(el("details", "fold", node("summary", `Gate proposals (${t.gate_proposals.length})`), list));
   }
-  out.push(activity(t));
+  return out;
+}
+// The result Spec shows, if any: for a task awaiting sign-off, the reviewed result for
+// the current specification in view; for a completed task, the accepted result; otherwise
+// the latest current-specification result still with the agents (under review or sent
+// back). "In view" is the open workstream, or every workstream on project-wide boards.
+function relevantResult(t) {
+  if (t.status === "done") return currentAttempt(t);
+  if (taskStanding(t) === "signoff") {
+    const reviewed = currentAttempt(t, ["passed", "human_review"]);
+    if (reviewed) return reviewed;
+  }
+  return currentAttempt(t, ["review", "rework"]);
+}
+function resultWords(a, t) {
+  if (t.status === "done") return "Accepted at sign-off";
+  return {
+    passed: "Passed independent review; waiting for your sign-off",
+    human_review: "You reviewed it; waiting for your sign-off",
+    review: "With the agents: waiting for independent review",
+    rework: "With the agents: sent back for changes",
+  }[a.state] || VIEWS[a.state]?.label || a.state;
+}
+// Whether a result was built against the current specification.
+function specWords(revision, t) {
+  if (revision === undefined || revision === null) return "";
+  return revision === t.spec_revision ? `spec v${revision} · current` : `spec v${revision} · superseded (now v${t.spec_revision})`;
+}
+function workstreamWords(id, name) {
+  return (name || streamName(id)) + (state.stream && id && id !== state.stream ? " (other workstream)" : "");
+}
+// A compact card for the current result: what was built, beside what was asked. Full
+// evidence, verification, review and concerns stay in its Activity entry.
+function resultCard(a, t) {
+  const tone = t.status === "done" ? "done" : (VIEWS[a.state] || {}).tone || "muted";
+  const title = el("h3", "block-title", node("span", "Current result"));
+  title.id = "current-result-title";
+  const card = el("article", "result-card",
+    el("div", "result-state", node("span", resultWords(a, t), "pill tone-" + tone)),
+    a.summary ? markdown(a.summary) : null,
+    el("p", "result-meta muted", el("span", "meta-item", icon("branch", 13), workstreamWords(a.workstream_id)), node("span", specWords(a.spec_revision, t), a.spec_revision === t.spec_revision ? "" : "warn-text-inline")),
+  );
+  if (a.artifacts?.length) {
+    const handles = el("ul", "handles");
+    handles.setAttribute("aria-label", "Evidence handles");
+    a.artifacts.forEach((ref) => handles.append(el("li", "", node("span", ref.kind, "handle-kind"), node("code", ref.reference))));
+    card.append(handles);
+  }
+  card.append(el("div", "result-actions", button("Open full result", () => openFullResult(t, a.id).catch((e) => toast(e.message, true)), "btn small")));
+  const out = el("section", "block current-result", title, card);
+  out.setAttribute("aria-labelledby", "current-result-title");
   return out;
 }
 function attemptCard(a, t) {
@@ -1587,13 +1604,14 @@ function renderGroup(t) {
         el("div", "meta", pill(t.complete ? "done" : "review", t.complete ? "Complete" : "In progress"), node("span", `${p.done} of ${p.total} signed off · ${projects} project${projects === 1 ? "" : "s"}`, "meta-item")),
         progressBar(p.done, p.total),
       ),
-      t.summary ? section(t.summary_stale ? "Descriptive summary (predates current specification)" : "Descriptive summary", node("p", t.summary)) : null,
-      section("Context", markdown(t.body)),
-      section("Done when", markdown(t.acceptance_criteria, { checklist: true })),
-      section("Included in workstreams", workstreams),
-      section("Members", members),
-      node("p", "Group progress counts members in every project. It doesn't mean one workstream delivered them all.", "footnote"),
-      activity(t),
+      ...detailTabs(t, [
+        t.summary ? section(t.summary_stale ? "Descriptive summary (predates current specification)" : "Descriptive summary", node("p", t.summary)) : null,
+        section("Context", markdown(t.body)),
+        section("Done when", markdown(t.acceptance_criteria, { checklist: true })),
+        section("Included in workstreams", workstreams),
+        section("Members", members),
+        node("p", "Group progress counts members in every project. It doesn't mean one workstream delivered them all.", "footnote"),
+      ]),
     ),
   );
 }
@@ -1639,64 +1657,462 @@ async function openGroup(id) {
   renderNav();
   await reload();
 }
-function activity(t) {
-  const wrap = el("details", "fold", node("summary", "Activity"));
-  const content = el("ol", "timeline");
-  wrap.append(content);
-  let loaded = false,
-    after = 0,
-    through = null;
-  async function more() {
-    try {
-      const r = await api("events", {
-        task_id: t.id,
-        after_sequence: after,
-        through_sequence: through,
-        limit: 50,
-        include_details: true,
-      });
-      through = r.through_sequence;
-      let reads = 0;
-      r.items.forEach((e) => {
-        if (isRead(e.action) && e.outcome === "ok") return void reads++;
-        const failed = e.outcome !== "ok";
-        const li = el(
-          "li",
-          failed ? "failed" : "",
-          el(
-            "div",
-            "event",
-            node("span", EVENTS[e.action] || e.action.replace(/[._]/g, " "), "what"),
-            node("span", e.actor, "muted"),
-            node("time", ago(e.timestamp), "muted push"),
-          ),
-        );
-        li.lastChild.lastChild.title = new Date(e.timestamp).toLocaleString();
-        if (failed) li.append(node("div", "Failed", "warn-text"));
-        const note = e.request?.reasons || e.request?.user_note || e.request?.note || e.request?.text || e.error;
-        if (note) li.append(node("p", note, "event-note"));
-        content.append(li);
-      });
-      if (reads) content.append(node("li", `${reads} read${reads === 1 ? "" : "s"} not shown`, "reads"));
-      after = r.next_after_sequence;
-      if (after !== null) {
-        const b = button("Load more", () => {
-          b.remove();
-          more();
-        }, "btn small");
-        content.append(b);
-      }
-    } catch (e) {
-      content.append(node("p", e.message, "warn-text"));
+/* ---------- Spec and Activity tabs ---------- */
+
+// The selected task's or group's tab and Activity history. Selecting another object
+// opens Spec; a refresh of the same object keeps its tab, its loaded history, the results
+// opened in it and the scroll position.
+let detailView = { id: null, tab: "spec", feed: null, box: null, task: null };
+function viewFor(id) {
+  if (detailView.id !== id) detailView = { id, tab: "spec", feed: null, box: null, task: null };
+  return detailView;
+}
+const DETAIL_TABS = [
+  { key: "spec", label: "Spec" },
+  { key: "activity", label: "Activity" },
+];
+// An ARIA tablist (arrow keys, Home and End move between the tabs) and its two panels.
+// Spec holds what was asked and where it stands; Activity holds the history.
+function detailTabs(t, specContent) {
+  const view = viewFor(t.id);
+  view.task = t;
+  const list = el("div", "tabs");
+  list.id = "detail-tabs";
+  list.setAttribute("role", "tablist");
+  list.setAttribute("aria-label", t.object_type === "group" ? "Group details" : "Task details");
+  const panels = [];
+  for (const { key, label } of DETAIL_TABS) {
+    const selected = view.tab === key;
+    const tab = button(label, () => showTab(key), "tab");
+    tab.id = "tab-" + key;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.setAttribute("aria-controls", "panel-" + key);
+    tab.tabIndex = selected ? 0 : -1;
+    tab.onkeydown = (e) => tabKey(e, key);
+    list.append(tab);
+    const panel = key === "spec" ? el("div", "tab-panel", ...specContent) : el("div", "tab-panel", activity(t));
+    panel.id = "panel-" + key;
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", tab.id);
+    panel.tabIndex = 0;
+    panel.hidden = !selected;
+    panels.push(panel);
+  }
+  return [list, ...panels];
+}
+function tabKey(e, key) {
+  const keys = DETAIL_TABS.map((x) => x.key);
+  const i = keys.indexOf(key);
+  const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: keys.length - 1 }[e.key];
+  if (next === undefined) return;
+  e.preventDefault();
+  e.stopPropagation();
+  showTab(keys[(next + keys.length) % keys.length], { focus: true });
+}
+function showTab(key, { focus = false } = {}) {
+  const view = detailView;
+  if (!view.id) return;
+  view.tab = key;
+  for (const { key: other } of DETAIL_TABS) {
+    const tab = $("tab-" + other), panel = $("panel-" + other);
+    if (!tab || !panel) continue;
+    const on = other === key;
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+    panel.hidden = !on;
+  }
+  if (focus) $("tab-" + key)?.focus?.();
+  revealPanel(key);
+  if (key === "activity") startFeed(view);
+}
+// Scrolled past the tabs, a newly shown panel starts just below them (they stay pinned).
+function revealPanel(key) {
+  const pane = $("detail"), panel = $("panel-" + key), tabs = $("detail-tabs");
+  if (!panel?.getBoundingClientRect || !tabs?.getBoundingClientRect) return;
+  const offset = panel.getBoundingClientRect().top - tabs.getBoundingClientRect().bottom;
+  if (offset < 0) pane.scrollTop += offset;
+}
+
+/* ---------- Activity ---------- */
+
+// Activity is the server's paged history (the viewer's "activity" read): meaningful
+// entries only, newest first, ACTIVITY_PAGE per page. The feed is a list of loaded
+// segments, newest first. Usually there is one; opening a result outside the loaded
+// pages adds the page that starts with it, and "Show newer" adds the newest page. A gap
+// between two segments loads with the upper segment's cursor until they meet.
+const ACTIVITY_PAGE = 20;
+const activityKey = (e) => [e.sequence, e.kind, e.attempt_id || "", e.member_id || ""].join(":");
+// One page of at most ACTIVITY_PAGE entries. A short page whose scan reached the server's
+// bound (scan_limited) continues automatically from its cursor, so hidden events never
+// leave the user with a short page.
+async function activityPage(task_id, from = {}) {
+  let page = await api("activity", { task_id, ...from });
+  let items = page.items || [], cursor = page.next_cursor ?? null;
+  for (let follow = 0; page.scan_limited && cursor !== null && items.length < ACTIVITY_PAGE && follow < 50; follow++) {
+    page = await api("activity", { task_id, cursor });
+    items = items.concat(page.items || []);
+    cursor = page.next_cursor ?? null;
+  }
+  if (items.length > ACTIVITY_PAGE) {
+    // Cut at a sequence boundary: an import and its results stay together.
+    let cut = ACTIVITY_PAGE;
+    while (cut > 0 && items[cut].sequence === items[cut - 1].sequence) cut--;
+    if (!cut) cut = items.findIndex((e) => e.sequence !== items[0].sequence);
+    if (cut > 0) {
+      cursor = items[cut - 1].sequence;
+      items = items.slice(0, cut);
     }
   }
-  wrap.ontoggle = () => {
-    if (wrap.open && !loaded) {
-      loaded = true;
-      more();
+  return { items, cursor };
+}
+// Entries of two loads, newest first, each once; a later copy replaces an earlier one.
+function mergeItems(a, b) {
+  const byKey = new Map();
+  for (const e of [...a, ...b]) byKey.set(activityKey(e), e);
+  return [...byKey.values()].sort((x, y) => y.sequence - x.sequence);
+}
+// Sort segments newest first and join those with nothing unloaded between them.
+function normalizeSegments(segments) {
+  const top = (s) => (s.items.length ? s.items[0].sequence : s.cursor - 1);
+  const sorted = segments.filter((s) => s.items.length || s.cursor !== null).sort((a, b) => top(b) - top(a));
+  const out = [];
+  for (const s of sorted) {
+    const a = out[out.length - 1];
+    const bottom = a?.items.length ? a.items[a.items.length - 1].sequence : null;
+    if (a && (a.cursor === null || a.cursor <= top(s) + 1 || (bottom !== null && bottom <= top(s)))) {
+      a.items = mergeItems(a.items, s.items);
+      a.cursor = a.cursor === null || s.cursor === null ? null : Math.min(a.cursor, s.cursor);
+    } else out.push(s);
+  }
+  return out;
+}
+function addSegment(feed, page) {
+  feed.segments = normalizeSegments([...feed.segments, { items: page.items, cursor: page.cursor }]);
+}
+const topSequence = (feed) => feed.segments[0]?.items[0]?.sequence ?? null;
+function findResult(feed, attemptId) {
+  return feed.segments.some((s) => s.items.some((e) => e.kind === "result" && e.attempt_id === attemptId));
+}
+function newFeed() {
+  return { segments: [], loaded: false, busy: null, pending: null, error: null, newer: false,
+    open: new Map(), checkedAt: 0, focus: null, status: "" };
+}
+// The Activity panel's content, rebuilt from the feed state on every render.
+function activity(t) {
+  const view = viewFor(t.id);
+  view.task = t;
+  if (!view.feed) view.feed = newFeed();
+  const box = el("div", "activity");
+  box.setAttribute("aria-busy", "false");
+  view.box = box;
+  renderFeed(view);
+  if (view.tab === "activity") startFeed(view);
+  return box;
+}
+// Load the first page when Activity is first shown; afterwards check for newer entries.
+function startFeed(view) {
+  const feed = view.feed;
+  if (!feed || feed.busy) return;
+  if (!feed.loaded) {
+    if (!feed.error) loadFirst(view);
+  } else checkNewer(view);
+}
+// Run one load at a time; a failure keeps everything loaded and offers Retry there.
+function feedRequest(view, busy, work, retry) {
+  const feed = view.feed;
+  if (feed.busy) return Promise.resolve(false);
+  feed.busy = busy;
+  feed.error = null;
+  renderFeed(view);
+  feed.pending = (async () => {
+    try {
+      await work(feed);
+      return true;
+    } catch (e) {
+      feed.error = { ...busy, message: e.message, retry };
+      return false;
+    } finally {
+      feed.busy = null;
+      if (detailView === view) renderFeed(view);
     }
+  })();
+  return feed.pending;
+}
+function loadFirst(view) {
+  return feedRequest(view, { kind: "first" }, async (feed) => {
+    const page = await activityPage(view.id);
+    feed.segments = normalizeSegments([{ items: page.items, cursor: page.cursor }]);
+    feed.loaded = true;
+    feed.newer = false;
+    feed.checkedAt = Date.now();
+    feed.status = page.items.length ? `${page.items.length} entries loaded.` : "No activity yet.";
+  }, () => loadFirst(view));
+}
+// Load the next page below a segment: Load more at the end, or a gap between segments.
+function loadOlder(view, segment) {
+  return feedRequest(view, { kind: "more", segment }, async (feed) => {
+    const page = await activityPage(view.id, { cursor: segment.cursor });
+    if (!feed.segments.includes(segment)) return;
+    const known = new Set(segment.items.map(activityKey));
+    segment.items = mergeItems(segment.items, page.items);
+    segment.cursor = page.cursor;
+    feed.segments = normalizeSegments(feed.segments);
+    const first = page.items.find((e) => !known.has(activityKey(e)));
+    feed.focusEntry = first ? activityKey(first) : null;
+    feed.status = page.items.length ? `${page.items.length} more entries loaded.` : "No more entries.";
+  }, () => loadOlder(view, segment));
+}
+function loadNewer(view) {
+  return feedRequest(view, { kind: "newer" }, async (feed) => {
+    const page = await activityPage(view.id);
+    addSegment(feed, page);
+    feed.newer = false;
+    feed.checkedAt = Date.now();
+    feed.status = "Newer entries loaded.";
+  }, () => loadNewer(view));
+}
+// Offer "Show newer" when the server has entries above the loaded ones. A quiet check:
+// a failure leaves the feed as it is and the next refresh checks again.
+async function checkNewer(view) {
+  const feed = view.feed;
+  if (!feed.loaded || feed.busy || feed.newer || Date.now() - feed.checkedAt < 3000) return;
+  feed.checkedAt = Date.now();
+  try {
+    const page = await api("activity", { task_id: view.id });
+    const newest = page.newest_sequence ?? null, top = topSequence(feed);
+    if (newest !== null && (top === null || newest > top) && !feed.newer) {
+      feed.newer = true;
+      feed.status = "Newer activity is available.";
+      if (detailView === view) renderFeed(view);
+    }
+  } catch {
+    // Nothing to show: the loaded history stays and a later refresh checks again.
+  }
+}
+// Open full result: show Activity and that result's entry, opened. A result outside the
+// loaded pages is fetched with the page that starts with it, not the history above it.
+async function openFullResult(t, attemptId) {
+  const view = viewFor(t.id);
+  view.task = t;
+  if (!view.feed) view.feed = newFeed();
+  showTab("activity");
+  const feed = view.feed;
+  while (feed.busy) await feed.pending;
+  if (detailView !== view) return;
+  const retry = () => openFullResult(t, attemptId);
+  if (!feed.loaded && !(await loadFirst(view))) {
+    if (feed.error) feed.error.retry = retry;
+    return renderFeed(view);
+  }
+  if (!findResult(feed, attemptId)) {
+    const found = await feedRequest(view, { kind: "target" }, async (feed) => {
+      addSegment(feed, await activityPage(view.id, { target: attemptId }));
+      feed.status = "The result and the entries before it are loaded.";
+    }, retry);
+    if (!found || detailView !== view) return;
+  }
+  feed.focus = attemptId;
+  if (feed.open.get(attemptId)?.attempt) return renderFeed(view);
+  await toggleResult(view, attemptId, { open: true });
+}
+// Opening a result entry reads its complete proof (the attempt read): evidence,
+// artifacts, verification, review and concerns.
+async function toggleResult(view, attemptId, { open = false } = {}) {
+  const feed = view.feed;
+  if (feed.open.has(attemptId) && !open) {
+    feed.open.delete(attemptId);
+    return renderFeed(view);
+  }
+  const slot = { loading: true };
+  feed.open.set(attemptId, slot);
+  renderFeed(view);
+  try {
+    slot.attempt = await api("attempt", { attempt_id: attemptId });
+  } catch (e) {
+    slot.error = e.message;
+  }
+  slot.loading = false;
+  if (detailView === view && feed.open.get(attemptId) === slot) renderFeed(view);
+}
+function feedButton(label, key, fn, busy = false) {
+  const b = button(busy ? "Loading…" : label, fn, "btn small");
+  b.dataset.focusKey = key;
+  b.disabled = busy;
+  return b;
+}
+function renderFeed(view) {
+  const { feed, box } = view;
+  if (!feed || !box) return;
+  const pane = $("detail");
+  const scroll = pane?.scrollTop;
+  const focused = document.activeElement?.dataset?.focusKey;
+  const busy = feed.busy;
+  const failed = (kind, segment) => {
+    const e = feed.error;
+    if (!e || e.kind !== kind || (segment && e.segment !== segment)) return null;
+    const what = { first: "activity", more: "more entries", newer: "newer entries", target: "that result" }[kind];
+    return el("p", "feed-error", node("span", `Couldn't load ${what}: ${e.message}`), feedButton("Retry", "retry", () => e.retry()));
   };
-  return wrap;
+  const status = node("p", feed.status, "sr-only");
+  status.setAttribute("role", "status");
+  const parts = [status];
+  if (feed.newer || busy?.kind === "newer")
+    parts.push(el("div", "feed-bar", node("span", "Newer activity is available."), feedButton("Show newer", "newer", () => loadNewer(view), busy?.kind === "newer")));
+  parts.push(failed("newer"));
+  if (!feed.loaded) {
+    parts.push(failed("first") || node("p", "Loading activity…", "feed-loading muted"));
+  } else if (!feed.segments.length) {
+    parts.push(el("div", "feed-empty", node("p", "No activity yet."),
+      node("p", "Results, reviews, decisions, questions and changes appear here, newest first. Routine reads are not shown.", "muted")));
+  } else {
+    const list = el("ol", "timeline activity-feed");
+    list.setAttribute("aria-label", "Activity, newest first");
+    feed.segments.forEach((segment, i) => {
+      segment.items.forEach((e) => list.append(activityEntry(e, view)));
+      if (i < feed.segments.length - 1)
+        list.append(el("li", "gap", node("span", "Entries between these are not loaded yet.", "muted"),
+          feedButton("Load entries in between", "gap:" + i, () => loadOlder(view, segment), busy?.segment === segment), failed("more", segment)));
+    });
+    parts.push(list);
+    const last = feed.segments[feed.segments.length - 1];
+    if (last.cursor !== null)
+      parts.push(el("div", "feed-more", feedButton("Load more", "more", () => loadOlder(view, last), busy?.segment === last), failed("more", last)));
+    else parts.push(node("p", "Beginning of history.", "feed-end muted"));
+  }
+  parts.push(failed("target"));
+  box.setAttribute("aria-busy", String(!!busy));
+  box.replaceChildren(...parts.filter(Boolean));
+  if (pane && scroll !== undefined) pane.scrollTop = scroll;
+  // Keep keyboard focus where it was, move it to the first newly loaded entry, or to
+  // the result that Open full result asked for.
+  const find = (selector) => box.querySelector?.(selector);
+  if (feed.focus) {
+    const target = find(`li[data-attempt="${feed.focus}"]`);
+    feed.targeted = feed.focus;
+    feed.focus = null;
+    if (target) {
+      target.classList.add("targeted");
+      target.scrollIntoView?.({ block: "start" });
+      target.focus?.({ preventScroll: true });
+    }
+  } else if (feed.focusEntry) {
+    find(`li[data-key="${feed.focusEntry}"]`)?.focus?.({ preventScroll: true });
+    feed.focusEntry = null;
+  } else if (focused) find(`[data-focus-key="${focused}"]`)?.focus?.({ preventScroll: true });
+}
+const DECISIONS = {
+  approve: "Approved",
+  rework: "Sent back for rework",
+  revise: "Design to be revised",
+  drop: "Dropped",
+  defer: "Deferred",
+};
+const MEMBER_VIA = {
+  create_task: "joined when it was created",
+  update_task: "joined by an edit",
+  add_group_member: "added to the group",
+};
+function activityEntry(e, view) {
+  const t = view.task;
+  const li = el("li", "entry kind-" + e.kind);
+  li.dataset.key = activityKey(e);
+  // Focus on an entry survives a re-render (an opened result's proof arriving, say).
+  li.dataset.focusKey = "entry:" + li.dataset.key;
+  if (e.kind === "result") li.dataset.attempt = e.attempt_id;
+  if (e.kind === "result" && view.feed.targeted === e.attempt_id) li.classList.add("targeted");
+  li.tabIndex = -1;
+  const time = node("time", ago(e.timestamp), "muted push");
+  if (e.timestamp) {
+    time.title = new Date(e.timestamp).toLocaleString();
+    time.setAttribute("datetime", e.timestamp);
+  }
+  li.append(el("div", "event", node("span", ACTIVITY_LABELS[e.kind] || e.kind, "what"), node("span", e.actor || "", "muted who"), time));
+  li.append(...entryBody(e, view).filter(Boolean));
+  return li;
+}
+const entryNote = (text, cls = "event-note") => (text ? node("p", text, cls) : null);
+function resultMeta(e, t) {
+  const parts = [workstreamWords(e.workstream_id, e.workstream_name), specWords(e.spec_revision, t)].filter(Boolean);
+  const meta = node("p", parts.join(" · "), "entry-meta muted");
+  if (e.spec_revision !== undefined && e.spec_revision !== t.spec_revision) meta.classList.add("superseded");
+  return meta;
+}
+function entryBody(e, view) {
+  const t = view.task;
+  switch (e.kind) {
+    case "result": {
+      // The attempt's state now, from the task read; the entry's own if it is not there.
+      const state = (t.attempts || []).find((a) => a.id === e.attempt_id)?.state || e.state;
+      const current = t.object_type !== "group" && relevantResult(t)?.id === e.attempt_id;
+      const slot = view.feed.open.get(e.attempt_id);
+      const toggle = button(slot ? "Hide full result" : "Show full result", () => toggleResult(view, e.attempt_id), "btn small");
+      toggle.dataset.focusKey = "result:" + e.attempt_id;
+      toggle.setAttribute("aria-expanded", String(!!slot));
+      toggle.setAttribute("aria-controls", "proof-" + e.attempt_id);
+      const imported = e.imported ? node("span", "Imported", "tag") : null;
+      if (imported) imported.title = "Imported in the TASKS.md migration";
+      const out = [
+        el("div", "entry-line", state ? pill(state) : null, imported, current ? node("span", "Current result", "tag current") : null,
+          e.implementer ? node("span", "by " + e.implementer, "muted") : null),
+        entryNote(e.summary),
+        resultMeta(e, t),
+        el("div", "entry-actions", toggle),
+      ];
+      if (slot) {
+        const proof = el("div", "entry-proof",
+          slot.loading ? node("p", "Loading the full result…", "muted") : null,
+          slot.error ? el("p", "feed-error", node("span", `Couldn't load the full result: ${slot.error}`),
+            feedButton("Retry", "retry:" + e.attempt_id, () => toggleResult(view, e.attempt_id, { open: true }))) : null,
+          slot.attempt ? attemptCard(slot.attempt, t) : null);
+        proof.id = "proof-" + e.attempt_id;
+        out.push(proof);
+      }
+      return out;
+    }
+    case "review": {
+      const verdict = e.verdict === "pass" ? pill("passed", "Passed") : e.verdict === "rework" ? pill("rework", "Sent back for changes") : pill("open", e.verdict || "Recorded");
+      return [el("div", "entry-line", verdict, e.reviewer ? node("span", "by " + e.reviewer, "muted") : null), entryNote(e.reasons), resultMeta(e, t), resultLink(e, view)];
+    }
+    case "human_review":
+      return [entryNote(e.reasons), resultMeta(e, t), resultLink(e, view)];
+    case "signoff": {
+      // Full reasons and historical judgments from the task's recorded decisions.
+      const d = (t.signoff_decisions || []).find((x) => x.decision_ref === e.sequence);
+      const words = DECISIONS[e.decision] || e.decision || "Decision";
+      return [
+        el("div", "entry-line", node("strong", words), e.disposition ? node("span", "· task " + e.disposition, "muted") : null),
+        d ? markdown(d.reasons ?? d.user_note ?? "") : entryNote(e.reasons),
+        d?.purpose_judgment ? entryNote(`Historical purpose: ${d.purpose_judgment} (${(d.purpose_source || "unknown").replaceAll("_", " ")}).`) : null,
+        d?.result_judgment ? entryNote(`Historical human result quality: ${d.result_judgment.replaceAll("_", " ")}.`) : null,
+        d?.result_note ? markdown(d.result_note) : null,
+        e.spec_revision !== undefined ? resultMeta(e, t) : null,
+        resultLink(e, view),
+      ];
+    }
+    case "question_added":
+      return [entryNote(e.text || e.summary)];
+    case "question_resolved":
+      return [entryNote(e.text || e.summary), e.note ? entryNote("Answer: " + e.note) : null];
+    case "workstream_added":
+    case "workstream_removed":
+      return [entryNote(e.workstream_name || streamName(e.workstream_id))];
+    case "disposition":
+      return [entryNote(`${e.from || "?"} → ${e.to || "?"}`), entryNote(e.note)];
+    case "prerequisite_added":
+      return [entryNote(e.blocked_by_id + (e.milestone === "signoff" ? " · Sign-off required" : e.milestone ? " · Review required" : "")), entryNote(e.note)];
+    case "member_added":
+      return [entryNote(`${e.title || e.member_id}${e.title && e.member_id ? ` (${e.member_id})` : ""} · ${MEMBER_VIA[e.via] || "added"}`)];
+    default:
+      return [entryNote(e.summary), e.summary?.includes(e.note || "\u0000") ? null : entryNote(e.note)];
+  }
+}
+// A review or decision links to the result it judged (opened in place, or fetched).
+function resultLink(e, view) {
+  if (!e.attempt_id || view.task.object_type === "group") return null;
+  const b = button("Show the result", () => openFullResult(view.task, e.attempt_id).catch((err) => toast(err.message, true)), "link-btn");
+  b.dataset.focusKey = "link:" + e.sequence;
+  return el("div", "entry-actions", b);
 }
 
 /* ---------- menus ---------- */

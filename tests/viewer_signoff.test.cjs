@@ -37,62 +37,42 @@ const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_asse
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = code => vm.runInContext(code, context);
 function descendants(node) {return [node, ...(node.children || []).flatMap(descendants)];}
+// Sign-off decisions and rejections live in Activity, not on Spec: a sign-off entry shows
+// the full reasons and historical judgments of the task's recorded decision, as text.
 async function testActivity() {
-  const cases = [
-    {action: "task.signoff", label: "Sign-off decision", request: {
-      decision: "rework", reasons: 'New <img src=x onerror="alert(1)"> & "reasons"',
-    }, note: 'New <img src=x onerror="alert(1)"> & "reasons"'},
-    {action: "task.signoff", label: "Sign-off decision", request: {
-      decision: "defer", user_note: "Legacy sign-off reasons", note: "Lower priority note",
-    }, note: "Legacy sign-off reasons"},
-    {action: "task.updated", label: "Edited", request: {
-      note: "Legacy decision note", text: "Lower priority text",
-    }, note: "Legacy decision note"},
-    {action: "gate.unresolved_added", label: "Unresolved item added", request: {
-      text: "Legacy question text",
-    }, note: "Legacy question text"},
-    {action: "task.signoff", label: "Sign-off decision", outcome: "error", request: {},
-      error: "Legacy failure detail", note: "Legacy failure detail"},
-    {action: "task.signoff", label: "Sign-off decision", request: {decision: "approve", reasons: ""}},
-    {action: "task.signoff", label: "Sign-off decision", request: {decision: "drop", reasons: null}},
-    {action: "task.signoff", label: "Sign-off decision", request: {decision: "approve"}},
-    {action: "task.signoff", label: "Sign-off decision", request: {
-      reasons: "", user_note: "Empty reasons preserve legacy fallback",
-    }, note: "Empty reasons preserve legacy fallback"},
-    {action: "task.signoff", label: "Sign-off decision", request: {
-      reasons: "Current reasons", user_note: "Superseded legacy note",
-    }, note: "Current reasons"},
+  run(`markdown = text => node("p", text); ago = () => "now"; streamName = () => "main";`);
+  context.view = {task: {id: "history", object_type: "task", status: "open", spec_revision: 4, attempts: [], signoff_decisions: [
+    {decision_ref: 11, decision: "defer", disposition: "deferred", purpose_judgment: "deferred", purpose_source: "user_verdict",
+      result_judgment: "accepted", user_note: "Old defer reasons", result_note: "Old quality note"},
+    {decision_ref: 12, decision: "drop", disposition: "dropped", reasons: 'New <img src=x onerror="alert(1)"> drop reasons'}]},
+    feed: {open: new Map()}};
+  const at = (sequence, kind, extra) => ({sequence, kind, actor: "actor-" + sequence, timestamp: "2026-10-04T00:00:00Z", ...extra});
+  context.entries = [
+    at(12, "signoff", {decision: "drop", disposition: "dropped", reasons: "Clipped", attempt_id: "a1", workstream_id: "w", spec_revision: 4}),
+    at(11, "signoff", {decision: "defer", disposition: "deferred", reasons: "Old defer", attempt_id: "a1", workstream_id: "w", spec_revision: 4}),
+    at(10, "signoff", {decision: "rework", disposition: "open", reasons: "Only in the entry", attempt_id: "a1", workstream_id: "w", spec_revision: 3}),
+    at(9, "review", {verdict: "rework", reviewer: "Rev", reasons: "Reviewer reasons", attempt_id: "origin-attempt",
+      workstream_id: "origin-branch", workstream_name: "origin-branch", spec_revision: 3}),
   ];
-  context.activityEvents = cases.map((item, i) => ({...item, actor: `actor-${i}`,
-    outcome: item.outcome || "ok", timestamp: "2026-10-04T00:00:00Z"}));
-  run(`activityRequests = [];
-    api = async (action, payload) => {
-      activityRequests.push({action, payload});
-      return {items: activityEvents, through_sequence: activityEvents.length, next_after_sequence: null};
-    };
-    renderedActivity = activity({id: "activity-task"});`);
-  assert.equal(context.activityRequests.length, 0);
-  run("renderedActivity.open = true; renderedActivity.ontoggle();");
-  await new Promise(setImmediate);
-  assert.equal(context.activityRequests.length, 1);
-  assert.equal(context.activityRequests[0].action, "events");
-  assert.equal(context.activityRequests[0].payload.task_id, "activity-task");
-  assert.equal(context.activityRequests[0].payload.include_details, true);
-  const rows = context.renderedActivity.children[1].children;
-  assert.equal(rows.length, cases.length);
-  cases.forEach((item, i) => {
-    const row = rows[i], header = row.children[0];
-    assert.equal(header.children[0].textContent, item.label);
-    assert.equal(header.children[1].textContent, `actor-${i}`);
-    assert.ok(header.children[2].title);
-    const notes = row.children.filter(child => child.className === "event-note");
-    assert.equal(notes.length, item.note ? 1 : 0);
-    if (item.note) {
-      assert.equal(notes[0].textContent, item.note);
-      assert.equal(notes[0].children.length, 0);
-    }
-    assert.equal(row.className, item.outcome === "error" ? "failed" : undefined);
-  });
+  const rows = run("entries.map(e => activityEntry(e, view))");
+  const text = row => descendants(row).map(n => n.textContent).join(" ");
+  assert.deepEqual(rows.map(r => r.children[0].children[0].textContent),
+    ["Sign-off decision", "Sign-off decision", "Sign-off decision", "Independent review"]);
+  assert.match(text(rows[0]), /Dropped/);
+  assert.match(text(rows[0]), /New <img src=x onerror="alert\(1\)"> drop reasons/, "full recorded reasons, as text");
+  assert.doesNotMatch(text(rows[0]), /Clipped/);
+  assert.match(text(rows[1]), /Old defer reasons/);
+  assert.match(text(rows[1]), /Historical purpose: deferred \(user verdict\)\./);
+  assert.match(text(rows[1]), /Historical human result quality: accepted\./);
+  assert.match(text(rows[1]), /Old quality note/);
+  assert.match(text(rows[2]), /Only in the entry/);
+  assert.match(text(rows[2]), /spec v3 · superseded \(now v4\)/);
+  assert.match(text(rows[3]), /Sent back for changes/);
+  assert.match(text(rows[3]), /by Rev/);
+  assert.match(text(rows[3]), /Reviewer reasons/);
+  assert.match(text(rows[3]), /origin-branch · spec v3 · superseded/);
+  // Each links to the result it judged.
+  assert.ok(rows.every(r => descendants(r).some(n => n.tag === "button" && n.textContent === "Show the result")));
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 const texts = nodes => nodes.flatMap(descendants).map(node => node.textContent).join(" ");
@@ -196,7 +176,7 @@ async function test() {
   assert.deepEqual(plain(context.requests.at(-1).payload), {task_id: "tsk_0123abcd", expected_revision: 8, disposition: "open",
     note: "Needed for the release after all", authorization: "Needed for the release after all"});
 
-  // Both history generations render without inventing judgments or throwing.
+  // Spec no longer carries sign-off history or the latest rejection: those are in Activity.
   run(`task.status = "open"; task.unresolved_items = [{id: "q", text: "Open question"}]; task.blocked_by = []; task.gate_proposals = [];
     task.body = "Spec"; task.acceptance_criteria = "Criteria"; markdown = text => node("p", text);
     task.signoff_decisions = [
@@ -205,9 +185,7 @@ async function test() {
     task.latest_rejection = {source: "review", verdict: "rework", reasons: "Reviewer reasons", attempt_id: "origin-attempt", workstream_id: "origin-branch", spec_revision: 4, timestamp: "then"};
     activity = () => node("div"); rendered = body(task);`);
   const renderedText = texts(context.rendered);
-  assert.match(renderedText, /Old defer reasons/); assert.match(renderedText, /Old quality note/);
-  assert.match(renderedText, /New drop reasons/); assert.match(renderedText, /Reviewer reasons/);
-  assert.match(renderedText, /origin-branch/);
+  assert.doesNotMatch(renderedText, /Old defer reasons|New drop reasons|Reviewer reasons|Sign-off decisions|Latest rejection/);
   assert.match(renderedText, /Open question/);
   // Questions are read, not answered, here: the only control hands them to an agent.
   assert.deepEqual(plain(context.rendered.flatMap(descendants).filter(node => node.tag === "button").map(node => node.textContent)),

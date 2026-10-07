@@ -115,8 +115,8 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   tasks in any, and has recorded nothing since, shown as "An agent picked this up 12 minutes ago"), **Open** (no result yet and no recent pick,
   ready or blocked; a blocker shows in the task's details), **Later** (deferred)
   and **Done** (done/dropped, collapsed). Cards carry no other badges; whether
-  work is a first attempt or a rework round shows in the task's details and
-  history, where the latest rejection appears only until a newer result exists.
+  work is a first attempt or a rework round shows in the task's **Activity**,
+  where every result, review and rejection appears.
   Search filters titles across every section. Keyboard: `/` search, `j`/`k` move,
   `r` refresh.
 - In a named workstream, drag a task onto the upper or lower half of another
@@ -130,6 +130,57 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   shows an error, puts back the loaded order and locks dragging until the
   recorded order has reloaded; clicking a task meanwhile does not cancel that
   reload. All tasks and group views have no order to edit.
+- Task and group details have two tabs, **Spec** and **Activity**, below the
+  title, public ID, current status and the next-step panel (which keeps **Sign
+  off with an agent**); the **Actions** menu stays in the top bar. Selecting a
+  task or group opens **Spec**; a refresh of the same one (the Refresh button,
+  `r`, returning to the tab, or reloading after an action) keeps the selected
+  tab, the loaded history, opened results and the scroll position. The tabs
+  are an ARIA tablist: Left/Right arrows, Home and End move between them; they
+  stay pinned below the top bar while the details scroll. The selected tab is
+  not part of the location URL.
+- **Spec** holds what was asked and where it stands: current unresolved items,
+  prerequisites, the current-result card, the specification, acceptance
+  criteria, the original request and any gate proposals; for a group, its
+  summary, context, done-when criteria, included workstreams and members, with
+  progress in the header above the tabs.
+- The **current-result card** on Spec shows one result, if one is relevant: for
+  a task awaiting sign-off, the reviewed result (passed review or reviewed by
+  you) for the current specification in view; for a completed task, the
+  accepted result; otherwise the latest current-specification result still with
+  the agents (under review or sent back), if any. "In view" is the open
+  workstream, or every workstream on project-wide boards; a result from another
+  workstream says so. The card gives the state in plain words, the short
+  summary, the workstream, the specification revision (current or superseded)
+  and the evidence handles as recorded (each artifact or commit reference). It
+  does not repeat evidence, verification, review or concerns. **Open full
+  result** switches to Activity and opens that result's entry, even when it is
+  outside the loaded pages: the viewer reads the newest page and the page that
+  starts with the result, not the history between them, and shows a **Load
+  entries in between** row there until the gap is filled.
+- **Activity** is the task's or group's meaningful history from the paged
+  `activity` read below, newest first: creation, edits, questions and answers,
+  prerequisites, workstream and status changes, group membership, every result
+  (the current one included), independent and human reviews and sign-off
+  decisions, each once. Routine reads and failed requests are not shown. It
+  loads when first shown: 20 entries, then **Load more** adds up to 20 more
+  below, keeping what is loaded and the scroll position, and disappears at the
+  beginning of history. A short page that reached the server's scan bound
+  continues automatically. With nothing to show it says **No activity yet**. A
+  page that fails keeps the loaded history and shows the error with **Retry**
+  in place. When the server has entries newer than the top one (checked on each
+  refresh while Activity is shown), **Newer activity is available · Show
+  newer** adds them on top. Each result entry shows its state, workstream,
+  specification revision and whether that specification is current or
+  superseded (imported results are marked); **Show full result** reads that
+  result with the `attempt` read and shows its complete evidence, artifacts,
+  verification, review and worth-doing/approach concerns. Review and sign-off
+  entries show their verdict, reasons and the result's workstream and
+  specification, with **Show the result**; sign-off entries include the full
+  reasons and any historical judgment fields of the recorded decision. A group's
+  Activity shows the group's own changes and member joins only, not its
+  members' history. The former Result, Other results, Sign-off decisions and
+  Latest rejection sections are gone: those records are entries in Activity.
 - Each task opens with a single “next step” panel stating what, if anything,
   you can do now. A task waiting for sign-off offers **Sign off with an agent**:
   sign-off is a walkthrough with an agent, so the button copies a ready prompt
@@ -216,12 +267,10 @@ earlier `#/project/...` addresses are not supported; they open the default view.
   want it built), splitting it, or dropping it with your agreement, and
   resolves the idea item. This is a viewer operation only; there is no MCP tool
   for it.
-- Latest rejection reasons appear with their originating attempt/workstream in
-  the task. Sign-off decisions, including historical defer decisions and
-  judgment fields, remain readable.
-- Activity shows actor, action, outcome and decision notes; routine read
-  events are counted rather than listed. (The paged `activity` read below is the
-  server side for a newest-first Activity feed; this panel still uses `events`.) Task text is rendered as a safe
+- Rejection reasons (reviewer rework, sign-off rework or revise) appear in the
+  review or sign-off entry in Activity, with the result's workstream and
+  specification. Sign-off decisions, including historical defer decisions and
+  judgment fields, remain readable there. Task text is rendered as a safe
   Markdown subset (paragraphs, lists, headings, code, bold/italic) built from
   DOM text nodes, never parsed as HTML. Link targets are shown as text and
   never followed or fetched. A single-line acceptance criterion joined by
@@ -239,7 +288,9 @@ method, SQL or shell command endpoint.
 The viewer dispatch action `activity` (`Store.task_activity`) reads one task's
 or group's meaningful history, newest first, in pages. It has no MCP tool and
 does not change `list_events`; agents keep `list_task_attempts` and
-`get_attempt`.
+`get_attempt`. The viewer's Activity tab renders it. Opening a result entry uses
+the viewer dispatch action `attempt` (`Store.get_attempt`, the same attempt read
+as the MCP tool; its `attempt.read` audit event is hidden from Activity).
 
 - **Input**: `task_id`, plus either `cursor` (entries older than that event
   sequence; pass the previous page's `next_cursor`) or `target` (an attempt ID of
@@ -255,7 +306,7 @@ does not change `list_events`; agents keep `list_task_attempts` and
   the attempt's current `state`, `implementer` and the short summary; reviews add
   `verdict`, `reviewer` and `reasons`; sign-offs add `decision`, `reasons` and
   the resulting `disposition`. Full proof is not included: open a result with
-  the existing attempt read (`details` with `attempt_ids`).
+  the existing attempt read (the viewer's `attempt` action).
 - **Classification**: `ACTIVITY_KINDS` in `store.py` maps each meaningful audit
   action to an entry kind: creation and import (`created`, `imported`, legacy
   `corrected`), specification and card-summary edits (`updated`), questions
@@ -383,5 +434,5 @@ Result details show worth-doing and approach concerns (stored kinds
 `value`/`design`) with the implementer or reviewer name and original
 attempt/workstream/specification.
 These concerns are nonblocking; recorded gates and the user's actual verdict
-retain their existing meaning. Other/superseded results keep their own concerns
-in the existing labelled history.
+retain their existing meaning. Other and superseded results keep their own
+concerns in their Activity entries.

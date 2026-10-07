@@ -48,6 +48,8 @@ def dispatch(store, action, data):
         "events": store.list_events,
         # A task's or group's meaningful history, newest first, in pages (no MCP tool).
         "activity": store.task_activity,
+        # One result's complete proof, opened from its Activity entry (the attempt read).
+        "attempt": store.get_attempt,
         "notes": store.read_notes,
         "reorder": store.reorder_tasks,
         "add-to-workstream": store.add_to_workstream,

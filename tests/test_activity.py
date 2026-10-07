@@ -615,6 +615,23 @@ def test_no_mcp_tool_reads_activity(tmp_path):
     assert not [tool.name for tool in tools if "activity" in tool.name]
 
 
+def test_viewer_opens_a_result_entry_with_the_attempt_read(ready):
+    """Opening a result in Activity reads its full proof; the read is not shown there."""
+    store, project, ws = ready
+    task = store.create_task(project, "Proof", workstream_id=ws)
+    attempt = record(store, task["id"], ws)
+    store.record_review(attempt["id"], attempt["revision"], "reviewer", "pass", "Checked well")
+    newest = activity(store, task["id"])["newest_sequence"]
+    proof = dispatch(store, "attempt", {"attempt_id": attempt["id"]})
+    assert proof == store.get_attempt(attempt["id"])
+    assert proof["evidence"] == "Actual proof" and proof["verification"] == "Actual proof"
+    assert proof["artifacts"] == [{"kind": "artifact", "reference": "tests/test_activity.py"}]
+    assert proof["review_note"] == "Checked well" and proof["concerns"] == []
+    assert activity(store, task["id"])["newest_sequence"] == newest
+    with pytest.raises(TaskError, match="unknown_attempt"):
+        dispatch(store, "attempt", {"attempt_id": "att_missing"})
+
+
 def test_older_request_shapes_still_render(ready):
     store, project, ws = ready
     task = store.create_task(project, "Older", workstream_id=ws)

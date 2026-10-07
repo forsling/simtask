@@ -1170,6 +1170,211 @@ kbd {
   color: var(--text-2);
   white-space: pre-wrap;
 }
+/* ---------- Spec and Activity tabs ---------- */
+
+/* The tabs stay pinned below the top bar while a long Spec or Activity scrolls. */
+.tabs {
+  position: sticky;
+  top: 52px;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  margin: 24px 0 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.tab {
+  position: relative;
+  padding: 10px 14px 9px;
+  font-size: 14px;
+  font-weight: 550;
+  color: var(--text-2);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.tab:focus-visible,
+.tab-panel:focus-visible,
+.entry:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.tab-panel:focus:not(:focus-visible),
+.entry:focus:not(:focus-visible) {
+  outline: none;
+}
+.tab-panel > .block:first-child {
+  margin-top: 24px;
+}
+
+/* The one current result on Spec: what was built, beside what was asked. */
+.result-card {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.result-card .md {
+  font-size: 14.5px;
+  margin-top: 10px;
+}
+.result-state .pill {
+  white-space: normal;
+}
+.result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+.warn-text-inline {
+  color: var(--warn);
+}
+.handles {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.handles li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.handles code {
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+}
+.handle-kind {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.result-actions,
+.entry-actions {
+  margin-top: 10px;
+}
+
+/* Activity: one paged history, newest first. */
+.activity {
+  margin-top: 24px;
+}
+.activity-feed .entry {
+  scroll-margin-top: 112px;
+  padding-bottom: 18px;
+}
+.activity-feed .entry.targeted::before {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.activity-feed .entry.kind-result::before {
+  border-color: var(--info);
+}
+.activity-feed .event {
+  flex-wrap: wrap;
+}
+.activity-feed .event .who {
+  overflow-wrap: anywhere;
+}
+.entry-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.entry-meta {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+}
+.entry-meta.superseded {
+  color: var(--warn);
+}
+.entry .md {
+  font-size: 14px;
+  margin-top: 4px;
+}
+.entry-proof {
+  margin-top: 10px;
+}
+.entry-proof .attempt {
+  padding: 14px 16px;
+}
+.tag {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--muted-bg);
+  color: var(--text-2);
+}
+.tag.current {
+  background: var(--selected);
+  color: var(--accent);
+}
+.link-btn {
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.timeline li.gap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 18px -10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-2);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.timeline li.gap::before {
+  display: none;
+}
+.feed-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--info-bg);
+  font-size: 13.5px;
+}
+.feed-more {
+  margin: 4px 0 0 14px;
+}
+.feed-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px 0 0;
+  color: var(--warn);
+  font-size: 13px;
+}
+.feed-end,
+.feed-loading {
+  margin: 4px 0 0 14px;
+  font-size: 12.5px;
+}
+.feed-empty p {
+  margin: 0 0 4px;
+}
 .footnote {
   font-size: 12.5px;
   color: var(--text-3);

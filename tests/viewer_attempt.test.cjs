@@ -55,7 +55,7 @@ run('state.stream = "alt";');
 context.task.unresolved_items = [{id: "question", text: "Unsettled requirement"}];
 let panel = labels(run('nextStep(task, "decision")'));
 assert.ok(panel.includes("An unresolved item needs your answer"));
-assert.ok(panel.some(l => /A recorded result is kept below/.test(l)));
+assert.ok(panel.some(l => /A recorded result is kept in Activity/.test(l)));
 assert.ok(!panel.includes("Record my review"));
 context.task.unresolved_items = [];
 // A passed result stays with the user for sign-off even while a prerequisite is open;
@@ -66,7 +66,7 @@ panel = labels(run('nextStep(task, "signoff")'));
 assert.ok(panel.includes("Sign off with an agent"));
 assert.ok(!panel.includes("Waiting on prerequisites"));
 assert.ok(panel.some(l => l.includes("A prerequisite is still open: “Publish the schema”. Weigh it in the walkthrough.")));
-assert.ok(!panel.some(l => /A recorded result is kept below/.test(l)));
+assert.ok(!panel.some(l => /A recorded result is kept in Activity/.test(l)));
 context.task.prerequisites.push({blocking: true, title: "Second"}, {blocking: false, title: "Satisfied"});
 panel = labels(run('nextStep(task, "signoff")'));
 assert.ok(panel.some(l => l.includes("2 prerequisites are still open: “Publish the schema”, “Second”.")));
@@ -99,19 +99,24 @@ assert.ok(panel.some(n => n.textContent === context.proof.concerns[1].text));
 assert.equal(run('concernPanel({...proof, concerns: []})'), null);
 // Check the actual detail body uses the same action candidate. Isolate unrelated
 // Markdown/activity rendering so the DOM double need not implement a browser.
-run('markdown = (text) => node("p", text); activity = () => null; attemptCard = (a) => node("article", a.id);');
-// The detail shows the result matching the standing the server gives for the results in
-// view (the rule itself is Store._standing, tested in test_viewer.py).
+run('markdown = (text) => node("p", text); activity = () => null; resultCard = (a) => node("article", "card:" + a.id);');
+// Spec shows one compact card for the result the standing the server gives makes
+// relevant (the rule itself is Store._standing, tested in test_viewer.py): the reviewed
+// result for sign-off, the accepted one when done, else the latest still with the agents.
 function shownResult(standing, stream) {
   run(`state.stream = ${JSON.stringify(stream)};`);
   context.task.standing = standing;
   assert.equal(run("taskStanding(task)"), standing);
-  const section = run('body(task)').find(n => n && descendants(n).some(c => c.textContent === "Result"));
-  return section?.children[1].textContent;
+  const cards = descendants({children: run('body(task)')}).filter(n => /^card:/.test(n.textContent || ""));
+  assert.ok(cards.length <= 1, "Spec shows at most one result");
+  return cards[0]?.textContent.slice(5);
 }
 assert.equal(shownResult("signoff", "main"), "main-passed");
 assert.equal(shownResult("signoff", ""), "main-passed");
 assert.equal(shownResult("progress", "alt"), "alt-review");
+// Nothing with the agents in this workstream: no card (the result stays in Activity).
+assert.equal(shownResult("open", "main"), undefined);
+assert.equal(shownResult("decision", "main"), undefined);
 context.task.status = "done";
 context.task.selected_attempt_id = "main-passed";
 for (const stream of ["main", "alt", ""]) {

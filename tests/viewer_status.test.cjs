@@ -165,8 +165,9 @@ async function test() {
   assert.ok(doneRows.every(r => !descendants(r).some(n => n.classList.contains("badge"))));
   assert.ok(doneRows.every(r => r.classList.contains("closed")));
 
-  // The detail: the latest rejection appears only while no newer result exists.
-  run(`markdown = (t) => node("p", t); activity = () => node("div"); attemptCard = (a) => node("article", a.id);`);
+  // The detail: Spec has no Latest rejection, Result or Other results feeds; it shows one
+  // card for the relevant result, and every round (with its rejection) is in Activity.
+  run(`markdown = (t) => node("p", t); activity = () => node("div"); resultCard = (a) => node("article", "card:" + a.id);`);
   context.task = {id: "reworked", title: "Rework then passed", status: "open", spec_revision: 1, revision: 6,
     workstream_ids: ["w"], unresolved_items: [], prerequisites: [], blocked_by: [], gate_proposals: [], body: "", acceptance_criteria: "",
     latest_rejection: {source: "review", verdict: "rework", reasons: "Stale revision", attempt_id: "att_old", workstream_id: "w", spec_revision: 1, timestamp: "2026-10-05T08:00:00.000000Z"},
@@ -177,14 +178,15 @@ async function test() {
   context.task.standing = "signoff";
   assert.equal(run("taskStanding(task)"), "signoff");
   const bodyText = () => run("body(task)").flatMap(descendants).map(text).join(" ");
-  assert.equal(run("currentRejection(task)"), null);
-  assert.doesNotMatch(bodyText(), /Latest rejection|Stale revision/);
-  assert.match(bodyText(), /Other results/, "Earlier rounds stay in the history");
+  assert.equal(run("typeof currentRejection"), "undefined");
+  assert.doesNotMatch(bodyText(), /Latest rejection|Stale revision|Other results/);
+  assert.match(bodyText(), /card:att_new/);
+  assert.doesNotMatch(bodyText(), /card:att_old/);
   context.task.attempts.pop();
   context.task.attempts[0].state = "rework";
   context.task.standing = "progress";
-  assert.match(bodyText(), /Latest rejection/);
-  assert.match(bodyText(), /Stale revision/);
+  assert.doesNotMatch(bodyText(), /Latest rejection|Stale revision/);
+  assert.match(bodyText(), /card:att_old/, "A result sent back is still with the agents");
 
   // The sign-off panel: plain language, a walkthrough with an agent, no IDs or agent labels.
   context.task.attempts.push({id: "att_new", state: "passed", spec_revision: 1, workstream_id: "w", revision: 2,
