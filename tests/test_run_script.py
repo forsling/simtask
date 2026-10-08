@@ -201,6 +201,7 @@ def tunnels_or_empty(tmp_path):
         ["--tailscale", "--restart", "--install-service"],
         ["--tailscale", "--remove-service", "--restart"],
         ["--dev", "--tailscale", "--keep", "--remove-service"],
+        ["--dev", "--tailscale", "--keep", "--install-service"],
     ],
 )
 def test_argument_checks(remote, args):
@@ -964,6 +965,7 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
     assert f"Task MCP dev viewer: {public}/#{token}" in result.stdout
     assert f"Dev database: {copy} (fresh copy of {live})" in result.stdout
     assert f"Runs as the systemd user service {unit} (installed as {unit_file})." in result.stdout
+    assert f"(http on port {port}, mapping added)" in result.stdout
     assert "Stop it with ./run.sh --dev --tailscale --stop." in result.stdout
     assert mcp_entry(result.stdout)["env"] == {"TASK_MCP_DB": str(copy)}
     assert unit_file.read_text() == unit_text(checkout / ".venv/bin/python", copy, port)

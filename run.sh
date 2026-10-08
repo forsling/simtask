@@ -92,7 +92,7 @@ done
 [ -z "$install$remove" ] || [ -n "$tailscale" ] || usage
 [ -z "$install" ] || [ -z "$remove" ] || usage
 [ -z "$install$remove" ] || [ -z "$action" ] || usage
-[ -z "$remove" ] || [ -z "$keep" ] || usage
+[ -z "$install$remove" ] || [ -z "$keep" ] || usage
 
 # Resolve a relative TASK_MCP_DB against the caller's directory, before changing it.
 db_args=()
@@ -566,7 +566,8 @@ if [ -n "$dev" ]; then
   else
     url=$(.venv/bin/task-mcp ui --db "$dev_db" ${ui_args[@]+"${ui_args[@]}"})
   fi
-  [ -z "$tailscale" ] || serve_map
+  # service_install has already ensured the mapping.
+  [ -n "$install" ] || [ -z "$tailscale" ] || serve_map
   echo "Task MCP dev viewer: $url"
   echo "Dev database: $dev_db ($copy_note)"
   if [ -n "$tailscale" ]; then
