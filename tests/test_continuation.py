@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from task_mcp.store import STATE_WORDS, Store, TaskError
+from simtask.store import STATE_WORDS, Store, TaskError
 
 
 def detail(store, task_id):

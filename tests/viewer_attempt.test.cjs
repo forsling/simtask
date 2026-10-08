@@ -13,7 +13,7 @@ const context = vm.createContext({
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
   sessionStorage: {getItem() {return "";}}, history: {replaceState() {}},
 });
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const attempt = (id, workstream_id, state, spec_revision = 2) => ({
   id, workstream_id, state, spec_revision, revision: 7, implementer: id,

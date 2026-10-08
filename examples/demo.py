@@ -15,8 +15,8 @@ async def exercise(database: Path):
     root = Path(__file__).resolve().parents[1]
     server = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database), "--actor", "demo-coordinator"],
-        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+        args=["-m", "simtask", "--db", str(database), "--actor", "demo-coordinator"],
+        env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
     )
     async with Client(server, read_timeout_seconds=60) as client:
         assert client.instructions
@@ -73,7 +73,7 @@ async def exercise(database: Path):
             assert not result.is_error, result.content
             return result.structured_content
 
-        project_path = "/tmp/task-mcp-demo-project"
+        project_path = "/tmp/simtask-demo-project"
         discovered = await call("init", path=project_path, branch="main")
         assert discovered["state"] == "unregistered_checkout"
         setup = await call(
@@ -349,14 +349,14 @@ async def exercise(database: Path):
         assert obsolete.is_error
         second = await call(
             "init",
-            path="/tmp/task-mcp-demo-service-b",
+            path="/tmp/simtask-demo-service-b",
             branch="feature",
             action="create_project",
             confirmed=True,
         )
         third = await call(
             "init",
-            path="/tmp/task-mcp-demo-service-c",
+            path="/tmp/simtask-demo-service-c",
             branch="release",
             action="create_project",
             confirmed=True,
@@ -513,7 +513,7 @@ async def exercise(database: Path):
         # Export is a CLI surface, not an MCP tool.
         def export(*options):
             return subprocess.run(
-                [sys.executable, "-m", "task_mcp", "--db", str(database)]
+                [sys.executable, "-m", "simtask", "--db", str(database)]
                 + ["--export-workstream", workstream_id, *options],
                 env={"PYTHONPATH": str(root / "src")},
                 capture_output=True,
@@ -540,7 +540,7 @@ async def exercise(database: Path):
             "task-signoff",
         }
         for item in catalog["items"]:
-            canonical = (root / "src/task_mcp/reference_skills" / item["path"]).read_bytes()
+            canonical = (root / "src/simtask/reference_skills" / item["path"]).read_bytes()
             named = await call("get_default_skills", name=item["name"])
             assert named["items"][0]["content"].encode() == canonical
             assert "content" not in item
@@ -554,7 +554,7 @@ async def exercise(database: Path):
 
 
 def main():
-    with TemporaryDirectory(prefix="task-mcp-demo-") as temporary:
+    with TemporaryDirectory(prefix="simtask-demo-") as temporary:
         asyncio.run(exercise(Path(temporary) / "tasks.sqlite3"))
 
 

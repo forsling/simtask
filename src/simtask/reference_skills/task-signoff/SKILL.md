@@ -1,6 +1,6 @@
 ---
 name: task-signoff
-description: Walk the user through a reviewed task result and record their verdict. Use in projects using Task MCP for "sign off X", "approve X" or "reject X".
+description: Walk the user through a reviewed task result and record their verdict. Use in projects using simtask for "sign off X", "approve X" or "reject X".
 ---
 
 # Task sign-off

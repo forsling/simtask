@@ -8,8 +8,8 @@ while preparing or reviewing this branch. Apply only after the user approves a
 rollout window and the reviewed development code is merged to `main`.
 
 The combined development target is protocol **16**, database schema **11** and
-skill catalog **2.0.0**, as defined in `src/task_mcp/runtime.py`,
-`src/task_mcp/store.py` and `src/task_mcp/reference.py`. Do not infer the live
+skill catalog **2.0.0**, as defined in `src/simtask/runtime.py`,
+`src/simtask/store.py` and `src/simtask/reference.py`. Do not infer the live
 runtime or database revision from these branch files. Follow the migration and
 restart requirements in [docs/reference.md](../reference.md#notes)
 and [DESIGN.md](../../DESIGN.md), and the client process/catalog checks in
@@ -40,7 +40,7 @@ symlinked from `~/.agents/skills`), `grill-me` (a real directory in both
 places) and both `synced/` directories.
 
 ```sh
-SRC=/path/to/task-mcp/src/task_mcp/reference_skills
+SRC=/path/to/simtask/src/simtask/reference_skills
 for name in superdevloop task-signoff task-capture task-design; do
   mkdir -p "$HOME/.agents/skills/$name"
   install -m 0644 "$SRC/$name/SKILL.md" "$HOME/.agents/skills/$name/SKILL.md"
@@ -79,19 +79,19 @@ deliberately recognises that older gate phrase.
 
 ## 4. Replace this project's AGENTS.md
 
-Replace the untracked `/path/to/task-mcp/AGENTS.md` with
+Replace the untracked `/path/to/simtask/AGENTS.md` with
 `AGENTS.md.proposed` (next to this file). The old file restated workflow rules
 that now live once in tool descriptions and skills. The edits proposed in the
 historical tool-trim notes (the sign-off bullet and the group/membership
 bullet) are superseded: the approve-without-review rule
 is in `signoff_task`'s description and group membership is in the
 `add_to_workstream`/`remove_from_workstream` descriptions. The one project fact
-kept from the old file beyond paths is "track work in Task MCP, not in
+kept from the old file beyond paths is "track work in simtask, not in
 TASKS.md/BACKLOG.md/ARCHIVE.md".
 
 ```sh
-cp /path/to/task-mcp/docs/rollout/AGENTS.md.proposed \
-   /path/to/task-mcp/AGENTS.md
+cp /path/to/simtask/docs/rollout/AGENTS.md.proposed \
+   /path/to/simtask/AGENTS.md
 ```
 
 ## 5. Coordinated migration and reconnect
@@ -142,5 +142,5 @@ clients; restarting old code against schema11 is not a rollback.
 Existing briefs keep their `Feature design required (feature-design):`
 questions; task-design treats them like the new `(task-design)` prefix, so no
 question rewrite is needed. `export_workstream` remains CLI-only
-(`task-mcp --export-workstream WORKSTREAM_ID`); runtime identity is the
+(`simtask --export-workstream WORKSTREAM_ID`); runtime identity is the
 `runtime` block of every `init` response.

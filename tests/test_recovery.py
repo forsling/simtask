@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
+from simtask.store import DATABASE_SCHEMA_REVISION, Store, TaskError
 
 
 def setup(tmp_path):

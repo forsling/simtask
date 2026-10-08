@@ -40,11 +40,11 @@ def _section(lines, title, text, level=4):
 def render_markdown(project, workstream, tasks, groups, scoped_count, include_closed):
     """Render a consistent, already-selected snapshot in workstream task order."""
     lines = [
-        "# Task MCP workstream export",
+        "# simtask workstream export",
         "",
         f"Format: {FORMAT}",
         "",
-        "Snapshot only. Editing this document does not update Task MCP.",
+        "Snapshot only. Editing this document does not update simtask.",
         "",
         f"- Project: {_inline(project['name'])} (`{project['id']}`)",
         f"- Project path: {_inline(project['canonical_path'])}",

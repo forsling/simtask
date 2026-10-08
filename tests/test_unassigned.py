@@ -2,8 +2,8 @@
 
 import pytest
 
-from task_mcp.store import Store, TaskError
-from task_mcp.viewer import APP_PATH, dispatch
+from simtask.store import Store, TaskError
+from simtask.viewer import APP_PATH, dispatch
 
 
 def revision(store, task_id):

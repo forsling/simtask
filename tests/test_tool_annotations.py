@@ -3,8 +3,8 @@
 import asyncio
 import sqlite3
 
-from task_mcp.server import create_server
-from task_mcp.store import Store
+from simtask.server import create_server
+from simtask.store import Store
 
 # These calls persist audit events or append domain entities, so they are writes
 # even when their business effect is observational or append-only.

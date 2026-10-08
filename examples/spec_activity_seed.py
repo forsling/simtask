@@ -1,14 +1,14 @@
 """A disposable database for checking task details' Spec and Activity tabs.
 
 Copies the live database with SQLite's backup API (the source is opened read-only,
-mode=ro) and adds seeded tasks to the copy only, in the task-mcp project: one awaiting
+mode=ro) and adds seeded tasks to the copy only, in the simtask project: one awaiting
 sign-off with results in two workstreams and a superseded specification, one whose
 current result was sent back and sits below 60 newer entries, and one completed. It
 prints the IDs to open, with the busiest real group and an imported task of the copy.
 
-    python examples/spec_activity_seed.py COPY --copy-from ~/.local/share/task-mcp/tasks.sqlite3
-    TASK_MCP_DB=COPY ./run.sh          # open the printed link; stop with
-    TASK_MCP_DB=COPY ./run.sh --stop   # (never plain ./run.sh --stop: that is the live viewer)
+    python examples/spec_activity_seed.py COPY --copy-from ~/.local/share/simtask/tasks.sqlite3
+    SIMTASK_DB=COPY ./run.sh          # open the printed link; stop with
+    SIMTASK_DB=COPY ./run.sh --stop   # (never plain ./run.sh --stop: that is the live viewer)
 
     python examples/spec_activity_seed.py COPY --add-question TASK TEXT
 
@@ -22,7 +22,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from task_mcp.store import Store, default_database
+from simtask.store import Store, default_database
 
 
 def copy_database(source, copy):
@@ -89,7 +89,7 @@ def main():
     copy_database(args.copy_from, copy)
     store = Store(copy, actor="seed")
     project = next(
-        p for p in store.list_projects()["items"] if p["canonical_path"].endswith("/task-mcp")
+        p for p in store.list_projects()["items"] if p["canonical_path"].endswith("/simtask")
     )
     streams = [
         w

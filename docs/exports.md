@@ -17,9 +17,9 @@ The CLI writes the document to stdout. The underlying Store export also returns
 `format` and `sha256`, the SHA-256 of the UTF-8 content including its final newline:
 
 ```sh
-task-mcp --export-workstream wst_your_workstream_id
-task-mcp --export-workstream wst_your_workstream_id --exclude-closed
-task-mcp --export-workstream wst_your_workstream_id --export-format legacy
+simtask --export-workstream wst_your_workstream_id
+simtask --export-workstream wst_your_workstream_id --exclude-closed
+simtask --export-workstream wst_your_workstream_id --export-format legacy
 ```
 
 `--export-format` and `--exclude-closed` require `--export-workstream`. To save
@@ -70,7 +70,7 @@ prerequisite changes can change the report even when local tasks do not change.
 
 The report is a selected view, not a complete backup: excluded tasks, other
 workstreams' scopes and the full audit trail are not included. Editing it does
-not update Task MCP, and there is no import or synchronization mechanism.
+not update simtask, and there is no import or synchronization mechanism.
 
 The default output version changed from `task-mcp/v1` to `task-mcp/v5`. Existing
 consumers relying on the old headings or embedded JSON must request `legacy`.

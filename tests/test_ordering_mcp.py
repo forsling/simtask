@@ -12,8 +12,8 @@ def test_sdk_ordered_prefix_catalog_tokens_and_independent_lists(tmp_path):
     database = tmp_path / "order.sqlite3"
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database)],
-        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+        args=["-m", "simtask", "--db", str(database)],
+        env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
     )
 
     async def exercise():

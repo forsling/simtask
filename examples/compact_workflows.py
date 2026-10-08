@@ -15,8 +15,8 @@ async def exercise(database):
     root = Path(__file__).resolve().parents[1]
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database), "--actor", "synthetic-compact-trace"],
-        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+        args=["-m", "simtask", "--db", str(database), "--actor", "synthetic-compact-trace"],
+        env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
     )
     trace = []
     report = {
@@ -425,7 +425,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    with TemporaryDirectory(prefix="task-mcp-compact-") as directory:
+    with TemporaryDirectory(prefix="simtask-compact-") as directory:
         report = asyncio.run(exercise(Path(directory) / "tasks.sqlite3"))
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:

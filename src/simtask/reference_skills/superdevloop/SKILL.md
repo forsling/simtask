@@ -1,6 +1,6 @@
 ---
 name: superdevloop
-description: Implement and independently review workstream tasks one at a time, with a fresh implementer and a fresh reviewer for each. Use in projects using Task MCP when the user asks to work through a workstream.
+description: Implement and independently review workstream tasks one at a time, with a fresh implementer and a fresh reviewer for each. Use in projects using simtask when the user asks to work through a workstream.
 ---
 
 # Superdevloop

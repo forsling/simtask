@@ -10,16 +10,16 @@ from pathlib import Path
 
 import pytest
 
-import task_mcp.store as store_module
-from task_mcp.server import create_server
-from task_mcp.store import (
+import simtask.store as store_module
+from simtask.server import create_server
+from simtask.store import (
     ACTIVITY_HIDDEN,
     ACTIVITY_KINDS,
     ACTIVITY_PAGE,
     Store,
     TaskError,
 )
-from task_mcp.viewer import dispatch
+from simtask.viewer import dispatch
 
 SOURCE = Path(store_module.__file__).parent
 EVENTS_INSERT = re.compile(r"INSERT\s+(?:OR\s+\w+\s+)?INTO\s+events\b", re.IGNORECASE)

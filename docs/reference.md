@@ -1,9 +1,9 @@
-# Task MCP reference
+# simtask reference
 
 The complete behaviour notes, section by section. The [README](../README.md) is the short version.
 
 
-Task MCP is a local, opt-in task-state service for coding workflows. It stores
+simtask is a local, opt-in task-state service for coding workflows. It stores
 project tasks, workstream scopes, implementation attempts, review and human
 sign-off in a private SQLite database. It exposes MCP primitives over stdio;
 agents may use those primitives directly or follow the bundled reference
@@ -26,18 +26,18 @@ python3 -m venv .venv
 
 The demo uses a disposable database and a real subprocess MCP stdio connection.
 It records only synthetic decisions. The configured executable for a client is
-`/path/to/task-mcp/.venv/bin/task-mcp`; set `TASK_MCP_ACTOR` to a
+`/path/to/simtask/.venv/bin/simtask`; set `SIMTASK_ACTOR` to a
 descriptive attribution label if useful. The default database is
-`$XDG_DATA_HOME/task-mcp/tasks.sqlite3`, falling back to
-`~/.local/share/task-mcp/tasks.sqlite3`. Override with `TASK_MCP_DB` or `--db`.
+`$XDG_DATA_HOME/simtask/tasks.sqlite3`, falling back to
+`~/.local/share/simtask/tasks.sqlite3`. Override with `SIMTASK_DB` or `--db`.
 No network listener is needed for stdio. Connect this command in each client's own MCP
-configuration; Task MCP does not install its connection.
+configuration; simtask does not install its connection.
 
 ## Runtime identity and reconnecting
 
 Every successful `init` response includes the server's runtime identity under
 `runtime`. It reports package version, a startup-frozen SHA-256 source identifier,
-Task MCP protocol/schema revision, process startup timestamp and PID, interpreter
+simtask protocol/schema revision, process startup timestamp and PID, interpreter
 and package paths, and the database's persisted schema revision. Use it after a
 server update to verify which runtime the client actually reached.
 
@@ -54,27 +54,27 @@ An optional browser viewer works without an agent or model. It shows and steers;
 agents write and decide with you. The quickest
 way is `./run.sh`, which starts the viewer (or reuses the running one) and prints
 its link; `./run.sh --restart` and `./run.sh --stop` restart or stop it, and
-`TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh` selects another database. From a dev
+`SIMTASK_DB=/path/tasks.sqlite3 ./run.sh` selects another database. From a dev
 worktree, `./run.sh --dev` runs a separate viewer on a copy of the live database
 (see the README's development section). A viewer on any database other than the
-live one (`task_mcp.store.live_database()`, the user data path; a dev copy,
-`TASK_MCP_DB` or `--db` select another) shows a `DEV` badge in its header on
+live one (`simtask.store.live_database()`, the user data path; a dev copy,
+`SIMTASK_DB` or `--db` select another) shows a `DEV` badge in its header on
 every view, with the database path in the badge's tooltip, and its tab title
 starts with `[DEV]`; the server decides from its database path and says so in
 its `/api/ping` answer (`dev`, `database`). The live viewer shows nothing new. The script wraps:
 
 ```sh
-.venv/bin/task-mcp ui
+.venv/bin/simtask ui
 # Select a different database explicitly at launch:
-.venv/bin/task-mcp ui --db /absolute/path/tasks.sqlite3
+.venv/bin/simtask ui --db /absolute/path/tasks.sqlite3
 # Stop that database's viewer:
-.venv/bin/task-mcp ui --db /absolute/path/tasks.sqlite3 --stop
+.venv/bin/simtask ui --db /absolute/path/tasks.sqlite3 --stop
 ```
 
 To reach the viewer from another device, run `./run.sh --tailscale` on the
 machine that holds the database. It starts or reuses the viewer on a fixed
-loopback port (`TASK_MCP_TAILSCALE_PORT`, default 8787; `--dev --tailscale`
-uses `TASK_MCP_DEV_TAILSCALE_PORT`, default 8788), passes `task-mcp ui` that
+loopback port (`SIMTASK_TAILSCALE_PORT`, default 8787; `--dev --tailscale`
+uses `SIMTASK_DEV_TAILSCALE_PORT`, default 8788), passes `simtask ui` that
 port and the public origin `https://<Self.DNSName>:<port>` (`http` when
 `tailscale status --json` lists no CertDomains, that is, HTTPS certificates are
 not enabled for the tailnet), makes sure `tailscale serve --bg --https=<port>
@@ -87,7 +87,7 @@ required. `--tailscale --stop` removes that port's mapping (`tailscale serve
 `--tailscale` cannot be combined with `--remote`.
 
 For a machine without Tailscale, run
-`./run.sh --remote [host]` (the host defaults to `$TASK_MCP_REMOTE_HOST`). Over SSH it runs
+`./run.sh --remote [host]` (the host defaults to `$SIMTASK_REMOTE_HOST`). Over SSH it runs
 `run.sh` from the same checkout path on the host, which starts or reuses that
 viewer with the host's default database, then opens or reuses an SSH tunnel from
 a free `127.0.0.1` port here to the viewer's loopback port there and prints a
@@ -95,9 +95,9 @@ local link with the token. Both ends stay on loopback. `--remote [host] --restar
 restarts the remote viewer (new port, same token) and its tunnel; `--remote [host]
 --stop` closes the tunnel and stops the remote viewer. A live tunnel is reused
 only while it still forwards to the viewer's current port. Tunnel state (an ssh
-control socket) lives under `$XDG_RUNTIME_DIR/task-mcp/`. An unreachable host or
+control socket) lives under `$XDG_RUNTIME_DIR/simtask/`. An unreachable host or
 a host without the checkout and `.venv` is an error, with no local fallback, and
-`TASK_MCP_DB` cannot be combined with `--remote`.
+`SIMTASK_DB` cannot be combined with `--remote`.
 
 Open the private link printed by the command. The address bar then shows a
 token-free location path such as `/w/1c4684b6/t/id/readable-task-ids` (workstream
@@ -202,7 +202,7 @@ the workflow's required user decisions or human sign-off.
 ## Session init and workstreams
 
 The stdio server automatically collects bounded private usage traces for offline
-evaluation. See [usage traces](usage-traces.md) for `task-mcp trace-report`,
+evaluation. See [usage traces](usage-traces.md) for `simtask trace-report`,
 capture/retention settings and what the measurements can establish.
 
 Call `init` with the absolute path of the target checkout and its branch, or an
@@ -334,7 +334,7 @@ groups, workstreams and projects it concerns. The title (1 to 120 characters)
 says what the note is about, so an agent can judge relevance without reading the
 text (1 to 4,000 characters). Rules for a repository belong in committed files
 such as AGENTS.md, personal rules for every repository in user-level files, and
-Task MCP workflow rules in the skills.
+simtask workflow rules in the skills.
 
 ```text
 create_note(title="Staging deploy and rollback",
@@ -795,7 +795,7 @@ gate; the design skill reads their details as well as tasks in `unresolved_items
 Ordinary proposals and unrelated blockers still use `proposal-review`.
 
 The canonical reference skill files are packaged under
-`src/task_mcp/reference_skills/`. `get_default_skills()` returns a names/versions/hashes/descriptions index;
+`src/simtask/reference_skills/`. `get_default_skills()` returns a names/versions/hashes/descriptions index;
 `get_default_skills(name="task-design")` returns that complete skill in one call.
 The skills are `init`, `task-capture`, `task-design`, `proposal-review`,
 `superdevloop` and `task-signoff`. MCP startup instructions name them and each
@@ -875,7 +875,7 @@ is not authenticated. `list_events` supports a stable pagination ceiling.
 
 ## Text exports
 
-Exports are a CLI surface, not an MCP tool. `task-mcp --export-workstream
+Exports are a CLI surface, not an MCP tool. `simtask --export-workstream
 WORKSTREAM_ID` prints a human-readable Markdown snapshot (`task-mcp/v5`); the
 underlying Store export also returns its SHA-256 hash.
 It starts with project/checkout identity and an ordered workflow overview, then
@@ -888,9 +888,9 @@ The output is deterministic for unchanged state and is export-only: editing it
 does not update the service.
 
 ```sh
-.venv/bin/task-mcp --export-workstream wst_your_workstream_id
-.venv/bin/task-mcp --export-workstream wst_your_workstream_id --exclude-closed
-.venv/bin/task-mcp --export-workstream wst_your_workstream_id --export-format legacy
+.venv/bin/simtask --export-workstream wst_your_workstream_id
+.venv/bin/simtask --export-workstream wst_your_workstream_id --exclude-closed
+.venv/bin/simtask --export-workstream wst_your_workstream_id --export-format legacy
 ```
 
 `--exclude-closed` omits done and dropped tasks, not deferred tasks. The previous

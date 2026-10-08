@@ -6,7 +6,7 @@ from threading import Barrier
 
 import pytest
 
-from task_mcp.store import SCHEMA, Store, TaskError, timestamp
+from simtask.store import SCHEMA, Store, TaskError, timestamp
 
 
 def contexts(store, tmp_path):

@@ -3,8 +3,8 @@
 import tempfile
 from pathlib import Path
 
-from task_mcp.store import Store
-from task_mcp.viewer import launch_viewer
+from simtask.store import Store
+from simtask.viewer import launch_viewer
 
 
 def seed(path):
@@ -99,8 +99,8 @@ def seed(path):
 
 
 if __name__ == "__main__":
-    path = Path(tempfile.mkdtemp(prefix="task-mcp-viewer-demo-")) / "tasks.sqlite3"
+    path = Path(tempfile.mkdtemp(prefix="simtask-viewer-demo-")) / "tasks.sqlite3"
     seed(path)
     print(f"Disposable database: {path}")
     print(launch_viewer(path)["url"])
-    print(f"Stop: task-mcp ui --db {path} --stop")
+    print(f"Stop: simtask ui --db {path} --stop")

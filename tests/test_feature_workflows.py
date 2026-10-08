@@ -2,7 +2,7 @@
 
 import pytest
 
-from task_mcp.store import Store
+from simtask.store import Store
 
 
 @pytest.fixture

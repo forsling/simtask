@@ -1,16 +1,16 @@
 # Local task workspace
 
-Run `task-mcp ui` and open the printed private link. This works independently of
+Run `simtask ui` and open the printed private link. This works independently of
 any MCP host or model. The browser shows and steers: you read tasks, ask
 questions, save quick ideas, keep notes, change workstreams, reorder and defer,
 resume or drop work there. Agents write tasks and record results, reviews and
 decisions with you; apart from quick ideas and notes, the browser creates, edits
 and signs off nothing. `--db /absolute/path/tasks.sqlite3` selects a database at
-launch; the default follows `TASK_MCP_DB`, then `XDG_DATA_HOME`, then the normal
+launch; the default follows `SIMTASK_DB`, then `XDG_DATA_HOME`, then the normal
 user data directory. The browser cannot select another database. The MCP
 `open_task_viewer` tool explicitly starts/reuses the same viewer for its Store
 and returns the link. No browser is launched automatically. On any database other
-than the live one (a `./run.sh --dev` copy, `TASK_MCP_DB` or `--db`) the
+than the live one (a `./run.sh --dev` copy, `SIMTASK_DB` or `--db`) the
 header shows a `DEV` badge on every view, with the database path in its tooltip,
 and the tab title starts with `[DEV]`.
 
@@ -448,7 +448,7 @@ cannot expose newer controls through an older running backend. After updating
 the code, stop and relaunch the viewer to load the backend and UI together.
 
 The detached process outlives the launching terminal or stdio session. Stop it
-with the confirmed **Stop viewer** action, or `task-mcp ui --db PATH --stop`.
+with the confirmed **Stop viewer** action, or `simtask ui --db PATH --stop`.
 Stopping the browser companion does not stop the MCP stdio server. Merely
 closing a tab does not stop the listener. No startup/login hook, service or
 Codex setting is installed or changed by the launcher; a systemd user service

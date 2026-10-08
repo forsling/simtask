@@ -1,0 +1,4 @@
+#!/bin/sh
+# Emergency laptop MCP selection: deliberately imports nothing and opens no DB.
+printf '%s\n' 'simtask is unavailable: the only live task database is on simon-lws.' 'Reconnect to the workstation over SSH. Local database fallback is disabled.' >&2
+exit 1

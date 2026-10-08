@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-# Bump when the public Task MCP tool/result contract changes.
+# Bump when the public simtask tool/result contract changes.
 # This is the application schema, independent of the negotiated MCP wire version.
 PROTOCOL_SCHEMA_REVISION = 18
 PROCESS_STARTED_AT = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -32,7 +32,7 @@ def source_identifier(root: Path) -> str:
 def _identity() -> dict:
     root = Path(__file__).resolve().parent
     try:
-        package_version = version("task-mcp")
+        package_version = version("simtask")
     except PackageNotFoundError:
         package_version = "unknown (package metadata unavailable)"
     return {

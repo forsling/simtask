@@ -17,7 +17,7 @@ SKILLS = (
 def default_skills(name=None):
     if name is not None and name not in SKILLS:
         raise ValueError("unknown_skill: use a name from the skill index")
-    root = files("task_mcp").joinpath("reference_skills")
+    root = files("simtask").joinpath("reference_skills")
     items = []
     for skill_name in SKILLS:
         if name is not None and skill_name != name:

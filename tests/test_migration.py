@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from task_mcp.store import DATABASE_SCHEMA_REVISION, SCHEMA, Store
+from simtask.store import DATABASE_SCHEMA_REVISION, SCHEMA, Store
 
 PROVENANCE_COLUMNS = ("source", "user_request", "acceptance_basis")
 

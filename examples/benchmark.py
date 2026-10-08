@@ -14,7 +14,7 @@ from time import perf_counter_ns
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
-from task_mcp.store import Store
+from simtask.store import Store
 
 
 def snapshot(source: Path | None, target: Path):
@@ -100,7 +100,7 @@ def prepare(database, project, workstream):
 
 
 async def run(args):
-    with TemporaryDirectory(prefix="task-mcp-benchmark-", dir=args.work_dir) as directory:
+    with TemporaryDirectory(prefix="simtask-benchmark-", dir=args.work_dir) as directory:
         root = Path(directory)
         report = {
             "samples_per_operation": args.samples,
@@ -127,13 +127,13 @@ async def run(args):
                     command=sys.executable,
                     args=[
                         "-m",
-                        "task_mcp",
+                        "simtask",
                         "--db",
                         str(database),
                         "--actor",
                         "synthetic-benchmark",
                     ],
-                    env={"PYTHONPATH": str(source_root), "TASK_MCP_DB": str(database)},
+                    env={"PYTHONPATH": str(source_root), "SIMTASK_DB": str(database)},
                 )
                 async with Client(server, read_timeout_seconds=30) as client:
                     startup = (perf_counter_ns() - start) / 1e6

@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-from task_mcp.server import create_server
-from task_mcp.store import CARD_INCLUDE_GROUPS, Store, TaskError
-from task_mcp.viewer import dispatch
+from simtask.server import create_server
+from simtask.store import CARD_INCLUDE_GROUPS, Store, TaskError
+from simtask.viewer import dispatch
 
 SLIM_KEYS = {
     "id",

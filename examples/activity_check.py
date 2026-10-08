@@ -3,7 +3,7 @@
 The source database is only ever opened read-only (mode=ro) and copied with SQLite's
 backup API; every read below runs against the copy, which gains its own audit events.
 
-    python examples/activity_check.py COPY --copy-from ~/.local/share/task-mcp/tasks.sqlite3
+    python examples/activity_check.py COPY --copy-from ~/.local/share/simtask/tasks.sqlite3
     python examples/activity_check.py COPY [TASK_ID ...] [--show 20]
 
 With no task IDs it checks an imported task, the busiest task and the busiest group.
@@ -18,8 +18,8 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from task_mcp.store import Store
-from task_mcp.viewer import dispatch
+from simtask.store import Store
+from simtask.viewer import dispatch
 
 
 def copy_database(source, copy):

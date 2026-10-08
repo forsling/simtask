@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-import task_mcp.store
-from task_mcp.store import Store
+import simtask.store
+from simtask.store import Store
 
 REPO = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"http://127\.0\.0\.1:(\d+)/#([A-Za-z0-9_-]+)")
@@ -34,22 +34,22 @@ def remote(tmp_path):
     bin_dir.mkdir()
     shutil.copy(REPO / "tests/fake_ssh.py", bin_dir / "ssh")
     (bin_dir / "ssh").chmod(0o755)
-    env = {k: v for k, v in os.environ.items() if k != "TASK_MCP_DB"}
+    env = {k: v for k, v in os.environ.items() if k != "SIMTASK_DB"}
     env.update(
         PATH=f"{bin_dir}:{env['PATH']}",
         XDG_RUNTIME_DIR=str(tmp_path / "run"),
         FAKE_SSH_LOG=str(tmp_path / "ssh.log"),
         FAKE_REMOTE_DB=str(tmp_path / "remote.sqlite3"),
         FAKE_LOCAL_REPO=str(REPO),
-        TASK_MCP_REMOTE_HOST="example-host",
+        SIMTASK_REMOTE_HOST="example-host",
     )
     yield env, tmp_path
-    pid = tmp_path / "run/task-mcp/remote-example-host.sock.pid"
+    pid = tmp_path / "run/simtask/remote-example-host.sock.pid"
     if pid.exists():
         os.kill(int(pid.read_text()), signal.SIGKILL)
     if Path(env["FAKE_REMOTE_DB"] + ".viewer.json").exists():
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--stop", "--db", env["FAKE_REMOTE_DB"]],
+            [REPO / ".venv/bin/simtask", "ui", "--stop", "--db", env["FAKE_REMOTE_DB"]],
             capture_output=True,
         )
 
@@ -124,7 +124,7 @@ def test_remote_viewer_through_tunnel(remote):
     assert len(tunnels(tmp_path)) == 1
 
     # A dead tunnel that left its control socket behind is replaced.
-    socket = tmp_path / "run/task-mcp/remote-example-host.sock"
+    socket = tmp_path / "run/simtask/remote-example-host.sock"
     os.kill(int(Path(f"{socket}.pid").read_text()), signal.SIGKILL)
     assert ping(port, token) is None
     port, token = link(run(env, "--remote"))
@@ -154,16 +154,16 @@ def test_remote_errors(remote):
     (tmp_path / "empty").mkdir()
     result = run({**env, "FAKE_REMOTE_REPO": str(tmp_path / "empty")}, "--remote")
     assert result.returncode == 97
-    expected = "task-mcp is not installed on example-host: expected a checkout with .venv at "
+    expected = "simtask is not installed on example-host: expected a checkout with .venv at "
     assert expected + str(REPO) in result.stderr
-    assert "Task MCP viewer" not in result.stdout and not tunnels_or_empty(tmp_path)
+    assert "simtask viewer" not in result.stdout and not tunnels_or_empty(tmp_path)
 
-    no_host = {k: v for k, v in env.items() if k != "TASK_MCP_REMOTE_HOST"}
+    no_host = {k: v for k, v in env.items() if k != "SIMTASK_REMOTE_HOST"}
     result = run(no_host, "--remote")
-    assert result.returncode == 2 and "set TASK_MCP_REMOTE_HOST" in result.stderr
+    assert result.returncode == 2 and "set SIMTASK_REMOTE_HOST" in result.stderr
 
-    result = run({**env, "TASK_MCP_DB": str(tmp_path / "local.sqlite3")}, "--remote")
-    assert result.returncode == 2 and "TASK_MCP_DB selects a local database" in result.stderr
+    result = run({**env, "SIMTASK_DB": str(tmp_path / "local.sqlite3")}, "--remote")
+    assert result.returncode == 2 and "SIMTASK_DB selects a local database" in result.stderr
     assert not (tmp_path / "local.sqlite3").exists()
 
 
@@ -211,13 +211,13 @@ def test_argument_checks(remote, args):
 
 
 def test_local_viewer_unchanged(tmp_path):
-    env = {**os.environ, "TASK_MCP_DB": "local.sqlite3"}
+    env = {**os.environ, "SIMTASK_DB": "local.sqlite3"}
     started = subprocess.run(
         ["bash", str(REPO / "run.sh")], cwd=tmp_path, env=env, capture_output=True, text=True
     )
     try:
         port, token = link(started)
-        assert started.stdout.startswith("Task MCP viewer: http://127.0.0.1:")
+        assert started.stdout.startswith("simtask viewer: http://127.0.0.1:")
         assert (tmp_path / "local.sqlite3.viewer.json").exists()
         assert ping(port, token) == 200
     finally:
@@ -238,7 +238,7 @@ def local_viewers(tmp_path):
     checkout.mkdir()
     shutil.copy(REPO / "run.sh", checkout / "run.sh")
     (checkout / ".venv").symlink_to(REPO / ".venv")
-    env = {k: v for k, v in os.environ.items() if k != "TASK_MCP_DB"}
+    env = {k: v for k, v in os.environ.items() if k != "SIMTASK_DB"}
     env.update(
         HOME=str(tmp_path / "home"),
         XDG_DATA_HOME=str(tmp_path / "data"),
@@ -250,7 +250,7 @@ def local_viewers(tmp_path):
     for state in tmp_path.rglob("*.sqlite3.viewer.json"):
         database = str(state).removesuffix(".viewer.json")
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--stop", "--db", database],
+            [REPO / ".venv/bin/simtask", "ui", "--stop", "--db", database],
             env=env,
             capture_output=True,
             timeout=60,
@@ -272,7 +272,7 @@ def test_custom_database_stop_hint_leaves_default_viewer_running(local_viewers, 
     started = subprocess.run(
         ["./run.sh"],
         cwd=checkout,
-        env={**env, "TASK_MCP_DB": selected},
+        env={**env, "SIMTASK_DB": selected},
         capture_output=True,
         text=True,
         timeout=60,
@@ -280,11 +280,11 @@ def test_custom_database_stop_hint_leaves_default_viewer_running(local_viewers, 
     custom_link = link(started)
     assert alive(*default_link) and alive(*custom_link)
     command = re.search(r"Stop it with (.+)\.\)", started.stdout).group(1)
-    assert command.startswith("TASK_MCP_DB="), started.stdout
+    assert command.startswith("SIMTASK_DB="), started.stdout
     assert command.endswith(" ./run.sh --stop")
     assert Path(str(database) + ".viewer.json").exists()
 
-    # A fresh shell has no TASK_MCP_DB; the printed command must select it itself.
+    # A fresh shell has no SIMTASK_DB; the printed command must select it itself.
     stopped = subprocess.run(
         ["bash", "-c", command],
         cwd=checkout,
@@ -308,7 +308,7 @@ def dev(tmp_path):
     checkout.mkdir()
     shutil.copy(REPO / "run.sh", checkout / "run.sh")
     (checkout / ".venv").symlink_to(REPO / ".venv")
-    live = tmp_path / "data/task-mcp/tasks.sqlite3"
+    live = tmp_path / "data/simtask/tasks.sqlite3"
     Store(live).init(
         str(tmp_path / "repo"),
         "main",
@@ -316,13 +316,13 @@ def dev(tmp_path):
         action="create_project",
         confirmed=True,
     )
-    env = {k: v for k, v in os.environ.items() if k != "TASK_MCP_DB"}
+    env = {k: v for k, v in os.environ.items() if k != "SIMTASK_DB"}
     env["XDG_DATA_HOME"] = str(tmp_path / "data")
     yield env, checkout, live
     for database in (live, checkout / ".dev/tasks.sqlite3"):
         if Path(str(database) + ".viewer.json").exists():
             subprocess.run(
-                [REPO / ".venv/bin/task-mcp", "ui", "--stop", "--db", database],
+                [REPO / ".venv/bin/simtask", "ui", "--stop", "--db", database],
                 capture_output=True,
             )
 
@@ -364,7 +364,7 @@ def test_dev_viewer_on_a_copy(dev, monkeypatch, tmp_path):
     live_state = Path(str(live) + ".viewer.json")
     live_port, live_token = link(
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--db", live], capture_output=True, text=True
+            [REPO / ".venv/bin/simtask", "ui", "--db", live], capture_output=True, text=True
         )
     )
     state_before = (live_state.read_bytes(), live_state.stat().st_mtime_ns)
@@ -372,14 +372,14 @@ def test_dev_viewer_on_a_copy(dev, monkeypatch, tmp_path):
 
     result = run_dev(env, checkout)
     port, token = link(result)
-    assert result.stdout.startswith("Task MCP dev viewer: http://127.0.0.1:")
+    assert result.stdout.startswith("simtask dev viewer: http://127.0.0.1:")
     assert f"Dev database: {copy} (fresh copy of {live})" in result.stdout
     assert "Stop it with ./run.sh --dev --stop." in result.stdout
     assert "./run.sh --stop." not in result.stdout
     assert mcp_entry(result.stdout) == {
         "type": "stdio",
-        "command": f"{checkout}/.venv/bin/task-mcp",
-        "env": {"TASK_MCP_DB": str(copy)},
+        "command": f"{checkout}/.venv/bin/simtask",
+        "env": {"SIMTASK_DB": str(copy)},
     }
     # The dev viewer has its own port and token, on the copy, beside the live viewer.
     assert (port, token) != (live_port, live_token)
@@ -390,7 +390,7 @@ def test_dev_viewer_on_a_copy(dev, monkeypatch, tmp_path):
 
     # A server with a newer schema migrates the copy only (the dev viewer, started
     # earlier, keeps serving it).
-    monkeypatch.setattr(task_mcp.store, "DATABASE_SCHEMA_REVISION", user_version(live) + 1)
+    monkeypatch.setattr(simtask.store, "DATABASE_SCHEMA_REVISION", user_version(live) + 1)
     Store(copy)
     assert user_version(copy) == user_version(live) + 1
     assert contents(live) == live_before
@@ -440,7 +440,7 @@ def test_dev_viewer_on_a_copy(dev, monkeypatch, tmp_path):
 def viewer_pid(database):
     """The process serving the viewer on database, found through /proc: the state
     file records its origin and token, not its pid."""
-    tail = ["-m", "task_mcp.viewer", "--serve", "--db", str(database)]
+    tail = ["-m", "simtask.viewer", "--serve", "--db", str(database)]
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
             continue
@@ -513,7 +513,7 @@ def test_dev_creates_venv(dev, tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     # A stand-in python3: "-m venv DIR" installs a stub venv whose python logs its
-    # arguments, answers pip by linking the real task-mcp and otherwise runs the real
+    # arguments, answers pip by linking the real simtask and otherwise runs the real
     # interpreter. Anything else goes straight to the real interpreter.
     real = REPO / ".venv/bin/python"
     stub = tmp_path / "stub-python"
@@ -521,7 +521,7 @@ def test_dev_creates_venv(dev, tmp_path):
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> {log}\n'
         'case "$*" in\n'
-        f'  "-m pip "*) ln -s {real.parent}/task-mcp "$(dirname "$0")/task-mcp" ;;\n'
+        f'  "-m pip "*) ln -s {real.parent}/simtask "$(dirname "$0")/simtask" ;;\n'
         f'  *) exec {real} "$@" ;;\n'
         "esac\n"
     )
@@ -545,20 +545,26 @@ def test_dev_creates_venv(dev, tmp_path):
     assert lines[0] == f"venv .venv in {checkout}"
     assert lines[1] == "-m pip install -q --disable-pip-version-check -e .[dev]"
     # The viewer probe and the copy run through the new venv.
-    assert lines[2].startswith("-c import sys;") and lines[2].endswith(".viewer.json")
-    assert lines[3] == f"- {live} {checkout}/.dev/tasks.sqlite3"
-    assert mcp_entry(result.stdout)["command"] == f"{checkout}/.venv/bin/task-mcp"
+    assert any(
+        line.startswith("-c import sys;") and line.endswith(".viewer.json") for line in lines
+    )
+    assert f"- {live} {checkout}/.dev/tasks.sqlite3" in lines
+    assert mcp_entry(result.stdout)["command"] == f"{checkout}/.venv/bin/simtask"
     assert ping(port, token) == 200 and user_version(checkout / ".dev/tasks.sqlite3") > 0
 
     # With the venv in place the install does not run again.
     stopped = run_dev(env, checkout, "--stop")
-    assert stopped.returncode == 0 and log.read_text().splitlines() == lines
+    assert stopped.returncode == 0
+    after = log.read_text().splitlines()
+    assert after[: len(lines)] == lines
+    assert sum(line.startswith("venv ") for line in after) == 1
+    assert sum(line.startswith("-m pip install ") for line in after) == 1
 
 
-def test_dev_refuses_task_mcp_db(dev):
+def test_dev_refuses_simtask_db(dev):
     env, checkout, live = dev
-    result = run_dev({**env, "TASK_MCP_DB": str(checkout / "other.sqlite3")}, checkout)
-    assert result.returncode == 2 and "unset TASK_MCP_DB" in result.stderr
+    result = run_dev({**env, "SIMTASK_DB": str(checkout / "other.sqlite3")}, checkout)
+    assert result.returncode == 2 and "unset SIMTASK_DB" in result.stderr
     assert not (checkout / ".dev").exists() and not (checkout / "other.sqlite3").exists()
 
 
@@ -570,24 +576,24 @@ def free_port():
 
 @pytest.fixture
 def tailnet(tmp_path):
-    """A stand-in tailscale on PATH, a disposable database through TASK_MCP_DB and a
+    """A stand-in tailscale on PATH, a disposable database through SIMTASK_DB and a
     free fixed port, so the live viewer and the machine's real tailscale are untouched."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     shutil.copy(REPO / "tests/fake_tailscale.py", bin_dir / "tailscale")
     (bin_dir / "tailscale").chmod(0o755)
-    env = {k: v for k, v in os.environ.items() if k != "TASK_MCP_DB"}
+    env = {k: v for k, v in os.environ.items() if k != "SIMTASK_DB"}
     env.update(
         PATH=f"{bin_dir}:{env['PATH']}",
         FAKE_TAILSCALE_LOG=str(tmp_path / "tailscale.log"),
         FAKE_TAILSCALE_STATE=str(tmp_path / "serve.json"),
-        TASK_MCP_DB=str(tmp_path / "local.sqlite3"),
-        TASK_MCP_TAILSCALE_PORT=str(free_port()),
+        SIMTASK_DB=str(tmp_path / "local.sqlite3"),
+        SIMTASK_TAILSCALE_PORT=str(free_port()),
     )
     yield env, tmp_path
-    if Path(env["TASK_MCP_DB"] + ".viewer.json").exists():
+    if Path(env["SIMTASK_DB"] + ".viewer.json").exists():
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--stop", "--db", env["TASK_MCP_DB"]],
+            [REPO / ".venv/bin/simtask", "ui", "--stop", "--db", env["SIMTASK_DB"]],
             capture_output=True,
         )
 
@@ -635,7 +641,7 @@ def through_tailnet(port, token, public_origin):
 
 def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
     env, tmp_path = tailnet
-    port = int(env["TASK_MCP_TAILSCALE_PORT"])
+    port = int(env["SIMTASK_TAILSCALE_PORT"])
     public = f"http://fake-host.tail.ts.net:{port}"
     mapping = {
         "TCP": {str(port): {"HTTP": True}},
@@ -649,13 +655,12 @@ def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
     result = run(env, "--tailscale")
     assert tailnet_link(result)[:3] == ("http", "fake-host.tail.ts.net", port)
     token = tailnet_link(result)[3]
-    assert result.stdout.startswith(f"Task MCP viewer: {public}/#")
+    assert result.stdout.startswith(f"simtask viewer: {public}/#")
     assert f"(http on port {port}, mapping added)" in result.stdout
     assert (
-        f"Stop it with TASK_MCP_DB={env['TASK_MCP_DB']} ./run.sh --tailscale --stop."
-        in result.stdout
+        f"Stop it with SIMTASK_DB={env['SIMTASK_DB']} ./run.sh --tailscale --stop." in result.stdout
     )
-    state = json.loads(Path(env["TASK_MCP_DB"] + ".viewer.json").read_text())
+    state = json.loads(Path(env["SIMTASK_DB"] + ".viewer.json").read_text())
     assert state == {"origin": f"http://127.0.0.1:{port}", "token": token, "public_origin": public}
     assert serve_config(tmp_path) == mapping
     assert tailscale_calls(tmp_path) == [
@@ -700,7 +705,7 @@ def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
     stopped = subprocess.run(
         ["bash", "-c", command],
         cwd=REPO,
-        env={k: v for k, v in env.items() if k != "TASK_MCP_DB"},
+        env={k: v for k, v in env.items() if k != "SIMTASK_DB"},
         capture_output=True,
         text=True,
         timeout=60,
@@ -712,18 +717,18 @@ def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
         ["serve", f"--https={port}", "off"],
     ]
     assert serve_config(tmp_path) == {} and ping(port, new_token) is None
-    assert not Path(env["TASK_MCP_DB"] + ".viewer.json").exists()
+    assert not Path(env["SIMTASK_DB"] + ".viewer.json").exists()
     assert run(env, "--tailscale", "--stop").stdout == "Viewer is not running.\n"
     assert not any(call[0] == "funnel" for call in tailscale_calls(tmp_path))
 
 
 def test_tailscale_errors(tailnet):
     env, tmp_path = tailnet
-    port = env["TASK_MCP_TAILSCALE_PORT"]
+    port = env["SIMTASK_TAILSCALE_PORT"]
     down = run({**env, "FAKE_TAILSCALE_DOWN": "1"}, "--tailscale")
     assert down.returncode == 1 and "tailscale status --json failed" in down.stderr
     assert "doesn't appear to be running" in down.stderr
-    assert not Path(env["TASK_MCP_DB"] + ".viewer.json").exists()
+    assert not Path(env["SIMTASK_DB"] + ".viewer.json").exists()
 
     denied = run({**env, "FAKE_TAILSCALE_DENIED": "1"}, "--tailscale")
     assert denied.returncode == 1 and "Access denied" in denied.stderr
@@ -734,7 +739,7 @@ def test_tailscale_errors(tailnet):
     assert "mapping added)" in run(env, "--tailscale").stdout
     assert run(env, "--tailscale", "--stop").returncode == 0
 
-    bad = run({**env, "TASK_MCP_TAILSCALE_PORT": "80a"}, "--tailscale")
+    bad = run({**env, "SIMTASK_TAILSCALE_PORT": "80a"}, "--tailscale")
     assert bad.returncode == 2 and "must be port numbers" in bad.stderr
     assert tailscale_calls(tmp_path)[-1] == ["serve", f"--http={port}", "off"]
 
@@ -751,8 +756,8 @@ def test_dev_tailscale_uses_its_own_port(dev, tmp_path):
         "PATH": f"{bin_dir}:{env['PATH']}",
         "FAKE_TAILSCALE_LOG": str(tmp_path / "tailscale.log"),
         "FAKE_TAILSCALE_STATE": str(tmp_path / "serve.json"),
-        "TASK_MCP_TAILSCALE_PORT": "1",  # the live port is not the dev viewer's
-        "TASK_MCP_DEV_TAILSCALE_PORT": str(port),
+        "SIMTASK_TAILSCALE_PORT": "1",  # the live port is not the dev viewer's
+        "SIMTASK_DEV_TAILSCALE_PORT": str(port),
     }
     copy = checkout / ".dev/tasks.sqlite3"
     public = f"http://fake-host.tail.ts.net:{port}"
@@ -760,11 +765,11 @@ def test_dev_tailscale_uses_its_own_port(dev, tmp_path):
     result = run_dev(env, checkout, "--tailscale")
     assert tailnet_link(result)[:3] == ("http", "fake-host.tail.ts.net", port)
     token = tailnet_link(result)[3]
-    assert result.stdout.startswith(f"Task MCP dev viewer: {public}/#")
+    assert result.stdout.startswith(f"simtask dev viewer: {public}/#")
     assert f"Dev database: {copy} (fresh copy of {live})" in result.stdout
     assert f"(http on port {port}, mapping added)" in result.stdout
     assert "Stop it with ./run.sh --dev --tailscale --stop." in result.stdout
-    assert mcp_entry(result.stdout)["env"] == {"TASK_MCP_DB": str(copy)}
+    assert mcp_entry(result.stdout)["env"] == {"SIMTASK_DB": str(copy)}
     assert json.loads(Path(str(copy) + ".viewer.json").read_text())["public_origin"] == public
     assert through_tailnet(port, token, public) == 200
     assert list(serve_config(tmp_path)["TCP"]) == [str(port)]
@@ -804,8 +809,8 @@ def service(dev, tmp_path):
         "FAKE_SYSTEMCTL_STATE": str(tmp_path / "systemd"),
         "FAKE_LOGINCTL_LOG": str(tmp_path / "loginctl.log"),
         "FAKE_LOGINCTL_STATE": str(tmp_path / "linger"),
-        "TASK_MCP_TAILSCALE_PORT": str(free_port()),
-        "TASK_MCP_DEV_TAILSCALE_PORT": str(free_port()),
+        "SIMTASK_TAILSCALE_PORT": str(free_port()),
+        "SIMTASK_DEV_TAILSCALE_PORT": str(free_port()),
     }
     yield env, checkout, live
     for pid_file in (tmp_path / "systemd").glob("*.pid"):
@@ -838,12 +843,12 @@ def unit_active(env, unit):
 def unit_text(python, database, port):
     return (
         "[Unit]\n"
-        f"Description=Task MCP viewer on {database} (tailnet port {port})\n"
+        f"Description=simtask viewer on {database} (tailnet port {port})\n"
         "After=network-online.target tailscaled.service\n"
         "Wants=network-online.target\n"
         "\n"
         "[Service]\n"
-        f"ExecStart={python} -m task_mcp.viewer --serve --db {database} --port {port}"
+        f"ExecStart={python} -m simtask.viewer --serve --db {database} --port {port}"
         f" --public-origin http://fake-host.tail.ts.net:{port}\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
@@ -855,9 +860,9 @@ def unit_text(python, database, port):
 
 def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     env, checkout, live = service
-    port = int(env["TASK_MCP_TAILSCALE_PORT"])
+    port = int(env["SIMTASK_TAILSCALE_PORT"])
     public = f"http://fake-host.tail.ts.net:{port}"
-    unit = "task-mcp-viewer.service"
+    unit = "simtask-viewer.service"
     unit_file = tmp_path / "config/systemd/user" / unit
     state = Path(str(live) + ".viewer.json")
 
@@ -873,14 +878,14 @@ def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     # A detached live viewer is running, as today; the service takes over from it.
     detached_port, detached_token = link(
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--db", live], capture_output=True, text=True
+            [REPO / ".venv/bin/simtask", "ui", "--db", live], capture_output=True, text=True
         )
     )
     result = run_checkout("--tailscale", "--install-service")
     scheme, host, link_port, token = tailnet_link(result)
     assert (scheme, link_port) == ("http", port) and token == detached_token
     assert result.stdout.startswith(f"Linger enabled for {os.environ['USER']}:")
-    assert f"Task MCP viewer: {public}/#{token}" in result.stdout
+    assert f"simtask viewer: {public}/#{token}" in result.stdout
     assert f"(http on port {port}, mapping added)" in result.stdout
     assert f"Runs as the systemd user service {unit} (installed as {unit_file})." in result.stdout
     assert "Stop it with ./run.sh --tailscale --stop." in result.stdout
@@ -955,7 +960,7 @@ def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     # With the unit stopped, --stop also ends a detached viewer on the database.
     detached_port, detached_token = link(
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--db", live], capture_output=True, text=True
+            [REPO / ".venv/bin/simtask", "ui", "--db", live], capture_output=True, text=True
         )
     )
     assert run_checkout("--tailscale", "--stop").stdout.startswith(
@@ -964,10 +969,10 @@ def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     assert ping(detached_port, detached_token) is None and not state.exists()
 
     # Starting again goes through the service. A detached viewer that got in first
-    # (task-mcp ui on the live database) is replaced, as it holds the viewer lock.
+    # (simtask ui on the live database) is replaced, as it holds the viewer lock.
     detached_port, detached_token = link(
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--db", live], capture_output=True, text=True
+            [REPO / ".venv/bin/simtask", "ui", "--db", live], capture_output=True, text=True
         )
     )
     started = run_checkout("--tailscale")
@@ -1015,20 +1020,20 @@ def test_install_service_without_linger(service, tmp_path):
         text=True,
         timeout=60,
     )
-    assert tailnet_link(result)[2] == int(env["TASK_MCP_TAILSCALE_PORT"])
+    assert tailnet_link(result)[2] == int(env["SIMTASK_TAILSCALE_PORT"])
     assert "Access denied" in result.stderr
     assert f"loginctl enable-linger {os.environ['USER']} failed" in result.stderr
     assert "Linger enabled" not in result.stdout
-    assert unit_active(env, "task-mcp-viewer.service")
-    assert (tmp_path / "config/systemd/user/task-mcp-viewer.service").exists()
+    assert unit_active(env, "simtask-viewer.service")
+    assert (tmp_path / "config/systemd/user/simtask-viewer.service").exists()
 
     with_db = subprocess.run(
         ["bash", str(checkout / "run.sh"), "--tailscale", "--install-service"],
-        env={**env, "TASK_MCP_DB": str(tmp_path / "other.sqlite3")},
+        env={**env, "SIMTASK_DB": str(tmp_path / "other.sqlite3")},
         capture_output=True,
         text=True,
     )
-    assert with_db.returncode == 2 and "unset TASK_MCP_DB" in with_db.stderr
+    assert with_db.returncode == 2 and "unset SIMTASK_DB" in with_db.stderr
     removed = subprocess.run(
         ["bash", str(checkout / "run.sh"), "--tailscale", "--remove-service"],
         env=env,
@@ -1041,23 +1046,23 @@ def test_install_service_without_linger(service, tmp_path):
 
 def test_dev_install_service_serves_the_copy(service, tmp_path):
     env, checkout, live = service
-    port = int(env["TASK_MCP_DEV_TAILSCALE_PORT"])
+    port = int(env["SIMTASK_DEV_TAILSCALE_PORT"])
     public = f"http://fake-host.tail.ts.net:{port}"
     copy = checkout / ".dev/tasks.sqlite3"
     state = Path(str(copy) + ".viewer.json")
     key = hashlib.sha256(str(checkout).encode()).hexdigest()[:8]
-    unit = f"task-mcp-dev-viewer-checkout-{key}.service"
+    unit = f"simtask-dev-viewer-checkout-{key}.service"
     unit_file = tmp_path / "config/systemd/user" / unit
 
     result = run_dev(env, checkout, "--tailscale", "--install-service")
     token = tailnet_link(result)[3]
     assert tailnet_link(result)[:3] == ("http", "fake-host.tail.ts.net", port)
-    assert f"Task MCP dev viewer: {public}/#{token}" in result.stdout
+    assert f"simtask dev viewer: {public}/#{token}" in result.stdout
     assert f"Dev database: {copy} (fresh copy of {live})" in result.stdout
     assert f"Runs as the systemd user service {unit} (installed as {unit_file})." in result.stdout
     assert f"(http on port {port}, mapping added)" in result.stdout
     assert "Stop it with ./run.sh --dev --tailscale --stop." in result.stdout
-    assert mcp_entry(result.stdout)["env"] == {"TASK_MCP_DB": str(copy)}
+    assert mcp_entry(result.stdout)["env"] == {"SIMTASK_DB": str(copy)}
     assert unit_file.read_text() == unit_text(checkout / ".venv/bin/python", copy, port)
     assert systemctl_calls(env)[-1] == ["--user", "restart", unit] and unit_active(env, unit)
     assert json.loads(state.read_text())["public_origin"] == public
@@ -1118,14 +1123,14 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
     assert f"Dev database: {copy} (fresh copy of {live})" in started.stdout
     assert workstreams(copy) == ["live"] and unit_active(env, unit)
 
-    # A detached viewer on the copy while the unit is stopped (task-mcp ui, or
+    # A detached viewer on the copy while the unit is stopped (simtask ui, or
     # open_task_viewer through the tasks-dev entry): --stop ends it, and a plain run
     # takes it over and starts the unit on the kept copy instead of reusing it.
     stopped = run_dev(env, checkout, "--tailscale", "--stop")
     assert stopped.returncode == 0 and not unit_active(env, unit) and not state.exists()
     detached_port, detached_token = link(
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--db", copy], capture_output=True, text=True
+            [REPO / ".venv/bin/simtask", "ui", "--db", copy], capture_output=True, text=True
         )
     )
     stopped = run_dev(env, checkout, "--tailscale", "--stop")
@@ -1135,7 +1140,7 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
     assert ping(detached_port, detached_token) is None and not state.exists()
     detached_port, detached_token = link(
         subprocess.run(
-            [REPO / ".venv/bin/task-mcp", "ui", "--db", copy], capture_output=True, text=True
+            [REPO / ".venv/bin/simtask", "ui", "--db", copy], capture_output=True, text=True
         )
     )
     Store(copy).init(

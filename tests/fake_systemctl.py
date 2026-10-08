@@ -44,7 +44,7 @@ def pid_of(unit):
         argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
     except (OSError, ValueError):
         return None
-    return pid if "task_mcp.viewer" in argv else None
+    return pid if "simtask.viewer" in argv else None
 
 
 def start(unit):

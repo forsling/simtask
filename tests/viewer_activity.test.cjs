@@ -57,7 +57,7 @@ const context = vm.createContext({
   sessionStorage: {getItem: () => "", setItem() {}}, history: {replaceState() {}, pushState() {}},
   console,
 });
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = code => vm.runInContext(code, context);
 const text = n => descendants(n).map(d => d.textContent).join(" ");

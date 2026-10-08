@@ -60,7 +60,7 @@ Target verification: <actual command and outcome>; limits: <material limits>.
 
 Origin evidence and review remain intact. The new result follows the normal
 project identity, concurrency and full-spec binding checks; factual recording grants no
-workstream membership, resumption or completion and preserves every execution gate. Task MCP
+workstream membership, resumption or completion and preserves every execution gate. simtask
 stores assertions and does not inspect Git or authenticate
 reviewer independence, so callers must establish applicability and record it
 truthfully. No adoption tool, shared working state or automatic review

@@ -13,7 +13,7 @@ const context = vm.createContext({
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
   sessionStorage: {getItem() {return "";}}, history: {replaceState() {}},
 });
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 const run = code => vm.runInContext(code, context);
 run(source.replace(/boot\(\);\s*$/, ""));
 run('markdown = (s) => node("p", s); activity = () => null; icon = () => node("i");');

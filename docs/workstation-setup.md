@@ -1,15 +1,15 @@
-# Task MCP on simon-lws and the laptop
+# simtask on simon-lws and the laptop
 
 The live task database is on simon-lws at
-`~/.local/share/task-mcp/tasks.sqlite3`. Workstation MCP clients use
-`/home/simon/workspace/task-mcp/.venv/bin/task-mcp`. Laptop clients run that
+`~/.local/share/simtask/tasks.sqlite3`. Workstation MCP clients use
+`/home/simon/workspace/simtask/.venv/bin/simtask`. Laptop clients run that
 executable through `ssh -T herdr-server`; an SSH failure makes the tools
 unavailable. The renamed laptop database remains the final migration backup.
 
 This documents the installed personal setup, not a database migration procedure.
 The 2026-10-08 rework did not copy databases, change live MCP configurations,
 restart viewers, or interrupt agent sessions. The original migration evidence
-remains in Task MCP task `tsk_49cd1b5a400f4bc4b873687817078f16`.
+remains in simtask task `tsk_49cd1b5a400f4bc4b873687817078f16`.
 
 ## One source for user skills
 
@@ -62,24 +62,24 @@ scp scripts/sync-agent-skills simbuntu:/home/simon/.local/bin/sync-agent-skills
 
 ## Refusing laptop MCP selection
 
-The laptop has an executable `/home/simon/.local/bin/task-mcp-refuse-local`,
-installed from [`scripts/task-mcp-refuse-local`](../scripts/task-mcp-refuse-local).
+The laptop has an executable `/home/simon/.local/bin/simtask-refuse-local`,
+installed from [`scripts/simtask-refuse-local`](../scripts/simtask-refuse-local).
 It writes a clear refusal to stderr and exits with status 1. It accepts and
-ignores existing arguments, imports no Task MCP code, and never opens a task
+ignores existing arguments, imports no simtask code, and never opens a task
 database. It emits no MCP output and cannot start a local fallback.
 
 To select it in laptop Codex, replace only the `command` line under
 `[mcp_servers.tasks]` in `~/.codex/config.toml` with this exact line:
 
 ```toml
-command = "/home/simon/.local/bin/task-mcp-refuse-local"
+command = "/home/simon/.local/bin/simtask-refuse-local"
 ```
 
 To select it in laptop Claude Code, replace only the `command` property of
 `mcpServers.tasks` in `~/.claude.json` with this exact line:
 
 ```json
-"command": "/home/simon/.local/bin/task-mcp-refuse-local",
+"command": "/home/simon/.local/bin/simtask-refuse-local",
 ```
 
 Keep the existing `args` and other properties. The stub ignores them, including
@@ -91,14 +91,14 @@ selection. To resume SSH, change that one line back to `command = "ssh"`
 Inspect the refusal without opening a database:
 
 ```sh
-ssh -T simbuntu /home/simon/.local/bin/task-mcp-refuse-local
+ssh -T simbuntu /home/simon/.local/bin/simtask-refuse-local
 ```
 
 The expected status is 1, with an explanation that simon-lws holds the only
 live task database. For installation from the workstation checkout:
 
 ```sh
-scp scripts/task-mcp-refuse-local simbuntu:/home/simon/.local/bin/task-mcp-refuse-local
+scp scripts/simtask-refuse-local simbuntu:/home/simon/.local/bin/simtask-refuse-local
 ```
 
 ## Verification limits

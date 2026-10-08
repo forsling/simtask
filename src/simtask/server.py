@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import os
 import sys
 from contextlib import asynccontextmanager
 from functools import wraps
@@ -14,10 +13,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
 
-from task_mcp.reference import default_skills
-from task_mcp.runtime import RUNTIME_IDENTITY
-from task_mcp.store import Store, TaskError, default_database
-from task_mcp.tracing import TraceCollector, TraceConfig, default_trace_directory
+from simtask.compat import setting
+from simtask.reference import default_skills
+from simtask.runtime import RUNTIME_IDENTITY
+from simtask.store import Store, TaskError, default_database
+from simtask.tracing import TraceCollector, TraceConfig, default_trace_directory
 
 
 class TaskPatch(BaseModel):
@@ -80,7 +80,7 @@ def create_server(
                 collector.close()
 
     server = MCPServer(
-        "task-mcp",
+        "simtask",
         version=RUNTIME_IDENTITY["package_version"],
         instructions=(
             "The user directs the work: explicit user instructions override all workflow "
@@ -153,9 +153,9 @@ def create_server(
     @domain_errors
     def open_task_viewer() -> dict[str, Any]:
         """Start or reuse the local browser viewer and editor and return its private link. It
-        outlives this session; stop it in the viewer or with `task-mcp ui --stop`.
+        outlives this session; stop it in the viewer or with `simtask ui --stop`.
         """
-        from task_mcp.viewer import launch_viewer
+        from simtask.viewer import launch_viewer
 
         return launch_viewer(store.path)
 
@@ -673,7 +673,7 @@ def create_server(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local Task MCP v1 server (stdio).")
+    parser = argparse.ArgumentParser(description="Local simtask v1 server (stdio).")
     parser.add_argument("command", nargs="?", choices=("ui", "trace-report"))
     parser.add_argument("--stop", action="store_true", help="Stop the explicit local viewer")
     parser.add_argument(
@@ -686,7 +686,7 @@ def main():
         "its requests are accepted and the printed link uses it",
     )
     parser.add_argument("--db", type=Path, default=default_database())
-    parser.add_argument("--actor", default=os.environ.get("TASK_MCP_ACTOR", "local-agent"))
+    parser.add_argument("--actor", default=setting("ACTOR", "local-agent"))
     parser.add_argument("--export-workstream", metavar="WORKSTREAM_ID")
     parser.add_argument("--export-format", choices=("markdown", "legacy"))
     parser.add_argument("--exclude-closed", action="store_true", help="Omit done/dropped tasks")
@@ -713,7 +713,7 @@ def main():
     args = parser.parse_args()
     trace_directory = args.trace_dir or default_trace_directory(args.db)
     if args.command == "trace-report":
-        from task_mcp.trace_report import analyze, page_report, render
+        from simtask.trace_report import analyze, page_report, render
 
         try:
             report = analyze(
@@ -733,7 +733,7 @@ def main():
         )
         return
     if args.command == "ui":
-        from task_mcp.viewer import launch_viewer, stop_viewer
+        from simtask.viewer import launch_viewer, stop_viewer
 
         if args.export_workstream or args.export_format or args.exclude_closed:
             parser.error("ui cannot be combined with export options")
@@ -747,7 +747,7 @@ def main():
             try:
                 print(launch_viewer(args.db, args.port, args.public_origin)["url"])
             except TaskError as exc:
-                sys.exit(f"task-mcp ui: {exc}")
+                sys.exit(f"simtask ui: {exc}")
             except ValueError as exc:
                 parser.error(str(exc))
         return
@@ -777,6 +777,6 @@ def main():
             parser.error(str(exc))
         create_server(
             store,
-            tracing=not args.no_trace and os.environ.get("TASK_MCP_TRACE", "1") != "0",
+            tracing=not args.no_trace and setting("TRACE", "1") != "0",
             trace_config=trace_config,
         ).run(transport="stdio")

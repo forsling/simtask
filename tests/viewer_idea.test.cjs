@@ -41,7 +41,7 @@ const context = vm.createContext({
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: "", pathname: "/w/aaaa1111"},
   sessionStorage: {getItem: () => ""}, history: {replaceState() {}, pushState(_, __, p) { context.pushed = p; }},
 });
-let source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+let source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 const run = code => vm.runInContext(code, context);
 const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
 const texts = node => descendants(node).map(n => n.textContent).join(" ");

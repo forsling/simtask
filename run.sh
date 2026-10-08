@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the local Task MCP web GUI (or reuse the running one) and print its link.
+# Start the local simtask web GUI (or reuse the running one) and print its link.
 #
 #   ./run.sh            start or reuse the viewer, print the link
 #   ./run.sh --restart  restart it, e.g. after pulling new viewer code
@@ -7,18 +7,18 @@
 #
 #   ./run.sh --tailscale [--restart | --stop]
 #                       the same, published on the tailnet with tailscale serve under this
-#                       machine's MagicDNS name on port $TASK_MCP_TAILSCALE_PORT (8787);
+#                       machine's MagicDNS name on port $SIMTASK_TAILSCALE_PORT (8787);
 #                       --stop also removes the serve mapping. Never Funnel.
 #
 #   ./run.sh --tailscale --install-service
 #                       run that tailnet viewer as a systemd user service that starts at
-#                       boot (task-mcp-viewer.service, linger enabled). Once installed,
+#                       boot (simtask-viewer.service, linger enabled). Once installed,
 #                       ./run.sh, --restart and --stop act on the service, with or without
 #                       --tailscale; --tailscale --remove-service removes it again.
 #
 #   ./run.sh --remote [host] [--restart | --stop]
 #                       the same for the viewer on a host without Tailscale (default
-#                       $TASK_MCP_REMOTE_HOST), reached through an SSH tunnel from a
+#                       $SIMTASK_REMOTE_HOST), reached through an SSH tunnel from a
 #                       laptop loopback port
 #
 #   ./run.sh --dev [--keep] [--restart | --stop]
@@ -27,12 +27,22 @@
 #                       tasks-dev MCP entry; --keep reuses the copy, --restart takes a
 #                       fresh one, --stop stops the dev viewer. Creates .venv when missing.
 #                       With --tailscale, the dev viewer is published on port
-#                       $TASK_MCP_DEV_TAILSCALE_PORT (8788) beside the live one, and
+#                       $SIMTASK_DEV_TAILSCALE_PORT (8788) beside the live one, and
 #                       --install-service installs a service per dev checkout
-#                       (task-mcp-dev-viewer-<checkout>-<hash>.service) on the copy.
+#                       (simtask-dev-viewer-<checkout>-<hash>.service) on the copy.
 #
-# Uses the live task database unless TASK_MCP_DB is set (local viewer only).
+# Uses the live task database unless SIMTASK_DB is set (local viewer only).
 set -euo pipefail
+
+# Existing client/launcher settings remain valid during the installation rename.
+# An explicitly supplied SIMTASK value takes precedence, including an empty one.
+for setting_name in DB REMOTE_HOST TAILSCALE_PORT DEV_TAILSCALE_PORT; do
+  current_var=SIMTASK_$setting_name
+  legacy_var=TASK_MCP_$setting_name
+  if [[ ! -v $current_var && -v $legacy_var ]]; then
+    export "$current_var=${!legacy_var}"
+  fi
+done
 
 usage() {
   echo "Usage: ./run.sh [--remote [host] | [--dev [--keep]] [--tailscale [--install-service | --remove-service]]] [--restart | --stop]" >&2
@@ -94,24 +104,24 @@ done
 [ -z "$install$remove" ] || [ -z "$action" ] || usage
 [ -z "$install$remove" ] || [ -z "$keep" ] || usage
 
-# Resolve a relative TASK_MCP_DB against the caller's directory, before changing it.
+# Resolve a relative SIMTASK_DB against the caller's directory, before changing it.
 db_args=()
-if [ -n "${TASK_MCP_DB:-}" ]; then
+if [ -n "${SIMTASK_DB:-}" ]; then
   if [ -n "$remote" ]; then
-    echo "TASK_MCP_DB selects a local database; --remote always uses the host's own." >&2
+    echo "SIMTASK_DB selects a local database; --remote always uses the host's own." >&2
     exit 2
   fi
   if [ -n "$dev" ]; then
-    echo "--dev copies the live database itself; unset TASK_MCP_DB." >&2
+    echo "--dev copies the live database itself; unset SIMTASK_DB." >&2
     exit 2
   fi
   if [ -n "$install$remove" ]; then
-    echo "The viewer service serves the live database; unset TASK_MCP_DB." >&2
+    echo "The viewer service serves the live database; unset SIMTASK_DB." >&2
     exit 2
   fi
-  TASK_MCP_DB=$(realpath -m -- "$TASK_MCP_DB")
-  export TASK_MCP_DB
-  db_args=(--db "$TASK_MCP_DB")
+  SIMTASK_DB=$(realpath -m -- "$SIMTASK_DB")
+  export SIMTASK_DB
+  db_args=(--db "$SIMTASK_DB")
 fi
 
 # Work from the repository, even when run through a symlink.
@@ -124,13 +134,13 @@ remote_viewer() {
   repo=$(printf %q "$PWD")
   set +e
   ssh -n -o ConnectTimeout=10 "$host" \
-    "[ -x $repo/run.sh ] && [ -x $repo/.venv/bin/task-mcp ] || exit 97; exec $repo/run.sh $*"
+    "[ -x $repo/run.sh ] && [ -x $repo/.venv/bin/simtask ] || exit 97; exec $repo/run.sh $*"
   status=$?
   set -e
   case "$status" in
     0) ;;
     255) echo "Cannot reach $host over SSH (see the ssh error above)." >&2 ;;
-    97) echo "task-mcp is not installed on $host: expected a checkout with .venv at $PWD." >&2 ;;
+    97) echo "simtask is not installed on $host: expected a checkout with .venv at $PWD." >&2 ;;
     *) echo "run.sh on $host failed (exit $status)." >&2 ;;
   esac
   return "$status"
@@ -151,13 +161,13 @@ tunnel_close() {
 # Proves the tunnel still forwards to this viewer: a master that survived a
 # network change or sleep can be alive without a working connection.
 forwards() {
-  TASK_MCP_TOKEN=$2 python3 - "$1" <<'EOF'
+  SIMTASK_TOKEN=$2 python3 - "$1" <<'EOF'
 import json, os, sys, urllib.request
 
 origin = "http://127.0.0.1:" + sys.argv[1]
 request = urllib.request.Request(
     origin + "/api/ping",
-    headers={"X-Task-Token": os.environ["TASK_MCP_TOKEN"], "Origin": origin},
+    headers={"X-Task-Token": os.environ["SIMTASK_TOKEN"], "Origin": origin},
 )
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 try:
@@ -169,14 +179,14 @@ EOF
 }
 
 if [ -n "$remote" ]; then
-  host=${host:-${TASK_MCP_REMOTE_HOST:-}}
+  host=${host:-${SIMTASK_REMOTE_HOST:-}}
   if [ -z "$host" ]; then
-    echo "Give a host after --remote or set TASK_MCP_REMOTE_HOST." >&2
+    echo "Give a host after --remote or set SIMTASK_REMOTE_HOST." >&2
     exit 2
   fi
   # Per-host tunnel state: an ssh control socket and the forwarded ports. The
   # runtime directory is cleared on reboot, which also clears stale state.
-  state_dir=${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/task-mcp
+  state_dir=${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/simtask
   mkdir -p -m 700 -- "$state_dir"
   key=$(printf %s "$host" | tr -c 'A-Za-z0-9@._-' _)
   socket=$state_dir/remote-$key.sock
@@ -228,7 +238,7 @@ if [ -n "$remote" ]; then
       exit 1
     fi
   fi
-  echo "Task MCP viewer on $host: http://127.0.0.1:$local_port/#$token"
+  echo "simtask viewer on $host: http://127.0.0.1:$local_port/#$token"
   echo "(The link includes a private access token. Stop it with ./run.sh --remote $host --stop.)"
   exit
 fi
@@ -303,15 +313,15 @@ serve_unmap() {
 ui_args=()
 if [ -n "$tailscale" ]; then
   if [ -n "$dev" ]; then
-    port=${TASK_MCP_DEV_TAILSCALE_PORT:-8788}
+    port=${SIMTASK_DEV_TAILSCALE_PORT:-8788}
   else
-    port=${TASK_MCP_TAILSCALE_PORT:-8787}
+    port=${SIMTASK_TAILSCALE_PORT:-8787}
   fi
   case "$port" in
     '' | *[!0-9]* | 0*) port=70000 ;;
   esac
   if [ "$port" -gt 65535 ]; then
-    echo "TASK_MCP_TAILSCALE_PORT and TASK_MCP_DEV_TAILSCALE_PORT must be port numbers." >&2
+    echo "SIMTASK_TAILSCALE_PORT and SIMTASK_DEV_TAILSCALE_PORT must be port numbers." >&2
     exit 2
   fi
   if [ "$action" != --stop ] && [ -z "$remove" ]; then
@@ -324,7 +334,7 @@ if [ -n "$tailscale" ]; then
   fi
 fi
 
-if [ ! -x .venv/bin/task-mcp ]; then
+if [ ! -x .venv/bin/simtask ]; then
   if [ -z "$dev" ]; then
     echo "No .venv found. Set it up once with:" >&2
     echo "  python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'" >&2
@@ -334,18 +344,18 @@ if [ ! -x .venv/bin/task-mcp ]; then
   echo "No .venv in $PWD; creating one with an editable install of this checkout." >&2
   python3 -m venv .venv
   .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev]'
-  [ -x .venv/bin/task-mcp ] || { echo "The editable install did not produce .venv/bin/task-mcp." >&2; exit 1; }
+  [ -x .venv/bin/simtask ] || { echo "The editable install did not produce .venv/bin/simtask." >&2; exit 1; }
 fi
 
 # The live database is the server's default: the same resolution as
-# task_mcp.store.live_database, with symlinks resolved like the viewer does.
-live_db=$(realpath -m -- "${XDG_DATA_HOME:-$HOME/.local/share}/task-mcp/tasks.sqlite3")
+# simtask.store.live_database, with symlinks resolved like the viewer does.
+live_db=$(.venv/bin/python -c 'from simtask.store import live_database; print(live_database().resolve())')
 
 # True while the viewer with state file $1 answers. The file alone proves nothing:
 # a viewer killed by a reboot, a logout or SIGKILL leaves it behind.
 viewer_live() {
   .venv/bin/python -c \
-    'import sys; from pathlib import Path; from task_mcp.viewer import _live; sys.exit(not _live(Path(sys.argv[1])))' \
+    'import sys; from pathlib import Path; from simtask.viewer import _live; sys.exit(not _live(Path(sys.argv[1])))' \
     "$1"
 }
 
@@ -374,7 +384,7 @@ service_active() {
 # Stops a detached viewer on the service's database: it would hold the viewer
 # lock, and the service would exit at once.
 service_takeover() {
-  service_active || .venv/bin/task-mcp ui --stop --db "$service_db" >/dev/null
+  service_active || .venv/bin/simtask ui --stop --db "$service_db" >/dev/null
 }
 
 service_install() {
@@ -382,12 +392,12 @@ service_install() {
   mkdir -p -- "$unit_dir"
   cat >"$unit_path" <<EOF
 [Unit]
-Description=Task MCP viewer on $service_db (tailnet port $port)
+Description=simtask viewer on $service_db (tailnet port $port)
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
 [Service]
-ExecStart=$PWD/.venv/bin/python -m task_mcp.viewer --serve --db $service_db --port $port --public-origin $scheme://$public_host:$port
+ExecStart=$PWD/.venv/bin/python -m simtask.viewer --serve --db $service_db --port $port --public-origin $scheme://$public_host:$port
 Restart=on-failure
 RestartSec=2
 
@@ -425,13 +435,13 @@ service_restart() {
   service_note="restarted"
 }
 
-# A detached viewer (task-mcp ui or open_task_viewer on the same database) can
+# A detached viewer (simtask ui or open_task_viewer on the same database) can
 # answer instead of a stopped unit; --stop ends that one too.
 service_stop() {
   if service_active; then
     systemctl --user stop "$unit"
     echo "Viewer service stopped."
-  elif [ "$(.venv/bin/task-mcp ui --stop --db "$service_db")" = "Viewer stopped." ]; then
+  elif [ "$(.venv/bin/simtask ui --stop --db "$service_db")" = "Viewer stopped." ]; then
     echo "Viewer service is not running; the detached viewer on its database stopped."
   else
     echo "Viewer service is not running."
@@ -457,7 +467,7 @@ service_url() {
 import sys, time
 from pathlib import Path
 
-from task_mcp.viewer import _link, _live
+from simtask.viewer import _link, _live
 
 state = Path(sys.argv[1])
 for _ in range(100):
@@ -499,14 +509,14 @@ if [ -n "$dev" ]; then
   dev_state=$dev_db.viewer.json
   checkout=$(basename -- "$PWD")
   service_vars "$dev_db" \
-    "task-mcp-dev-viewer-${checkout//[^A-Za-z0-9_-]/_}-$(printf %s "$PWD" | sha256sum | cut -c1-8).service"
+    "simtask-dev-viewer-${checkout//[^A-Za-z0-9_-]/_}-$(printf %s "$PWD" | sha256sum | cut -c1-8).service"
 
   if [ "$action" = --stop ]; then
     [ -z "$tailscale" ] || serve_unmap
     if service_installed; then
       service_stop
     else
-      .venv/bin/task-mcp ui --stop --db "$dev_db"
+      .venv/bin/simtask ui --stop --db "$dev_db"
     fi
     echo "(The dev copy stays at $dev_db.)"
     exit
@@ -526,7 +536,7 @@ if [ -n "$dev" ]; then
       exit 1
     fi
     ! service_installed || systemctl --user stop "$unit"
-    .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
+    .venv/bin/simtask ui --stop --db "$dev_db" >/dev/null
     copy_live
     copy_note="fresh copy of $live_db"
   }
@@ -552,13 +562,13 @@ if [ -n "$dev" ]; then
       if [ "$action" = --restart ]; then service_note="restarted"; else service_note="started"; fi
     else
       # The service is reused while it runs; a detached viewer on the copy (a
-      # stopped unit, then task-mcp ui or the tasks-dev entry) is taken over.
+      # stopped unit, then simtask ui or the tasks-dev entry) is taken over.
       copy_note="kept while the dev viewer runs; ./run.sh --dev --restart takes a fresh copy"
       service_start
     fi
   elif [ -n "$keep" ]; then
     copy_note="kept"
-    [ "$action" != --restart ] || .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
+    [ "$action" != --restart ] || .venv/bin/simtask ui --stop --db "$dev_db" >/dev/null
   elif [ "$action" = --restart ] || ! viewer_live "$dev_state"; then
     # A dev viewer that answers is otherwise reused together with its copy
     # (--restart takes a fresh one).
@@ -570,11 +580,11 @@ if [ -n "$dev" ]; then
   if service_installed; then
     service_url
   else
-    url=$(.venv/bin/task-mcp ui --db "$dev_db" ${ui_args[@]+"${ui_args[@]}"})
+    url=$(.venv/bin/simtask ui --db "$dev_db" ${ui_args[@]+"${ui_args[@]}"})
   fi
   # service_install has already ensured the mapping.
   [ -n "$install" ] || [ -z "$tailscale" ] || serve_map
-  echo "Task MCP dev viewer: $url"
+  echo "simtask dev viewer: $url"
   echo "Dev database: $dev_db ($copy_note)"
   if [ -n "$tailscale" ]; then
     echo "Published on the tailnet by tailscale serve ($scheme on port $port, mapping $mapping)."
@@ -589,14 +599,14 @@ if [ -n "$dev" ]; then
   echo "MCP entry for the dev server, to add beside the live \"tasks\" entry:"
   echo "  \"tasks-dev\": {"
   echo "    \"type\": \"stdio\","
-  echo "    \"command\": \"$PWD/.venv/bin/task-mcp\","
-  echo "    \"env\": { \"TASK_MCP_DB\": \"$dev_db\" }"
+  echo "    \"command\": \"$PWD/.venv/bin/simtask\","
+  echo "    \"env\": { \"SIMTASK_DB\": \"$dev_db\" }"
   echo "  }"
   exit
 fi
 
-# The live service; TASK_MCP_DB selects another database, which never has one.
-[ -n "${TASK_MCP_DB:-}" ] || service_vars "$live_db" task-mcp-viewer.service
+# The live service; SIMTASK_DB selects another database, which never has one.
+[ -n "${SIMTASK_DB:-}" ] || service_vars "$live_db" simtask-viewer.service
 
 if [ -n "$remove" ]; then
   serve_unmap
@@ -621,22 +631,22 @@ elif service_installed; then
 else
   case "$action" in
     "") ;;
-    --restart) .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"} >/dev/null ;;
+    --restart) .venv/bin/simtask ui --stop ${db_args[@]+"${db_args[@]}"} >/dev/null ;;
     --stop)
       [ -z "$tailscale" ] || serve_unmap
-      exec .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"}
+      exec .venv/bin/simtask ui --stop ${db_args[@]+"${db_args[@]}"}
       ;;
   esac
-  url=$(.venv/bin/task-mcp ui ${db_args[@]+"${db_args[@]}"} ${ui_args[@]+"${ui_args[@]}"})
+  url=$(.venv/bin/simtask ui ${db_args[@]+"${db_args[@]}"} ${ui_args[@]+"${ui_args[@]}"})
   [ -z "$tailscale" ] || serve_map
 fi
-echo "Task MCP viewer: $url"
+echo "simtask viewer: $url"
 if [ -n "$tailscale" ]; then
   echo "Published on the tailnet by tailscale serve ($scheme on port $port, mapping $mapping)."
 fi
 [ -z "${service_note:-}" ] || echo "Runs as the systemd user service $unit ($service_note)."
 stop_command="./run.sh${tailscale:+ --tailscale} --stop"
-if [ -n "${TASK_MCP_DB:-}" ]; then
-  printf -v stop_command 'TASK_MCP_DB=%q %s' "$TASK_MCP_DB" "$stop_command"
+if [ -n "${SIMTASK_DB:-}" ]; then
+  printf -v stop_command 'SIMTASK_DB=%q %s' "$SIMTASK_DB" "$stop_command"
 fi
 echo "(The link includes a private access token. Stop it with $stop_command.)"

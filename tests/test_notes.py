@@ -15,16 +15,16 @@ from pathlib import Path
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from task_mcp.reference import default_skills
-from task_mcp.server import create_server
-from task_mcp.store import (
+from simtask.reference import default_skills
+from simtask.server import create_server
+from simtask.store import (
     DATABASE_SCHEMA_REVISION,
     NOTE_TEXT_LIMIT,
     NOTE_TITLE_LIMIT,
     Store,
     TaskError,
 )
-from task_mcp.viewer import dispatch
+from simtask.viewer import dispatch
 
 ROOT = Path(__file__).resolve().parents[1]
 # The last schema-11 code with set_note and init notes: main as the live server runs it.
@@ -576,8 +576,8 @@ PREVIOUS_SERVER = textwrap.dedent(
     """
     import asyncio, json, sys
     from pathlib import Path
-    from task_mcp.server import create_server
-    from task_mcp.store import Store
+    from simtask.server import create_server
+    from simtask.store import Store
 
     database, path = Path(sys.argv[1]), sys.argv[2]
     if sys.argv[3] == "seed":
@@ -628,7 +628,7 @@ def test_running_schema11_code_survives_the_migration_but_cannot_restart(tmp_pat
     ):
         pytest.skip(f"previous revision {revision} is not in this checkout's history")
     archive = subprocess.run(
-        ["git", "-C", str(ROOT), "archive", revision, "src/task_mcp"],
+        ["git", "-C", str(ROOT), "archive", revision, "src/simtask"],
         capture_output=True,
         check=True,
     ).stdout
@@ -640,7 +640,7 @@ def test_running_schema11_code_survives_the_migration_but_cannot_restart(tmp_pat
     env = {
         **os.environ,
         "PYTHONPATH": str(previous / "src"),
-        "TASK_MCP_TRACE": "0",
+        "SIMTASK_TRACE": "0",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     database, checkout = tmp_path / "tasks.sqlite3", tmp_path / "repo"

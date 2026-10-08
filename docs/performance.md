@@ -3,7 +3,7 @@
 ## Finding
 
 The measured multi-second delay occurs in the client's synchronous policy
-approval stage before Task MCP executes the mutation. It is not the measured
+approval stage before simtask executes the mutation. It is not the measured
 SQLite/stdio execution cost. Two legitimate calls on 2026-09-26 were timed in
 the actual client and correlated with the live task audit and host approval
 logs; no synthetic tasks were added to the live database.
@@ -32,7 +32,7 @@ client's discovered tool descriptors as well.
 Use [runtime identity and reconnect checks](runtime.md) to verify both the
 serving process and its discovered capabilities in the affected client.
 
-Task MCP's workflow tools operate on its own task database, not repository files
+simtask's workflow tools operate on its own task database, not repository files
 or external services. Its explicit `open_task_viewer` tool also starts or reuses
 a local browser companion that exposes that database to a token-holding browser
 on the same computer. See [the viewer's access and lifecycle](viewer.md).
@@ -60,7 +60,7 @@ approval_mode = "approve"
 approval_mode = "approve"
 ```
 
-Alternatively, if you trust the whole Task MCP server, add this key to its
+Alternatively, if you trust the whole simtask server, add this key to its
 existing table, retaining its command, environment and other settings:
 
 ```toml

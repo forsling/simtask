@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from task_mcp.server import create_server
-from task_mcp.store import Store, TaskError
+from simtask.server import create_server
+from simtask.store import Store, TaskError
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test-only stand-in for ssh, installed as `ssh` on PATH by test_run_script.py.
 
-Remote commands run locally in bash with TASK_MCP_DB=$FAKE_REMOTE_DB, so the
+Remote commands run locally in bash with SIMTASK_DB=$FAKE_REMOTE_DB, so the
 "remote" viewer uses a disposable database. `-M -S socket -L ...` starts a
 forwarder with a control socket that answers `-O check` and `-O exit`.
 FAKE_REMOTE_REPO replaces the checkout path to simulate a missing install;
@@ -122,7 +122,7 @@ def main():
     repo = os.environ.get("FAKE_REMOTE_REPO")
     if repo:
         command = command.replace(os.environ["FAKE_LOCAL_REPO"], repo)
-    env = {**os.environ, "TASK_MCP_DB": os.environ["FAKE_REMOTE_DB"]}
+    env = {**os.environ, "SIMTASK_DB": os.environ["FAKE_REMOTE_DB"]}
     sys.exit(subprocess.run(["bash", "-c", command], env=env, stdin=subprocess.DEVNULL).returncode)
 
 

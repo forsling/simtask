@@ -6,7 +6,7 @@ from contextlib import closing
 
 import pytest
 
-from task_mcp.store import Store, TaskError
+from simtask.store import Store, TaskError
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 ---
 name: init
-description: Set up or resume the Task MCP binding for a checkout and branch. Use in projects using Task MCP when init reports an unregistered checkout, a new branch, a mismatch or an archived workstream.
+description: Set up or resume the simtask binding for a checkout and branch. Use in projects using simtask when init reports an unregistered checkout, a new branch, a mismatch or an archived workstream.
 ---
 
 # Init

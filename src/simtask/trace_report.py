@@ -6,7 +6,7 @@ import math
 from collections import Counter, defaultdict
 from datetime import datetime
 
-from task_mcp.tracing import TRACE_FORMAT_REVISION, json_bytes
+from simtask.tracing import TRACE_FORMAT_REVISION, json_bytes
 
 
 def parse_time(value):
@@ -303,7 +303,7 @@ def analyze(directory, *, since=None, until=None, connection=None, tool=None, en
 
 def render(report):
     lines = [
-        "Task MCP usage trace report",
+        "simtask usage trace report",
         report["boundary"],
         f"Observed: {report['observed_from']} to {report['observed_until']}",
         f"Connections: {len(report['connections'])}; calls: {report['call_count']}; "

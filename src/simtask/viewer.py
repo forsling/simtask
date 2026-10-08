@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from task_mcp.store import Store, TaskError, default_database, live_database
+from simtask.store import Store, TaskError, default_database, live_database
 
 ASSETS = Path(__file__).with_name("viewer_assets")
 _ID = "[0-9a-f]{1,32}"
@@ -110,7 +110,7 @@ def public_origin_rule(url):
 
 def is_dev_database(path):
     """Whether path is any database but the live one (a ./run.sh --dev copy, a --db or
-    TASK_MCP_DB choice). Both sides are resolved so a differently spelled or symlinked
+    SIMTASK_DB choice). Both sides are resolved so a differently spelled or symlinked
     path to the live database never counts as a dev one."""
     return Path(path).expanduser().resolve() != live_database().expanduser().resolve()
 
@@ -353,7 +353,7 @@ def launch_viewer(database, port=None, public_origin=None):
                 [
                     sys.executable,
                     "-m",
-                    "task_mcp.viewer",
+                    "simtask.viewer",
                     *options,
                     "--serve",
                     "--db",
@@ -377,7 +377,7 @@ def launch_viewer(database, port=None, public_origin=None):
             "reused": reused,
             "changed": not reused,
             "replaced": replaced,
-            "lifecycle": "Runs until Stop viewer or task-mcp ui --stop; no automatic startup.",
+            "lifecycle": "Runs until Stop viewer or simtask ui --stop; no automatic startup.",
         }
 
 

@@ -24,7 +24,7 @@ const context = vm.createContext({
   navigator: {clipboard: {async writeText(text) {copied.push(text);}}},
   location: {hash: ""}, history: {replaceState() {}}, sessionStorage: {getItem: () => ""}, setTimeout() {},
 });
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = code => vm.runInContext(code, context);
 context.noticeSink = message => notices.push(message);
@@ -64,7 +64,7 @@ async function main() {
   run('state.rows = [{id: "reference-storage", title: "Unrelated title"}];');
   get("search").value = "reference-storage";
   assert.equal(run("filteredRows().length"), 1);
-  const css = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/style.css"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/style.css"), "utf8");
   assert.match(css, /\.task-id\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*user-select:\s*text/s);
   assert.match(css, /\.task-id-header\s*\{[^}]*flex-wrap:\s*wrap/s);
   console.log("viewer public ID tests passed");

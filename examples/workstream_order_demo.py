@@ -5,8 +5,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from task_mcp.store import Store
-from task_mcp.viewer import launch_viewer
+from simtask.store import Store
+from simtask.viewer import launch_viewer
 
 
 def seed(path):
@@ -67,8 +67,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--seed-only", action="store_true")
     args = parser.parse_args()
-    path = args.db or Path(tempfile.mkdtemp(prefix="task-mcp-order-demo-")) / "tasks.sqlite3"
+    path = args.db or Path(tempfile.mkdtemp(prefix="simtask-order-demo-")) / "tasks.sqlite3"
     print(json.dumps(seed(path), indent=2))
     if not args.seed_only:
         print(launch_viewer(path)["url"])
-        print(f"Stop: python -m task_mcp ui --db {path} --stop")
+        print(f"Stop: python -m simtask ui --db {path} --stop")

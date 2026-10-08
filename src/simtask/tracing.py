@@ -15,7 +15,7 @@ from pathlib import Path
 
 from mcp_types import CLIENT_INFO_META_KEY
 
-from task_mcp.runtime import RUNTIME_IDENTITY
+from simtask.runtime import RUNTIME_IDENTITY
 
 TRACE_FORMAT_REVISION = 1
 logger = logging.getLogger(__name__)
@@ -169,7 +169,7 @@ class TraceCollector:
             self._thread = None
             self._closing.set()
             self._failed()
-            logger.warning("Task MCP trace writer could not start: %s", exc)
+            logger.warning("simtask trace writer could not start: %s", exc)
             return
         self.emit({"event": "connection_start", **self._metadata()})
 
@@ -227,7 +227,7 @@ class TraceCollector:
             except Exception as exc:
                 self._failed()
                 if time.monotonic() - self._last_warning >= 60:
-                    logger.warning("Task MCP trace collection failed: %s", exc)
+                    logger.warning("simtask trace collection failed: %s", exc)
                     self._last_warning = time.monotonic()
             finally:
                 with self._guard:

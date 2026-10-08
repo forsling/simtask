@@ -12,8 +12,8 @@ def test_fresh_sdk_shared_membership_and_local_attempt_selection(tmp_path):
     root = Path(__file__).resolve().parents[1]
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database)],
-        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+        args=["-m", "simtask", "--db", str(database)],
+        env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
     )
 
     async def exercise():

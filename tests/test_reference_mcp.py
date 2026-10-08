@@ -20,8 +20,8 @@ def test_fresh_client_packaged_skills_match_the_discovered_tool_contract(tmp_pat
     database = tmp_path / "reference.sqlite3"
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database), "--no-trace"],
-        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+        args=["-m", "simtask", "--db", str(database), "--no-trace"],
+        env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
     )
 
     async def exercise():
@@ -38,7 +38,7 @@ def test_fresh_client_packaged_skills_match_the_discovered_tool_contract(tmp_pat
                 return result.structured_content
 
             runtime = (await call("init", path=str(tmp_path / "probe"), branch="main"))["runtime"]
-            assert runtime["package_path"] == str(root / "src/task_mcp")
+            assert runtime["package_path"] == str(root / "src/simtask")
             index = await call("get_default_skills")
             assert index["version"] == "2.0.0"
             checked = set()

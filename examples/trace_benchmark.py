@@ -13,7 +13,7 @@ from time import perf_counter_ns
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
-from task_mcp.store import Store
+from simtask.store import Store
 
 
 async def benchmark(directory, samples):
@@ -71,7 +71,7 @@ async def benchmark(directory, samples):
             for mode in setup_order:
                 args = [
                     "-m",
-                    "task_mcp",
+                    "simtask",
                     "--db",
                     str(database),
                     "--trace-dir",
@@ -82,7 +82,7 @@ async def benchmark(directory, samples):
                 params = StdioServerParameters(
                     command=sys.executable,
                     args=args,
-                    env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+                    env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
                 )
                 client = await stack.enter_async_context(Client(params, read_timeout_seconds=30))
                 clients[mode] = client
@@ -139,7 +139,7 @@ def main():
     args = parser.parse_args()
     if args.samples <= 0:
         parser.error("samples must be positive")
-    with TemporaryDirectory(prefix="task-mcp-trace-benchmark-", dir=args.work_dir) as name:
+    with TemporaryDirectory(prefix="simtask-trace-benchmark-", dir=args.work_dir) as name:
         report = asyncio.run(benchmark(Path(name), args.samples))
     serialized = json.dumps(report, indent=2) + "\n"
     if args.output:

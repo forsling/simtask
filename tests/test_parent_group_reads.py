@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-from task_mcp.server import create_server
-from task_mcp.store import Store
-from task_mcp.viewer import dispatch
+from simtask.server import create_server
+from simtask.store import Store
+from simtask.viewer import dispatch
 
 GROUP_BODY = "Context\nThe whole group design. " * 200
 GROUP_CRITERIA = "- Every member ships the shared design."

@@ -1,8 +1,8 @@
-# Task MCP workstream export
+# simtask workstream export
 
 Format: task-mcp/v5
 
-Snapshot only. Editing this document does not update Task MCP.
+Snapshot only. Editing this document does not update simtask.
 
 - Project: webclient (`prj_sample`)
 - Project path: /example/webclient

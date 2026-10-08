@@ -6,7 +6,7 @@ additional workflow instructions. Collection adds no tools, response fields or
 MCP notifications, and does not change task state or the existing semantic audit.
 
 The default directory is `<database-path>.traces` beside the database. For the
-standard database it is `~/.local/share/task-mcp/tasks.sqlite3.traces`. It contains
+standard database it is `~/.local/share/simtask/tasks.sqlite3.traces`. It contains
 full request parameters and SDK-shaped results, including task text, evidence and
 private viewer links. The directory is private to its owner and files use mode
 0600. Existing directories must already be private; collection does not change
@@ -36,7 +36,7 @@ An inaccessible directory or process killed before any successful write may
 leave no diagnostic record. Keep any traces needed for longer comparisons in a
 separate private archive outside the rotating collection directory.
 
-Use `--no-trace` or `TASK_MCP_TRACE=0` to disable collection. Server options
+Use `--no-trace` or `SIMTASK_TRACE=0` to disable collection. Server options
 `--trace-dir`, `--trace-max-age-days`, `--trace-max-bytes` and
 `--trace-payload-bytes` override the corresponding defaults. A running server
 must restart/reconnect before it uses changed configuration or new tracing code.
@@ -44,10 +44,10 @@ must restart/reconnect before it uses changed configuration or new tracing code.
 ## Offline report
 
 ```sh
-task-mcp trace-report
-task-mcp trace-report --tool get_tasks --since 2026-10-03T00:00:00Z
-task-mcp trace-report --entity tsk_example --json
-task-mcp trace-report --connection CONNECTION_ID --all --json
+simtask trace-report
+simtask trace-report --tool get_tasks --since 2026-10-03T00:00:00Z
+simtask trace-report --entity tsk_example --json
+simtask trace-report --connection CONNECTION_ID --all --json
 ```
 
 `--db` selects the default trace directory without opening the database;

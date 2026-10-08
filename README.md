@@ -1,6 +1,6 @@
-# Task MCP
+# simtask
 
-**Task MCP** is a local task tracker for agent-driven coding, served over MCP. One private SQLite database holds the tasks, what was built for each, what an independent reviewer said and what you signed off. Agents read and write it through MCP tools and follow the bundled workflows; you steer from a web viewer.
+**simtask** is a local task tracker for agent-driven coding, served over MCP. One private SQLite database holds the tasks, what was built for each, what an independent reviewer said and what you signed off. Agents read and write it through MCP tools and follow the bundled workflows; you steer from a web viewer.
 
 ## How it works
 
@@ -47,13 +47,23 @@ The server ships its workflows as skills, read with `get_default_skills`. Copy t
 Requires Python 3.11 or newer.
 
 ```sh
-git clone https://github.com/forsling/simtask.git task-mcp
-cd task-mcp
+git clone https://github.com/forsling/simtask.git simtask
+cd simtask
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-Point each MCP client at `.venv/bin/task-mcp`. It speaks stdio; there is no network listener.
+Point each MCP client at `.venv/bin/simtask`. It speaks stdio; there is no network listener.
+
+`simtask` replaces the former `task-mcp` name. The old command, Python imports
+and `TASK_MCP_` settings remain compatible; `SIMTASK_` settings take precedence.
+The data directory is `~/.local/share/simtask`. Before data is moved, an existing
+`~/.local/share/task-mcp/tasks.sqlite3` is used automatically. The workstation's
+old data-directory path is an alias to the same relocated data.
+
+The workstation has two checkouts: `~/workspace/simtask` for live use and
+`~/workspace/simtask-dev` for development. Each has its own editable environment.
+The dev database stays under `simtask-dev/.dev/` and is a disposable copy.
 
 The personal laptop/workstation installation, single-source skill sync, and
 refusing laptop MCP selection are documented in [docs/workstation-setup.md](docs/workstation-setup.md).
@@ -65,8 +75,8 @@ Claude Code (`~/.claude.json` or a project `.mcp.json`):
   "mcpServers": {
     "tasks": {
       "type": "stdio",
-      "command": "/path/to/task-mcp/.venv/bin/task-mcp",
-      "env": { "TASK_MCP_ACTOR": "claude-code" }
+      "command": "/path/to/simtask/.venv/bin/simtask",
+      "env": { "SIMTASK_ACTOR": "claude-code" }
     }
   }
 }
@@ -76,18 +86,18 @@ Codex (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.tasks]
-command = "/path/to/task-mcp/.venv/bin/task-mcp"
+command = "/path/to/simtask/.venv/bin/simtask"
 
 [mcp_servers.tasks.env]
-TASK_MCP_ACTOR = "codex"
+SIMTASK_ACTOR = "codex"
 ```
 
 | Variable | Meaning |
 |----------|---------|
-| `TASK_MCP_DB` | Database path. Default `$XDG_DATA_HOME/task-mcp/tasks.sqlite3`, falling back to `~/.local/share/task-mcp/tasks.sqlite3` |
-| `TASK_MCP_ACTOR` | Label recorded on everything this client writes. Default `local-agent` |
-| `TASK_MCP_TAILSCALE_PORT`, `TASK_MCP_DEV_TAILSCALE_PORT` | Fixed ports of `./run.sh --tailscale` and `./run.sh --dev --tailscale`. Defaults 8787 and 8788 |
-| `TASK_MCP_REMOTE_HOST` | Default host for `./run.sh --remote` |
+| `SIMTASK_DB` | Database path. Default `$XDG_DATA_HOME/simtask/tasks.sqlite3`, falling back to `~/.local/share/simtask/tasks.sqlite3` |
+| `SIMTASK_ACTOR` | Label recorded on everything this client writes. Default `local-agent` |
+| `SIMTASK_TAILSCALE_PORT`, `SIMTASK_DEV_TAILSCALE_PORT` | Fixed ports of `./run.sh --tailscale` and `./run.sh --dev --tailscale`. Defaults 8787 and 8788 |
+| `SIMTASK_REMOTE_HOST` | Default host for `./run.sh --remote` |
 
 Running processes keep the code they started with. After pulling new code, restart every connected server and the viewer; `init` reports the runtime it reached under `runtime`.
 
@@ -104,16 +114,16 @@ A browser view of every project, workstream and task, with the task's spec, acti
 ./run.sh --tailscale --install-service  # run the tailnet viewer as a systemd user service that starts at boot
 ./run.sh --tailscale --remove-service   # stop, disable and delete that service and its serve mapping
 ./run.sh --remote [host]    # a viewer on a machine without Tailscale, over an SSH tunnel
-TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh    # a viewer on another database
+SIMTASK_DB=/path/tasks.sqlite3 ./run.sh    # a viewer on another database
 ```
 
 The link carries a private token; the viewer binds to loopback only. `open_task_viewer` returns the same link to an agent. See [docs/viewer.md](docs/viewer.md).
 
-When `TASK_MCP_DB` selects another database, the printed stop command includes its resolved, shell-quoted path. Copy that command to stop the same viewer, including when the path contains spaces.
+When `SIMTASK_DB` selects another database, the printed stop command includes its resolved, shell-quoted path. Copy that command to stop the same viewer, including when the path contains spaces.
 
-`--tailscale` is the way to reach the viewer from another machine. It runs the viewer on a fixed loopback port (`TASK_MCP_TAILSCALE_PORT`, default 8787) and publishes that port on your tailnet with `tailscale serve` under this machine's MagicDNS name, so the link becomes `https://<machine>.<tailnet>.ts.net:8787/#<token>` and opens from any device on the tailnet without a tunnel. The viewer accepts that name besides loopback, still needs the token and is never published outside the tailnet (no Funnel). The link is `https` when HTTPS certificates are enabled for the tailnet (Tailscale admin console, DNS page, **Enable HTTPS**) and `http` otherwise; the tailnet encrypts both. Run `sudo tailscale set --operator=$USER` once so `tailscale serve` works without root. Repeated runs reuse the viewer and the mapping; `--restart` restarts the viewer with the same token on the same port.
+`--tailscale` is the way to reach the viewer from another machine. It runs the viewer on a fixed loopback port (`SIMTASK_TAILSCALE_PORT`, default 8787) and publishes that port on your tailnet with `tailscale serve` under this machine's MagicDNS name, so the link becomes `https://<machine>.<tailnet>.ts.net:8787/#<token>` and opens from any device on the tailnet without a tunnel. The viewer accepts that name besides loopback, still needs the token and is never published outside the tailnet (no Funnel). The link is `https` when HTTPS certificates are enabled for the tailnet (Tailscale admin console, DNS page, **Enable HTTPS**) and `http` otherwise; the tailnet encrypts both. Run `sudo tailscale set --operator=$USER` once so `tailscale serve` works without root. Repeated runs reuse the viewer and the mapping; `--restart` restarts the viewer with the same token on the same port.
 
-`--tailscale --install-service` makes that viewer survive reboots: it writes `~/.config/systemd/user/task-mcp-viewer.service` (this checkout's `.venv` serving the live database on the fixed port with the tailnet origin), enables linger for your user with `loginctl enable-linger` so user services run without a login session, ensures the serve mapping and starts the unit. Once installed, `./run.sh`, `--restart` and `--stop` (with or without `--tailscale`) act on the service through `systemctl --user`: a run prints the current link (the token stays the same across service starts), `--stop` leaves the unit installed, and `--tailscale --remove-service` removes it. No system (root) unit is involved.
+`--tailscale --install-service` makes that viewer survive reboots: it writes `~/.config/systemd/user/simtask-viewer.service` (this checkout's `.venv` serving the live database on the fixed port with the tailnet origin), enables linger for your user with `loginctl enable-linger` so user services run without a login session, ensures the serve mapping and starts the unit. Once installed, `./run.sh`, `--restart` and `--stop` (with or without `--tailscale`) act on the service through `systemctl --user`: a run prints the current link (the token stays the same across service starts), `--stop` leaves the unit installed, and `--tailscale --remove-service` removes it. No system (root) unit is involved.
 
 ## Tools
 
@@ -150,7 +160,7 @@ All 31 tools take and return JSON. IDs are stable public IDs; writes take the `e
 ## CLI reference
 
 ```
-task-mcp [command] [options]
+simtask [command] [options]
 ```
 
 | Command or option | Description |
@@ -159,7 +169,7 @@ task-mcp [command] [options]
 | `ui` | Start or reuse the web viewer and print its link; `ui --stop` stops it. `--port <n>` fixes its loopback port and `--public-origin <url>` names the origin a proxy on this machine publishes it under (what `./run.sh --tailscale` passes); a running viewer that does not match these is replaced |
 | `trace-report` | Report on the private usage traces the server collects (see [docs/usage-traces.md](docs/usage-traces.md)) |
 | `--db <path>` | Database to use |
-| `--actor <label>` | Attribution label, same as `TASK_MCP_ACTOR` |
+| `--actor <label>` | Attribution label, same as `SIMTASK_ACTOR` |
 | `--export-workstream <id>` | Print a workstream as Markdown (`--export-format legacy` for the old layout, `--exclude-closed` to omit done and dropped tasks) |
 | `--no-trace`, `--trace-dir <path>` | Disable or relocate usage trace collection |
 
@@ -183,18 +193,18 @@ A server with a newer schema migrates the database the first time it opens it, a
 Every client and `./run.sh` run the main checkout's working tree, on the live database. To change code without touching them, work in a Git worktree: it gets its own venv, and `./run.sh --dev` there runs the viewer and the server on a copy of the live database.
 
 ```sh
-git worktree add -b my-change ../task-mcp-my-change   # a worktree on its own branch
-cd ../task-mcp-my-change
+git worktree add -b my-change ../simtask-my-change   # a worktree on its own branch
+cd ../simtask-my-change
 ./run.sh --dev              # create .venv if missing, copy the live database to .dev/tasks.sqlite3, start a dev viewer on the copy
 ./run.sh --dev --keep       # reuse the existing copy
 ./run.sh --dev --restart    # restart the dev viewer on a fresh copy (--keep --restart: on the existing one)
 ./run.sh --dev --stop       # stop the dev viewer; the copy stays
-./run.sh --dev --tailscale  # the dev viewer on the tailnet too, on TASK_MCP_DEV_TAILSCALE_PORT (8788), beside the live one
-./run.sh --dev --tailscale --install-service  # that dev viewer as its own user service (task-mcp-dev-viewer-<checkout>-<hash>.service) on the existing copy
+./run.sh --dev --tailscale  # the dev viewer on the tailnet too, on SIMTASK_DEV_TAILSCALE_PORT (8788), beside the live one
+./run.sh --dev --tailscale --install-service  # that dev viewer as its own user service (simtask-dev-viewer-<checkout>-<hash>.service) on the existing copy
 ./run.sh --dev --tailscale --remove-service   # remove the dev service; the copy stays
 ```
 
-The dev viewer shows a `DEV` badge in its header (the copy's path is in its tooltip) and a `[DEV]` tab title, so it is never mistaken for the live one, on the tailnet too. `--dev` prints the dev viewer's link, the copy's path, the dev stop command and a `tasks-dev` MCP entry (the worktree's `.venv/bin/task-mcp` with `TASK_MCP_DB` set to the copy). Add that entry beside `tasks` to run the dev server in a client; a session on `tasks-dev` writes to the copy only. `--dev` only reads the live database and leaves the live viewer and running servers alone, so dogfooding through the live `tasks` entry keeps recording there, and `init` from the worktree binds a workstream to the worktree's path and branch as usual. `--dev` runs on the machine that holds the live database and cannot be combined with `--remote` or `TASK_MCP_DB`.
+The dev viewer shows a `DEV` badge in its header (the copy's path is in its tooltip) and a `[DEV]` tab title, so it is never mistaken for the live one, on the tailnet too. `--dev` prints the dev viewer's link, the copy's path, the dev stop command and a `tasks-dev` MCP entry (the worktree's `.venv/bin/simtask` with `SIMTASK_DB` set to the copy). Add that entry beside `tasks` to run the dev server in a client; a session on `tasks-dev` writes to the copy only. `--dev` only reads the live database and leaves the live viewer and running servers alone, so dogfooding through the live `tasks` entry keeps recording there, and `init` from the worktree binds a workstream to the worktree's path and branch as usual. `--dev` runs on the machine that holds the live database and cannot be combined with `--remote` or `SIMTASK_DB`.
 
 Roll out as above: merge to `main`, then restart every live server and the viewer; restart the viewer service after a rollout (`./run.sh --tailscale --restart` in the main checkout, or `./run.sh --restart` without a service). The first server with a newer schema migrates the live database after a backup. Nothing reloads while it runs. A dev service keeps its copy across restarts of the unit; `./run.sh --dev --tailscale --restart` takes a fresh copy.
 

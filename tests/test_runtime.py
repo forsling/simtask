@@ -10,8 +10,8 @@ import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
-from task_mcp.runtime import PROTOCOL_SCHEMA_REVISION, source_identifier
-from task_mcp.store import DATABASE_SCHEMA_REVISION, Store
+from simtask.runtime import PROTOCOL_SCHEMA_REVISION, source_identifier
+from simtask.store import DATABASE_SCHEMA_REVISION, Store
 
 
 def test_source_identifier_tracks_shipped_bytes_without_git_or_bytecode(tmp_path):
@@ -53,12 +53,12 @@ def test_database_revision_adopts_legacy_schema_and_rejects_future_schema(tmp_pa
 
 
 def test_live_stdio_identity_is_read_only_frozen_and_changes_on_restart(tmp_path):
-    package = tmp_path / "src/task_mcp"
-    shutil.copytree(Path(__file__).resolve().parents[1] / "src/task_mcp", package)
+    package = tmp_path / "src/simtask"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "src/simtask", package)
     database = tmp_path / "tasks.sqlite3"
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database)],
+        args=["-m", "simtask", "--db", str(database)],
         env={"PYTHONPATH": str(package.parent)},
     )
 
@@ -74,7 +74,7 @@ def test_live_stdio_identity_is_read_only_frozen_and_changes_on_restart(tmp_path
             discovered = await call("init", path=str(tmp_path), branch="main")
             assert discovered["state"] == "unregistered_checkout"
             identity = discovered["runtime"]
-            assert identity["package_version"] == version("task-mcp")
+            assert identity["package_version"] == version("simtask")
             assert identity["source_identifier"] == source_identifier(package)
             assert identity["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION
             assert identity["database_schema_revision"] == DATABASE_SCHEMA_REVISION

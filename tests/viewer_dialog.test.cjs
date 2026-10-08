@@ -22,7 +22,7 @@ const context = vm.createContext({
   location: {hash: ""}, sessionStorage: {getItem: () => ""},
   history: {replaceState() {}}, FormData: class {},
 });
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 async function run() {
   let complete;

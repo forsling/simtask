@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from task_mcp.export import FORMAT, render_markdown
+from simtask.compat import setting
+from simtask.export import FORMAT, render_markdown
 
 DATABASE_SCHEMA_REVISION = 12
-COMPACT_CALL = ContextVar("compact_task_mcp_call", default=False)
+COMPACT_CALL = ContextVar("compact_simtask_call", default=False)
 # Concerns have explicit provenance in their own column, never in arbitrary proof text.
 CONCERN_COUNT_SQL = "json_array_length(concerns_json)"
 # Boards show active work by default; these statuses are counted, not listed.
@@ -288,6 +289,7 @@ ACTIVITY_HIDDEN = {
             "note.set",  # Retired with schema 12; older databases still hold it.
             "note.updated",
             "project.initialized",
+            "project.relocated",
             "scope.changed",
             "session.initialized",
             "workstream.archived",
@@ -360,14 +362,25 @@ def timestamp() -> str:
 
 
 def live_database() -> Path:
-    """The user's one live database, in the user data directory. TASK_MCP_DB selects
+    """The user's one live database, in the user data directory. SIMTASK_DB selects
     another database for a process; it never makes that one the live one."""
     base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-    return base / "task-mcp" / "tasks.sqlite3"
+    current = base / "simtask" / "tasks.sqlite3"
+    legacy = base / "task-mcp" / "tasks.sqlite3"
+    if current.exists() and legacy.exists() and not current.samefile(legacy):
+        raise RuntimeError(
+            "Both simtask and task-mcp data directories contain distinct databases. "
+            "Set SIMTASK_DB explicitly and reconcile the installation before continuing."
+        )
+    # Upgrading code alone must never create an empty, competing task database.
+    # The explicit installation migration moves the data and leaves an alias.
+    if not current.exists() and legacy.exists():
+        return legacy
+    return current
 
 
 def default_database() -> Path:
-    if configured := os.environ.get("TASK_MCP_DB"):
+    if configured := setting("DB"):
         return Path(configured).expanduser().absolute()
     return live_database()
 
@@ -5352,7 +5365,7 @@ class Store:
             if format == "markdown":
                 return self._markdown_export(db, project, ws, ids, include_closed)
             lines = [
-                "# Task MCP workstream export",
+                "# simtask workstream export",
                 "",
                 "Format: task-mcp/v1",
                 f"Project: {project['id']} ({project['name']})",

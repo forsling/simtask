@@ -14,9 +14,9 @@ import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
-from task_mcp.runtime import RUNTIME_IDENTITY
-from task_mcp.trace_report import analyze, page_report, render
-from task_mcp.tracing import TraceCollector, TraceConfig, capture, json_bytes, utc_now
+from simtask.runtime import RUNTIME_IDENTITY
+from simtask.trace_report import analyze, page_report, render
+from simtask.tracing import TraceCollector, TraceConfig, capture, json_bytes, utc_now
 
 
 def records(directory):
@@ -216,7 +216,7 @@ def test_concurrent_writers_enforce_shared_budget_and_retention(tmp_path):
 
 
 def test_daily_writes_expire_active_segments_by_observation_age(tmp_path, monkeypatch):
-    from task_mcp import tracing
+    from simtask import tracing
 
     collector = TraceCollector(TraceConfig(tmp_path / "traces"))
     start_ns = time.time_ns() - 40 * 86400 * 10**9
@@ -404,7 +404,7 @@ def test_read_only_cli_report_does_not_create_database(tmp_path):
     database = tmp_path / "nonexistent.sqlite3"
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        [sys.executable, "-m", "task_mcp", "trace-report", "--db", str(database), "--json"],
+        [sys.executable, "-m", "simtask", "trace-report", "--db", str(database), "--json"],
         env={**os.environ, "PYTHONPATH": str(root / "src")},
         capture_output=True,
         text=True,
@@ -421,7 +421,7 @@ def test_real_stdio_default_collection_errors_and_disable(tmp_path, mode):
     database, directory = tmp_path / "tasks.sqlite3", tmp_path / "traces"
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database), "--trace-dir", str(directory)],
+        args=["-m", "simtask", "--db", str(database), "--trace-dir", str(directory)],
         env={"PYTHONPATH": str(root / "src")},
     )
 
@@ -500,7 +500,7 @@ def test_real_stdio_concurrent_connections_have_distinct_identity(tmp_path):
             command=sys.executable,
             args=[
                 "-m",
-                "task_mcp",
+                "simtask",
                 "--db",
                 str(tmp_path / f"{number}.sqlite3"),
                 "--trace-dir",

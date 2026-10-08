@@ -8,8 +8,8 @@ import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
-from task_mcp.runtime import PROTOCOL_SCHEMA_REVISION
-from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
+from simtask.runtime import PROTOCOL_SCHEMA_REVISION
+from simtask.store import DATABASE_SCHEMA_REVISION, Store, TaskError
 
 LEGACY_CONCERNS_LOOKALIKE = (
     '{"format":"attempt-concerns-v1","original_evidence":"Legacy inner text",'
@@ -408,8 +408,8 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
     root = Path(__file__).resolve().parents[1]
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database)],
-        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+        args=["-m", "simtask", "--db", str(database)],
+        env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
     )
 
     async def exercise():
@@ -443,7 +443,7 @@ def test_fresh_stdio_discovers_optional_inputs_and_records_complete_concerns(tmp
                 return response.structured_content
 
             runtime = (await call("init", path=str(tmp_path / "probe"), branch="main"))["runtime"]
-            assert runtime["package_path"] == str(root / "src/task_mcp")
+            assert runtime["package_path"] == str(root / "src/simtask")
             assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION == 18
             assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION == 12
             ctx = await call(

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from task_mcp.store import Store, TaskError
+from simtask.store import Store, TaskError
 
 SOURCE = json.loads(
     (Path(__file__).parent / "fixtures" / "double_escaped_specification.json").read_text()
@@ -267,7 +267,7 @@ def test_mcp_reports_guard_error_without_creating_task(context):
 
     from mcp.server.mcpserver.exceptions import ToolError
 
-    from task_mcp.server import create_server
+    from simtask.server import create_server
 
     store, project, ws = context
     before = business_state(store)

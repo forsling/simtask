@@ -42,7 +42,7 @@ const context = vm.createContext({
   window: {addEventListener() {}}, setTimeout() {}, location: {hash: ""},
   sessionStorage: {getItem: () => ""}, history: {replaceState() {}, pushState() {}},
 });
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = code => vm.runInContext(code, context);
 const kids = n => (n.children || []).filter(c => c && typeof c === "object");

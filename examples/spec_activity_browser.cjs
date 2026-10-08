@@ -1,10 +1,10 @@
 // Check task details' Spec and Activity tabs in headless Chrome, on a disposable viewer
 // over a copy made by examples/spec_activity_seed.py (never the live database):
 //
-//   python examples/spec_activity_seed.py COPY --copy-from ~/.local/share/task-mcp/tasks.sqlite3 > ids.json
-//   TASK_MCP_DB=COPY ./run.sh        # prints the private link
+//   python examples/spec_activity_seed.py COPY --copy-from ~/.local/share/simtask/tasks.sqlite3 > ids.json
+//   SIMTASK_DB=COPY ./run.sh        # prints the private link
 //   node examples/spec_activity_browser.cjs LINK COPY ids.json SHOTS_DIR
-//   TASK_MCP_DB=COPY ./run.sh --stop
+//   SIMTASK_DB=COPY ./run.sh --stop
 //
 // Needs google-chrome and Node 22 or later (global WebSocket). It drives the page over the
 // DevTools protocol, wraps window.fetch to log Activity reads and to simulate a failing

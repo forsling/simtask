@@ -15,7 +15,7 @@ function element(tag = "div") {
   };
 }
 const descendants = node => node && typeof node === "object" ? [node, ...(node.children || []).flatMap(descendants)] : [];
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 function viewer(ping) {
   const roots = new Map();
   const get = id => {if (!roots.has(id)) roots.set(id, element()); return roots.get(id);};
@@ -33,7 +33,7 @@ function viewer(ping) {
   return {context, get, requests, run};
 }
 async function main() {
-  const database = "/home/me/workspace/task-mcp-change/.dev/tasks.sqlite3";
+  const database = "/home/me/workspace/simtask-change/.dev/tasks.sqlite3";
   const dev = viewer({service: "task-mcp-viewer", database, dev: true});
   await dev.run("environment()");
   // Objects from the page's realm differ by prototype, so compare them as JSON.
@@ -57,7 +57,7 @@ async function main() {
   await dev.run("environment()");
   assert.equal(dev.context.document.title, "[DEV] Tasks");
 
-  const live = viewer({service: "task-mcp-viewer", database: "/home/me/.local/share/task-mcp/tasks.sqlite3", dev: false});
+  const live = viewer({service: "task-mcp-viewer", database: "/home/me/.local/share/simtask/tasks.sqlite3", dev: false});
   await live.run("environment()");
   assert.equal(live.context.document.title, "Tasks");
   assert.equal(live.get("env").hidden, true);

@@ -9,8 +9,8 @@ import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
-from task_mcp.runtime import PROTOCOL_SCHEMA_REVISION
-from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError
+from simtask.runtime import PROTOCOL_SCHEMA_REVISION
+from simtask.store import DATABASE_SCHEMA_REVISION, Store, TaskError
 
 
 @pytest.fixture
@@ -238,8 +238,8 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
     database = tmp_path / "stdio.sqlite3"
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "task_mcp", "--db", str(database), "--actor", "stdio-remover", "--no-trace"],
-        env={"PYTHONPATH": str(root / "src"), "TASK_MCP_DB": str(database)},
+        args=["-m", "simtask", "--db", str(database), "--actor", "stdio-remover", "--no-trace"],
+        env={"PYTHONPATH": str(root / "src"), "SIMTASK_DB": str(database)},
     )
 
     async def exercise():
@@ -262,7 +262,7 @@ def test_fresh_stdio_discovers_and_calls_removal_tool_on_disposable_database(tmp
                 return result.structured_content
 
             runtime = (await call("init", path=str(tmp_path / "probe"), branch="main"))["runtime"]
-            assert runtime["package_path"] == str(root / "src/task_mcp")
+            assert runtime["package_path"] == str(root / "src/simtask")
             assert runtime["protocol_schema_revision"] == PROTOCOL_SCHEMA_REVISION
             assert runtime["database_schema_revision"] == DATABASE_SCHEMA_REVISION
             setup = await call(

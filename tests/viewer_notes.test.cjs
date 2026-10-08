@@ -50,7 +50,7 @@ const context = vm.createContext({
   window: {addEventListener() {}}, setTimeout() {}, clearTimeout() {}, location: {hash: "", pathname: "/"},
   sessionStorage: {getItem: () => "", setItem() {}}, history: {replaceState() {}, pushState() {}},
 });
-const source = fs.readFileSync(path.join(__dirname, "../src/task_mcp/viewer_assets/app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../src/simtask/viewer_assets/app.js"), "utf8");
 vm.runInContext(source.replace(/boot\(\);\s*$/, ""), context);
 const run = (code) => vm.runInContext(code, context);
 function descendants(n) { return [n, ...(n.children || []).flatMap(descendants)]; }
@@ -90,7 +90,7 @@ async function test() {
   await run("reload()");
   assert.deepEqual(plain(context.requests.map((r) => r.action).sort()), ["tasks", "workstreams"]);
   assert.equal(run("typeof renderNotes"), "undefined");
-  const assets = path.join(__dirname, "../src/task_mcp/viewer_assets");
+  const assets = path.join(__dirname, "../src/simtask/viewer_assets");
   assert.doesNotMatch(fs.readFileSync(path.join(assets, "index.html"), "utf8"), /id="notes"/);
   assert.match(fs.readFileSync(path.join(assets, "index.html"), "utf8"), /id="notes-open"/);
   run(`renderDetail = saved.renderDetail; selectTask = saved.selectTask;

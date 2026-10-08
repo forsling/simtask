@@ -1,6 +1,6 @@
 ---
 name: task-design
-description: Research and design captured features with the user. Use in projects using Task MCP for "let's design X", "review design tasks" or "designrev"; not for implementation review or sign-off.
+description: Research and design captured features with the user. Use in projects using simtask for "let's design X", "review design tasks" or "designrev"; not for implementation review or sign-off.
 ---
 
 # Task design

@@ -10,9 +10,9 @@ from uuid import UUID
 
 import pytest
 
-from task_mcp import store as store_module
-from task_mcp.server import create_server
-from task_mcp.store import DATABASE_SCHEMA_REVISION, Store, TaskError, short_task_slug
+from simtask import store as store_module
+from simtask.server import create_server
+from simtask.store import DATABASE_SCHEMA_REVISION, Store, TaskError, short_task_slug
 
 
 @pytest.fixture

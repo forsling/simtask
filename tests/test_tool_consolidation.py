@@ -7,8 +7,8 @@ import sqlite3
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from task_mcp.server import create_server
-from task_mcp.store import (
+from simtask.server import create_server
+from simtask.store import (
     DATABASE_SCHEMA_REVISION,
     INIT_MESSAGES,
     INIT_NAME_TAKEN,

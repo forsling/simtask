@@ -2,9 +2,9 @@
 
 import asyncio
 
-from task_mcp.reference import default_skills
-from task_mcp.server import create_server
-from task_mcp.store import Store
+from simtask.reference import default_skills
+from simtask.server import create_server
+from simtask.store import Store
 
 # The user's exact text. Do not paraphrase it here or in the server instructions.
 INSTRUCTION = (

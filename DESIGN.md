@@ -1,6 +1,6 @@
-# Task MCP design
+# simtask design
 
-Task MCP is an opt-in, local task-state service. It owns durable task state,
+simtask is an opt-in, local task-state service. It owns durable task state,
 workstream scope, concurrency checks, deterministic queries, and audit history.
 It does not run agents or authenticate users. Reference workflow skills provide
 the recommended orchestration, while raw MCP calls and custom skills remain

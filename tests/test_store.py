@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from task_mcp.store import INACTIVE_STATUSES, STATE_WORDS, Store, TaskError, default_database
+from simtask.store import INACTIVE_STATUSES, STATE_WORDS, Store, TaskError, default_database
 
 
 @pytest.fixture
@@ -848,6 +848,6 @@ def test_same_revision_concurrent_updates_allow_one_writer(store, tmp_path):
 
 
 def test_default_data_location_is_private(monkeypatch, tmp_path):
-    monkeypatch.delenv("TASK_MCP_DB", raising=False)
+    monkeypatch.delenv("SIMTASK_DB", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    assert default_database() == Path(tmp_path / "data/task-mcp/tasks.sqlite3")
+    assert default_database() == Path(tmp_path / "data/simtask/tasks.sqlite3")

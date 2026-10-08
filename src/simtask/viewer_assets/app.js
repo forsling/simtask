@@ -103,7 +103,7 @@ const state = {
   // keep it; navigation and a task click close it.
   panel: null,
   // The server's /api/ping answer when its database is not the live one (a dev copy,
-  // TASK_MCP_DB or --db): {database, dev: true}; null on the live database.
+  // SIMTASK_DB or --db): {database, dev: true}; null on the live database.
   environment: null,
 };
 let submitAction = null;
@@ -695,7 +695,7 @@ async function boot() {
     if (!state.projects.length) {
       renderNav();
       $("list").replaceChildren(
-        emptyState("No projects yet", "Initialize a project through Task MCP to get started."),
+        emptyState("No projects yet", "Initialize a project through simtask to get started."),
       );
       $("detail").replaceChildren();
       return;
@@ -2333,8 +2333,8 @@ function renderScopeNotes() {
     el("header", "detail-head",
       node("h2", `Notes · ${state.stream ? streamName(state.stream) : projectName(state.project)}`, "title"),
       node("p", state.stream
-        ? "Notes that reference this workstream, and those that reference its project. Agents read and write the same notes through Task MCP."
-        : "Notes that reference this project. Agents read and write the same notes through Task MCP.", "muted")),
+        ? "Notes that reference this workstream, and those that reference its project. Agents read and write the same notes through simtask."
+        : "Notes that reference this project. Agents read and write the same notes through simtask.", "muted")),
     ...lists));
   return loadNoteLists();
 }
@@ -2607,7 +2607,7 @@ function noteDialog(note, { references = [], saved } = {}) {
   openDialog(note ? "Edit note" : "Add a note",
     note
       ? "Change the title, text or references. They are saved together."
-      : "A note is found through the tasks, groups, workstreams or projects it references. Agents read the same notes through Task MCP.",
+      : "A note is found through the tasks, groups, workstreams or projects it references. Agents read the same notes through simtask.",
     note ? "Save note" : "Add note");
   $("dialog").classList.add("wide");
   const title = field("title", "Title", { maxLength: NOTE_TITLE_LIMIT });
@@ -3003,7 +3003,7 @@ $("scrim").onclick = closeDrawer;
 $("stop").onclick = () => {
   openDialog(
     "Stop the viewer?",
-    "Closes this local page. Task MCP keeps working; relaunch with task-mcp ui.",
+    "Closes this local page. simtask keeps working; relaunch with simtask ui.",
     "Stop viewer",
     true,
   );

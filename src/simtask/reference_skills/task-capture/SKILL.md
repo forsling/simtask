@@ -1,6 +1,6 @@
 ---
 name: task-capture
-description: Save a task, bug or researched feature brief with its open design questions, or go through saved ideas. Use in projects using Task MCP for "add a task", "add a design task", an idea that needs design or "go through my ideas"; use task-design for the design discussion.
+description: Save a task, bug or researched feature brief with its open design questions, or go through saved ideas. Use in projects using simtask for "add a task", "add a design task", an idea that needs design or "go through my ideas"; use task-design for the design discussion.
 ---
 
 # Task capture

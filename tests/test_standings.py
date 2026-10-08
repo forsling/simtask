@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from task_mcp.store import STANDINGS, Store
-from task_mcp.viewer import ASSETS, dispatch
+from simtask.store import STANDINGS, Store
+from simtask.viewer import ASSETS, dispatch
 
 NEEDS_INPUT = ("signoff", "decision")
 

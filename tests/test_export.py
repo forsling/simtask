@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from task_mcp.store import Store, TaskError
+from simtask.store import Store, TaskError
 
 
 @pytest.fixture
@@ -367,7 +367,7 @@ def test_legacy_export_preserves_v1_layout(context):
     }
     expected = "\n".join(
         [
-            "# Task MCP workstream export",
+            "# simtask workstream export",
             "",
             "Format: task-mcp/v1",
             f"Project: {project} (repo)",
@@ -414,7 +414,7 @@ def test_cli_matches_store_and_filter(context, format):
         [
             sys.executable,
             "-m",
-            "task_mcp",
+            "simtask",
             "--db",
             str(store.path),
             "--export-workstream",
@@ -442,7 +442,7 @@ def test_invalid_export_options_do_not_create_database(context, tmp_path):
     ):
         database = tmp_path / "never-created.sqlite3"
         completed = subprocess.run(
-            [sys.executable, "-m", "task_mcp", "--db", str(database), *options],
+            [sys.executable, "-m", "simtask", "--db", str(database), *options],
             capture_output=True,
             text=True,
             timeout=15,

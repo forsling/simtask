@@ -1,6 +1,6 @@
 ---
 name: proposal-review
-description: Review inbox proposals and open questions with the user and record their decisions. Use in projects using Task MCP for ordinary proposals or questions; use task-design for feature design.
+description: Review inbox proposals and open questions with the user and record their decisions. Use in projects using simtask for ordinary proposals or questions; use task-design for feature design.
 ---
 
 # Proposal review
