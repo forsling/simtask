@@ -54,8 +54,9 @@ An optional browser viewer works without an agent or model. It shows and steers;
 agents write and decide with you. The quickest
 way is `./run.sh`, which starts the viewer (or reuses the running one) and prints
 its link; `./run.sh --restart` and `./run.sh --stop` restart or stop it, and
-`TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh` selects another database. The script
-wraps:
+`TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh` selects another database. From a dev
+worktree, `./run.sh --dev` runs a separate viewer on a copy of the live database
+(see the README's development section). The script wraps:
 
 ```sh
 .venv/bin/task-mcp ui

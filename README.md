@@ -164,6 +164,23 @@ A server with a newer schema migrates the database the first time it opens it, a
 .venv/bin/python examples/demo.py      # a real stdio session against a disposable database
 ```
 
+### A dev checkout beside the live setup
+
+Every client and `./run.sh` run the main checkout's working tree, on the live database. To change code without touching them, work in a Git worktree: it gets its own venv, and `./run.sh --dev` there runs the viewer and the server on a copy of the live database.
+
+```sh
+git worktree add -b my-change ../task-mcp-my-change   # a worktree on its own branch
+cd ../task-mcp-my-change
+./run.sh --dev              # create .venv if missing, copy the live database to .dev/tasks.sqlite3, start a dev viewer on the copy
+./run.sh --dev --keep       # reuse the existing copy
+./run.sh --dev --restart    # restart the dev viewer on a fresh copy (--keep --restart: on the existing one)
+./run.sh --dev --stop       # stop the dev viewer; the copy stays
+```
+
+`--dev` prints the dev viewer's link, the copy's path, the dev stop command and a `tasks-dev` MCP entry (the worktree's `.venv/bin/task-mcp` with `TASK_MCP_DB` set to the copy). Add that entry beside `tasks` to run the dev server in a client; a session on `tasks-dev` writes to the copy only. `--dev` only reads the live database and leaves the live viewer and running servers alone, so dogfooding through the live `tasks` entry keeps recording there, and `init` from the worktree binds a workstream to the worktree's path and branch as usual. `--dev` runs on the machine that holds the live database and cannot be combined with `--remote` or `TASK_MCP_DB`.
+
+Roll out as above: merge to `main`, then restart every live server and the viewer (`./run.sh --restart` in the main checkout); the first server with a newer schema migrates the live database after a backup. Nothing reloads while it runs.
+
 | Document | Contents |
 |----------|----------|
 | [DESIGN.md](DESIGN.md) | The model and the reasoning behind it |

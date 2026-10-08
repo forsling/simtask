@@ -9,17 +9,25 @@
 #                       the same for the viewer on host (default $TASK_MCP_REMOTE_HOST),
 #                       reached through an SSH tunnel from a laptop loopback port
 #
+#   ./run.sh --dev [--keep] [--restart | --stop]
+#                       from a dev checkout (a Git worktree): copy the live database into
+#                       .dev/ in this checkout, start a dev viewer on the copy and print a
+#                       tasks-dev MCP entry; --keep reuses the copy, --restart takes a
+#                       fresh one, --stop stops the dev viewer. Creates .venv when missing.
+#
 # Uses the live task database unless TASK_MCP_DB is set (local viewer only).
 set -euo pipefail
 
 usage() {
-  echo "Usage: ./run.sh [--remote [host]] [--restart | --stop]" >&2
+  echo "Usage: ./run.sh [--remote [host] | --dev [--keep]] [--restart | --stop]" >&2
   exit 2
 }
 
 action=""
 remote=""
 host=""
+dev=""
+keep=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --restart | --stop)
@@ -34,16 +42,31 @@ while [ "$#" -gt 0 ]; do
         shift
       fi
       ;;
+    --dev)
+      [ -z "$dev" ] || usage
+      dev=1
+      ;;
+    --keep)
+      [ -z "$keep" ] || usage
+      keep=1
+      ;;
     *) usage ;;
   esac
   shift
 done
+[ -z "$dev" ] || [ -z "$remote" ] || usage
+[ -z "$keep" ] || [ -n "$dev" ] || usage
+[ -z "$keep" ] || [ "$action" != --stop ] || usage
 
 # Resolve a relative TASK_MCP_DB against the caller's directory, before changing it.
 db_args=()
 if [ -n "${TASK_MCP_DB:-}" ]; then
   if [ -n "$remote" ]; then
     echo "TASK_MCP_DB selects a local database; --remote always uses the host's own." >&2
+    exit 2
+  fi
+  if [ -n "$dev" ]; then
+    echo "--dev copies the live database itself; unset TASK_MCP_DB." >&2
     exit 2
   fi
   TASK_MCP_DB=$(realpath -m -- "$TASK_MCP_DB")
@@ -171,9 +194,84 @@ if [ -n "$remote" ]; then
 fi
 
 if [ ! -x .venv/bin/task-mcp ]; then
-  echo "No .venv found. Set it up once with:" >&2
-  echo "  python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'" >&2
-  exit 1
+  if [ -z "$dev" ]; then
+    echo "No .venv found. Set it up once with:" >&2
+    echo "  python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'" >&2
+    exit 1
+  fi
+  # A dev checkout gets its own editable install, so it runs this checkout's code.
+  echo "No .venv in $PWD; creating one with an editable install of this checkout." >&2
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -q --disable-pip-version-check -e '.[dev]'
+  [ -x .venv/bin/task-mcp ] || { echo "The editable install did not produce .venv/bin/task-mcp." >&2; exit 1; }
+fi
+
+# Copies the live database with SQLite's online backup API. The source is opened
+# read-only (mode=ro), so the live database is never written or migrated here.
+copy_live() {
+  rm -f -- "$dev_db" "$dev_db-wal" "$dev_db-shm"
+  .venv/bin/python - "$live_db" "$dev_db" <<'EOF'
+import os, sqlite3, sys
+from contextlib import closing
+
+source, copy = sys.argv[1:]
+with (
+    closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as src,
+    closing(sqlite3.connect(copy)) as dst,
+):
+    src.backup(dst)
+os.chmod(copy, 0o600)
+EOF
+}
+
+if [ -n "$dev" ]; then
+  # The dev copy lives in the checkout (.dev/ is gitignored). The live database
+  # is the server's default: the same resolution as task_mcp.store.default_database.
+  live_db=${XDG_DATA_HOME:-$HOME/.local/share}/task-mcp/tasks.sqlite3
+  dev_dir=$PWD/.dev
+  dev_db=$dev_dir/tasks.sqlite3
+  dev_state=$dev_db.viewer.json
+
+  if [ "$action" = --stop ]; then
+    .venv/bin/task-mcp ui --stop --db "$dev_db"
+    echo "(The dev copy stays at $dev_db.)"
+    exit
+  fi
+  mkdir -p -- "$dev_dir"
+  if [ -n "$keep" ]; then
+    if [ ! -f "$dev_db" ]; then
+      echo "No dev copy at $dev_db; run ./run.sh --dev without --keep to take one." >&2
+      exit 1
+    fi
+    copy_note="kept"
+    [ "$action" != --restart ] || .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
+  elif [ "$action" = --restart ] || [ ! -f "$dev_state" ]; then
+    # A fresh copy; the dev viewer, if any, is stopped first so nothing reads
+    # the copy while it is replaced. A running dev viewer is otherwise reused
+    # together with its copy (--restart takes a fresh one).
+    if [ ! -f "$live_db" ]; then
+      echo "No live database at $live_db to copy." >&2
+      exit 1
+    fi
+    .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
+    copy_live
+    copy_note="fresh copy of $live_db"
+  else
+    copy_note="kept while the dev viewer runs; ./run.sh --dev --restart takes a fresh copy"
+  fi
+
+  url=$(.venv/bin/task-mcp ui --db "$dev_db")
+  echo "Task MCP dev viewer: $url"
+  echo "Dev database: $dev_db ($copy_note)"
+  echo "(The link includes a private access token. Stop it with ./run.sh --dev --stop.)"
+  echo
+  echo "MCP entry for the dev server, to add beside the live \"tasks\" entry:"
+  echo "  \"tasks-dev\": {"
+  echo "    \"type\": \"stdio\","
+  echo "    \"command\": \"$PWD/.venv/bin/task-mcp\","
+  echo "    \"env\": { \"TASK_MCP_DB\": \"$dev_db\" }"
+  echo "  }"
+  exit
 fi
 
 case "$action" in
