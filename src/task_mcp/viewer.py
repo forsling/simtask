@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -404,10 +405,23 @@ def serve(database, port=0, public_origin=None):
                 handle.seek(0)
                 json.dump(info, handle)
                 handle.truncate()
+            _stop_on_sigterm(server)
             server.serve_forever(poll_interval=0.1)
         finally:
             server.server_close()
             state.unlink(missing_ok=True)
+
+
+def _stop_on_sigterm(server):
+    """A SIGTERM (systemctl stop, a logout) ends the viewer the way /api/stop does, so
+    the state file goes away with it. Signals can only be caught in the main thread."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+
+    def stop(signum, frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, stop)
 
 
 if __name__ == "__main__":
