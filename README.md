@@ -83,6 +83,7 @@ TASK_MCP_ACTOR = "codex"
 |----------|---------|
 | `TASK_MCP_DB` | Database path. Default `$XDG_DATA_HOME/task-mcp/tasks.sqlite3`, falling back to `~/.local/share/task-mcp/tasks.sqlite3` |
 | `TASK_MCP_ACTOR` | Label recorded on everything this client writes. Default `local-agent` |
+| `TASK_MCP_TAILSCALE_PORT`, `TASK_MCP_DEV_TAILSCALE_PORT` | Fixed ports of `./run.sh --tailscale` and `./run.sh --dev --tailscale`. Defaults 8787 and 8788 |
 | `TASK_MCP_REMOTE_HOST` | Default host for `./run.sh --remote` |
 
 Running processes keep the code they started with. After pulling new code, restart every connected server and the viewer; `init` reports the runtime it reached under `runtime`.
@@ -95,11 +96,15 @@ A browser view of every project, workstream and task, with the task's spec, acti
 ./run.sh                    # start or reuse the viewer, print its private link
 ./run.sh --restart          # restart it, e.g. after pulling new viewer code
 ./run.sh --stop             # stop it
-./run.sh --remote [host]    # the same for a viewer on another machine, over an SSH tunnel
+./run.sh --tailscale        # the same, reachable from your other devices over Tailscale (see below)
+./run.sh --tailscale --stop # stop it and remove its tailscale serve mapping
+./run.sh --remote [host]    # a viewer on a machine without Tailscale, over an SSH tunnel
 TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh    # a viewer on another database
 ```
 
 The link carries a private token; the viewer binds to loopback only. `open_task_viewer` returns the same link to an agent. See [docs/viewer.md](docs/viewer.md).
+
+`--tailscale` is the way to reach the viewer from another machine. It runs the viewer on a fixed loopback port (`TASK_MCP_TAILSCALE_PORT`, default 8787) and publishes that port on your tailnet with `tailscale serve` under this machine's MagicDNS name, so the link becomes `https://<machine>.<tailnet>.ts.net:8787/#<token>` and opens from any device on the tailnet without a tunnel. The viewer accepts that name besides loopback, still needs the token and is never published outside the tailnet (no Funnel). The link is `https` when HTTPS certificates are enabled for the tailnet (Tailscale admin console, DNS page, **Enable HTTPS**) and `http` otherwise; the tailnet encrypts both. Run `sudo tailscale set --operator=$USER` once so `tailscale serve` works without root. Repeated runs reuse the viewer and the mapping; `--restart` restarts the viewer (new token) on the same port.
 
 ## Tools
 
@@ -142,7 +147,7 @@ task-mcp [command] [options]
 | Command or option | Description |
 |-------------------|-------------|
 | *(none)* | Serve MCP over stdio |
-| `ui` | Start or reuse the web viewer and print its link; `ui --stop` stops it |
+| `ui` | Start or reuse the web viewer and print its link; `ui --stop` stops it. `--port <n>` fixes its loopback port and `--public-origin <url>` names the origin a proxy on this machine publishes it under (what `./run.sh --tailscale` passes); a running viewer that does not match these is replaced |
 | `trace-report` | Report on the private usage traces the server collects (see [docs/usage-traces.md](docs/usage-traces.md)) |
 | `--db <path>` | Database to use |
 | `--actor <label>` | Attribution label, same as `TASK_MCP_ACTOR` |
@@ -175,6 +180,7 @@ cd ../task-mcp-my-change
 ./run.sh --dev --keep       # reuse the existing copy
 ./run.sh --dev --restart    # restart the dev viewer on a fresh copy (--keep --restart: on the existing one)
 ./run.sh --dev --stop       # stop the dev viewer; the copy stays
+./run.sh --dev --tailscale  # the dev viewer on the tailnet too, on TASK_MCP_DEV_TAILSCALE_PORT (8788), beside the live one
 ```
 
 `--dev` prints the dev viewer's link, the copy's path, the dev stop command and a `tasks-dev` MCP entry (the worktree's `.venv/bin/task-mcp` with `TASK_MCP_DB` set to the copy). Add that entry beside `tasks` to run the dev server in a client; a session on `tasks-dev` writes to the copy only. `--dev` only reads the live database and leaves the live viewer and running servers alone, so dogfooding through the live `tasks` entry keeps recording there, and `init` from the worktree binds a workstream to the worktree's path and branch as usual. `--dev` runs on the machine that holds the live database and cannot be combined with `--remote` or `TASK_MCP_DB`.

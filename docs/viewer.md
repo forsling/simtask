@@ -414,7 +414,10 @@ nothing, reloads it and says so.
 The companion binds `127.0.0.1`, never a public interface, on an OS-selected
 port. Host validation (a literal `127.0.0.1:<port>`) protects against DNS
 rebinding; any loopback port is accepted so that an SSH tunnel from another
-laptop port (`./run.sh --remote`) works. API calls require a high-entropy token
+laptop port (`./run.sh --remote`) works. With `--public-origin` (what
+`./run.sh --tailscale` passes), the one published name and port are accepted as
+well, for requests `tailscale serve` forwards with the browser's own Host
+header; the link then uses that origin. API calls require a high-entropy token
 in a custom header, JSON content type, and an Origin header exactly matching
 that Host. No CORS permission is granted; cross-site browser
 requests are rejected. CSP disallows remote resources, framing and inline

@@ -1,11 +1,13 @@
-"""run.sh: --remote through a stand-in ssh (tests/fake_ssh.py) and --dev in a stand-in
-checkout whose "live" database sits under a temporary XDG_DATA_HOME."""
+"""run.sh: --remote through a stand-in ssh (tests/fake_ssh.py), --dev in a stand-in
+checkout whose "live" database sits under a temporary XDG_DATA_HOME, and --tailscale
+through a stand-in tailscale (tests/fake_tailscale.py)."""
 
 import json
 import os
 import re
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import time
@@ -20,6 +22,7 @@ from task_mcp.store import Store
 
 REPO = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"http://127\.0\.0\.1:(\d+)/#([A-Za-z0-9_-]+)")
+TAILNET_LINK = re.compile(r"(https?)://(fake-host\.tail\.ts\.net):(\d+)/#([A-Za-z0-9_-]+)")
 
 
 @pytest.fixture
@@ -180,6 +183,11 @@ def tunnels_or_empty(tmp_path):
         ["--keep"],
         ["--dev", "--keep", "--keep"],
         ["--dev", "--keep", "--stop"],
+        ["--tailscale", "--remote"],
+        ["--remote", "--tailscale"],
+        ["--tailscale", "--remote", "a"],
+        ["--tailscale", "--tailscale"],
+        ["--tailscale", "--keep"],
     ],
 )
 def test_argument_checks(remote, args):
@@ -446,3 +454,212 @@ def test_dev_refuses_task_mcp_db(dev):
     result = run_dev({**env, "TASK_MCP_DB": str(checkout / "other.sqlite3")}, checkout)
     assert result.returncode == 2 and "unset TASK_MCP_DB" in result.stderr
     assert not (checkout / ".dev").exists() and not (checkout / "other.sqlite3").exists()
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.fixture
+def tailnet(tmp_path):
+    """A stand-in tailscale on PATH, a disposable database through TASK_MCP_DB and a
+    free fixed port, so the live viewer and the machine's real tailscale are untouched."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shutil.copy(REPO / "tests/fake_tailscale.py", bin_dir / "tailscale")
+    (bin_dir / "tailscale").chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "TASK_MCP_DB"}
+    env.update(
+        PATH=f"{bin_dir}:{env['PATH']}",
+        FAKE_TAILSCALE_LOG=str(tmp_path / "tailscale.log"),
+        FAKE_TAILSCALE_STATE=str(tmp_path / "serve.json"),
+        TASK_MCP_DB=str(tmp_path / "local.sqlite3"),
+        TASK_MCP_TAILSCALE_PORT=str(free_port()),
+    )
+    yield env, tmp_path
+    if Path(env["TASK_MCP_DB"] + ".viewer.json").exists():
+        subprocess.run(
+            [REPO / ".venv/bin/task-mcp", "ui", "--stop", "--db", env["TASK_MCP_DB"]],
+            capture_output=True,
+        )
+
+
+def tailnet_link(result):
+    assert result.returncode == 0, result.stdout + result.stderr
+    scheme, host, port, token = TAILNET_LINK.search(result.stdout).groups()
+    return scheme, host, int(port), token
+
+
+def tailscale_calls(tmp_path):
+    log = tmp_path / "tailscale.log"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def serve_config(tmp_path):
+    state = tmp_path / "serve.json"
+    return json.loads(state.read_text()) if state.exists() else {}
+
+
+def through_tailnet(port, token, public_origin):
+    """What the viewer sees from a browser on the tailnet: tailscale serve forwards the
+    request to loopback with the browser's Host header (the MagicDNS name and port)
+    and Origin unchanged."""
+    host = public_origin.split("://", 1)[1]
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/projects",
+        data=b"{}",
+        headers={
+            "Host": host,
+            "Origin": public_origin,
+            "X-Task-Token": token,
+            "Content-Type": "application/json",
+        },
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=3) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except OSError:
+        return None
+
+
+def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
+    env, tmp_path = tailnet
+    port = int(env["TASK_MCP_TAILSCALE_PORT"])
+    public = f"http://fake-host.tail.ts.net:{port}"
+    mapping = {
+        "TCP": {str(port): {"HTTP": True}},
+        "Web": {
+            f"fake-host.tail.ts.net:{port}": {
+                "Handlers": {"/": {"Proxy": f"http://127.0.0.1:{port}"}}
+            }
+        },
+    }
+
+    result = run(env, "--tailscale")
+    assert tailnet_link(result)[:3] == ("http", "fake-host.tail.ts.net", port)
+    token = tailnet_link(result)[3]
+    assert result.stdout.startswith(f"Task MCP viewer: {public}/#")
+    assert f"(http on port {port}, mapping added)" in result.stdout
+    assert "Stop it with ./run.sh --tailscale --stop." in result.stdout
+    state = json.loads(Path(env["TASK_MCP_DB"] + ".viewer.json").read_text())
+    assert state == {"origin": f"http://127.0.0.1:{port}", "token": token, "public_origin": public}
+    assert serve_config(tmp_path) == mapping
+    assert tailscale_calls(tmp_path) == [
+        ["status", "--json"],
+        ["serve", "status", "--json"],
+        ["serve", "--bg", f"--http={port}", f"http://127.0.0.1:{port}"],
+    ]
+    # Requests as the proxy forwards them from a tailnet browser pass; the viewer
+    # still binds loopback only, still needs the token and refuses other names.
+    assert through_tailnet(port, token, public) == 200
+    assert ping(port, token) == 200
+    assert through_tailnet(port, "wrong", public) == 401
+    assert through_tailnet(port, token, f"http://other.tail.ts.net:{port}") == 403
+    assert through_tailnet(port, token, f"https://fake-host.tail.ts.net:{port}") == 403
+
+    # A second run reuses the viewer and the mapping; a plain run reuses the viewer
+    # too and prints the same tailnet link.
+    again = run(env, "--tailscale")
+    assert tailnet_link(again)[3] == token and "mapping reused)" in again.stdout
+    assert tailscale_calls(tmp_path)[3:] == [["status", "--json"], ["serve", "status", "--json"]]
+    plain = run(env)
+    assert tailnet_link(plain)[3] == token and "tailscale serve" not in plain.stdout
+
+    # --restart rotates the token on the same port and keeps the mapping. With
+    # certificates on the tailnet the link and the mapping become https.
+    restarted = run({**env, "FAKE_TAILSCALE_CERTS": "1"}, "--tailscale", "--restart")
+    scheme, _, new_port, new_token = tailnet_link(restarted)
+    assert (scheme, new_port) == ("https", port) and new_token != token
+    assert f"(https on port {port}, mapping added)" in restarted.stdout
+    assert through_tailnet(port, new_token, f"https://fake-host.tail.ts.net:{port}") == 200
+    assert through_tailnet(port, new_token, public) == 403
+    assert serve_config(tmp_path)["TCP"] == {str(port): {"HTTPS": True}}
+    assert tailscale_calls(tmp_path)[-1] == [
+        "serve",
+        "--bg",
+        f"--https={port}",
+        f"http://127.0.0.1:{port}",
+    ]
+
+    # --stop removes the mapping in the form it was made and stops the viewer.
+    stopped = run(env, "--tailscale", "--stop")
+    assert stopped.returncode == 0, stopped.stderr
+    assert stopped.stdout == f"Tailnet mapping for port {port} removed.\nViewer stopped.\n"
+    assert tailscale_calls(tmp_path)[-2:] == [
+        ["serve", "status", "--json"],
+        ["serve", f"--https={port}", "off"],
+    ]
+    assert serve_config(tmp_path) == {} and ping(port, new_token) is None
+    assert not Path(env["TASK_MCP_DB"] + ".viewer.json").exists()
+    assert run(env, "--tailscale", "--stop").stdout == "Viewer is not running.\n"
+    assert not any(call[0] == "funnel" for call in tailscale_calls(tmp_path))
+
+
+def test_tailscale_errors(tailnet):
+    env, tmp_path = tailnet
+    port = env["TASK_MCP_TAILSCALE_PORT"]
+    down = run({**env, "FAKE_TAILSCALE_DOWN": "1"}, "--tailscale")
+    assert down.returncode == 1 and "tailscale status --json failed" in down.stderr
+    assert "doesn't appear to be running" in down.stderr
+    assert not Path(env["TASK_MCP_DB"] + ".viewer.json").exists()
+
+    denied = run({**env, "FAKE_TAILSCALE_DENIED": "1"}, "--tailscale")
+    assert denied.returncode == 1 and "Access denied" in denied.stderr
+    assert "sudo tailscale set --operator=$USER" in denied.stderr
+    assert f"the viewer runs on 127.0.0.1:{port} but is not published" in denied.stderr
+    assert serve_config(tmp_path) == {}
+    # The viewer it started is reused once serve works, and stopped as usual.
+    assert "mapping added)" in run(env, "--tailscale").stdout
+    assert run(env, "--tailscale", "--stop").returncode == 0
+
+    bad = run({**env, "TASK_MCP_TAILSCALE_PORT": "80a"}, "--tailscale")
+    assert bad.returncode == 2 and "must be port numbers" in bad.stderr
+    assert tailscale_calls(tmp_path)[-1] == ["serve", f"--http={port}", "off"]
+
+
+def test_dev_tailscale_uses_its_own_port(dev, tmp_path):
+    env, checkout, live = dev
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shutil.copy(REPO / "tests/fake_tailscale.py", bin_dir / "tailscale")
+    (bin_dir / "tailscale").chmod(0o755)
+    port = free_port()
+    env = {
+        **env,
+        "PATH": f"{bin_dir}:{env['PATH']}",
+        "FAKE_TAILSCALE_LOG": str(tmp_path / "tailscale.log"),
+        "FAKE_TAILSCALE_STATE": str(tmp_path / "serve.json"),
+        "TASK_MCP_TAILSCALE_PORT": "1",  # the live port is not the dev viewer's
+        "TASK_MCP_DEV_TAILSCALE_PORT": str(port),
+    }
+    copy = checkout / ".dev/tasks.sqlite3"
+    public = f"http://fake-host.tail.ts.net:{port}"
+
+    result = run_dev(env, checkout, "--tailscale")
+    assert tailnet_link(result)[:3] == ("http", "fake-host.tail.ts.net", port)
+    token = tailnet_link(result)[3]
+    assert result.stdout.startswith(f"Task MCP dev viewer: {public}/#")
+    assert f"Dev database: {copy} (fresh copy of {live})" in result.stdout
+    assert f"(http on port {port}, mapping added)" in result.stdout
+    assert "Stop it with ./run.sh --dev --tailscale --stop." in result.stdout
+    assert mcp_entry(result.stdout)["env"] == {"TASK_MCP_DB": str(copy)}
+    assert json.loads(Path(str(copy) + ".viewer.json").read_text())["public_origin"] == public
+    assert through_tailnet(port, token, public) == 200
+    assert list(serve_config(tmp_path)["TCP"]) == [str(port)]
+
+    kept = run_dev(env, checkout, "--tailscale", "--keep")
+    assert tailnet_link(kept)[3] == token and "mapping reused)" in kept.stdout
+
+    stopped = run_dev(env, checkout, "--tailscale", "--stop")
+    assert stopped.returncode == 0, stopped.stderr
+    assert stopped.stdout == (
+        f"Tailnet mapping for port {port} removed.\nViewer stopped.\n"
+        f"(The dev copy stays at {copy}.)\n"
+    )
+    assert serve_config(tmp_path) == {} and copy.exists()
+    assert tailscale_calls(tmp_path)[-1] == ["serve", f"--http={port}", "off"]

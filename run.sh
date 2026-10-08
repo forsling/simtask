@@ -5,21 +5,29 @@
 #   ./run.sh --restart  restart it, e.g. after pulling new viewer code
 #   ./run.sh --stop     stop it
 #
+#   ./run.sh --tailscale [--restart | --stop]
+#                       the same, published on the tailnet with tailscale serve under this
+#                       machine's MagicDNS name on port $TASK_MCP_TAILSCALE_PORT (8787);
+#                       --stop also removes the serve mapping. Never Funnel.
+#
 #   ./run.sh --remote [host] [--restart | --stop]
-#                       the same for the viewer on host (default $TASK_MCP_REMOTE_HOST),
-#                       reached through an SSH tunnel from a laptop loopback port
+#                       the same for the viewer on a host without Tailscale (default
+#                       $TASK_MCP_REMOTE_HOST), reached through an SSH tunnel from a
+#                       laptop loopback port
 #
 #   ./run.sh --dev [--keep] [--restart | --stop]
 #                       from a dev checkout (a Git worktree): copy the live database into
 #                       .dev/ in this checkout, start a dev viewer on the copy and print a
 #                       tasks-dev MCP entry; --keep reuses the copy, --restart takes a
 #                       fresh one, --stop stops the dev viewer. Creates .venv when missing.
+#                       With --tailscale, the dev viewer is published on port
+#                       $TASK_MCP_DEV_TAILSCALE_PORT (8788) beside the live one.
 #
 # Uses the live task database unless TASK_MCP_DB is set (local viewer only).
 set -euo pipefail
 
 usage() {
-  echo "Usage: ./run.sh [--remote [host] | --dev [--keep]] [--restart | --stop]" >&2
+  echo "Usage: ./run.sh [--remote [host] | [--dev [--keep]] [--tailscale]] [--restart | --stop]" >&2
   exit 2
 }
 
@@ -28,6 +36,7 @@ remote=""
 host=""
 dev=""
 keep=""
+tailscale=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --restart | --stop)
@@ -50,11 +59,16 @@ while [ "$#" -gt 0 ]; do
       [ -z "$keep" ] || usage
       keep=1
       ;;
+    --tailscale)
+      [ -z "$tailscale" ] || usage
+      tailscale=1
+      ;;
     *) usage ;;
   esac
   shift
 done
 [ -z "$dev" ] || [ -z "$remote" ] || usage
+[ -z "$tailscale" ] || [ -z "$remote" ] || usage
 [ -z "$keep" ] || [ -n "$dev" ] || usage
 [ -z "$keep" ] || [ "$action" != --stop ] || usage
 
@@ -193,6 +207,97 @@ if [ -n "$remote" ]; then
   exit
 fi
 
+# --tailscale: the viewer listens on a fixed loopback port that tailscaled proxies
+# to under this machine's MagicDNS name, so the laptop needs no SSH tunnel. The
+# viewer accepts that public origin besides loopback and prints the tailnet link.
+# The tailnet encrypts the hop either way; https needs certificates enabled for the
+# tailnet (then status lists CertDomains). Funnel is never touched.
+tailnet_origin() {
+  tailscale status --json | python3 -c '
+import json, sys
+
+text = sys.stdin.read()
+if not text.strip():
+    sys.exit(1)  # tailscale printed its own error
+status = json.loads(text)
+name = (status.get("Self") or {}).get("DNSName", "").rstrip(".")
+if not name:
+    sys.exit("This machine has no MagicDNS name; is Tailscale up?")
+print("https" if status.get("CertDomains") else "http", name)
+'
+}
+
+# The scheme tailscaled currently serves our port with ("https", "http" or nothing).
+serve_scheme() {
+  tailscale serve status --json | python3 -c '
+import json, sys
+
+handler = ((json.load(sys.stdin) or {}).get("TCP") or {}).get(sys.argv[1]) or {}
+print("https" if handler.get("HTTPS") else "http" if handler.get("HTTP") else "")
+' "$port"
+}
+
+# True while tailscaled proxies the wanted scheme on our port to the viewer, Funnel off.
+serve_mapped() {
+  tailscale serve status --json | python3 -c '
+import json, sys
+
+scheme, host, port = sys.argv[1:]
+config = json.load(sys.stdin) or {}
+tcp = (config.get("TCP") or {}).get(port) or {}
+web = (config.get("Web") or {}).get(f"{host}:{port}") or {}
+proxy = ((web.get("Handlers") or {}).get("/") or {}).get("Proxy")
+ok = tcp.get("HTTPS" if scheme == "https" else "HTTP") and proxy == f"http://127.0.0.1:{port}"
+sys.exit(0 if ok and not (config.get("AllowFunnel") or {}).get(f"{host}:{port}") else 1)
+' "$scheme" "$public_host" "$port"
+}
+
+serve_map() {
+  if serve_mapped; then
+    mapping="reused"
+  elif tailscale serve --bg "--$scheme=$port" "http://127.0.0.1:$port" >/dev/null; then
+    mapping="added"
+  else
+    echo "tailscale serve failed; the viewer runs on 127.0.0.1:$port but is not published." >&2
+    echo "(An 'Access denied' needs 'sudo tailscale set --operator=\$USER' once.)" >&2
+    exit 1
+  fi
+}
+
+serve_unmap() {
+  local current
+  if ! current=$(serve_scheme); then
+    echo "Could not read the tailscale serve status; any mapping for port $port stays." >&2
+  elif [ -n "$current" ]; then
+    tailscale serve "--$current=$port" off
+    echo "Tailnet mapping for port $port removed."
+  fi
+}
+
+ui_args=()
+if [ -n "$tailscale" ]; then
+  if [ -n "$dev" ]; then
+    port=${TASK_MCP_DEV_TAILSCALE_PORT:-8788}
+  else
+    port=${TASK_MCP_TAILSCALE_PORT:-8787}
+  fi
+  case "$port" in
+    '' | *[!0-9]* | 0*) port=70000 ;;
+  esac
+  if [ "$port" -gt 65535 ]; then
+    echo "TASK_MCP_TAILSCALE_PORT and TASK_MCP_DEV_TAILSCALE_PORT must be port numbers." >&2
+    exit 2
+  fi
+  if [ "$action" != --stop ]; then
+    read -r scheme public_host < <(tailnet_origin) || true
+    if [ -z "${public_host:-}" ]; then
+      echo "Cannot read this machine's tailnet name (tailscale status --json failed)." >&2
+      exit 1
+    fi
+    ui_args=(--port "$port" --public-origin "$scheme://$public_host:$port")
+  fi
+fi
+
 if [ ! -x .venv/bin/task-mcp ]; then
   if [ -z "$dev" ]; then
     echo "No .venv found. Set it up once with:" >&2
@@ -241,6 +346,7 @@ if [ -n "$dev" ]; then
   dev_state=$dev_db.viewer.json
 
   if [ "$action" = --stop ]; then
+    [ -z "$tailscale" ] || serve_unmap
     .venv/bin/task-mcp ui --stop --db "$dev_db"
     echo "(The dev copy stays at $dev_db.)"
     exit
@@ -268,10 +374,16 @@ if [ -n "$dev" ]; then
     copy_note="kept while the dev viewer runs; ./run.sh --dev --restart takes a fresh copy"
   fi
 
-  url=$(.venv/bin/task-mcp ui --db "$dev_db")
+  url=$(.venv/bin/task-mcp ui --db "$dev_db" ${ui_args[@]+"${ui_args[@]}"})
+  [ -z "$tailscale" ] || serve_map
   echo "Task MCP dev viewer: $url"
   echo "Dev database: $dev_db ($copy_note)"
-  echo "(The link includes a private access token. Stop it with ./run.sh --dev --stop.)"
+  if [ -n "$tailscale" ]; then
+    echo "Published on the tailnet by tailscale serve ($scheme on port $port, mapping $mapping)."
+    echo "(The link includes a private access token. Stop it with ./run.sh --dev --tailscale --stop.)"
+  else
+    echo "(The link includes a private access token. Stop it with ./run.sh --dev --stop.)"
+  fi
   echo
   echo "MCP entry for the dev server, to add beside the live \"tasks\" entry:"
   echo "  \"tasks-dev\": {"
@@ -285,9 +397,18 @@ fi
 case "$action" in
   "") ;;
   --restart) .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"} >/dev/null ;;
-  --stop) exec .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"} ;;
+  --stop)
+    [ -z "$tailscale" ] || serve_unmap
+    exec .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"}
+    ;;
 esac
 
-url=$(.venv/bin/task-mcp ui ${db_args[@]+"${db_args[@]}"})
+url=$(.venv/bin/task-mcp ui ${db_args[@]+"${db_args[@]}"} ${ui_args[@]+"${ui_args[@]}"})
+[ -z "$tailscale" ] || serve_map
 echo "Task MCP viewer: $url"
-echo "(The link includes a private access token. Stop it with ./run.sh --stop.)"
+if [ -n "$tailscale" ]; then
+  echo "Published on the tailnet by tailscale serve ($scheme on port $port, mapping $mapping)."
+  echo "(The link includes a private access token. Stop it with ./run.sh --tailscale --stop.)"
+else
+  echo "(The link includes a private access token. Stop it with ./run.sh --stop.)"
+fi

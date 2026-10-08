@@ -66,7 +66,22 @@ worktree, `./run.sh --dev` runs a separate viewer on a copy of the live database
 .venv/bin/task-mcp ui --db /absolute/path/tasks.sqlite3 --stop
 ```
 
-To use a viewer that runs on another machine from this one's browser, run
+To reach the viewer from another device, run `./run.sh --tailscale` on the
+machine that holds the database. It starts or reuses the viewer on a fixed
+loopback port (`TASK_MCP_TAILSCALE_PORT`, default 8787; `--dev --tailscale`
+uses `TASK_MCP_DEV_TAILSCALE_PORT`, default 8788), passes `task-mcp ui` that
+port and the public origin `https://<Self.DNSName>:<port>` (`http` when
+`tailscale status --json` lists no CertDomains, that is, HTTPS certificates are
+not enabled for the tailnet), makes sure `tailscale serve --bg --https=<port>
+http://127.0.0.1:<port>` (or `--http=<port>`) is configured, reusing a matching
+mapping, and prints the tailnet link. `tailscale serve` forwards the browser's
+Host header unchanged, so the viewer accepts that one public origin's Host and
+Origin besides loopback and refuses everything else; the token is still
+required. `--tailscale --stop` removes that port's mapping (`tailscale serve
+--https=<port> off`) and stops the viewer. Funnel is never enabled, and
+`--tailscale` cannot be combined with `--remote`.
+
+For a machine without Tailscale, run
 `./run.sh --remote [host]` (the host defaults to `$TASK_MCP_REMOTE_HOST`). Over SSH it runs
 `run.sh` from the same checkout path on the host, which starts or reuses that
 viewer with the host's default database, then opens or reuses an SSH tunnel from
