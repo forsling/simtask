@@ -11,7 +11,7 @@ The combined development target is protocol **16**, database schema **11** and
 skill catalog **2.0.0**, as defined in `src/task_mcp/runtime.py`,
 `src/task_mcp/store.py` and `src/task_mcp/reference.py`. Do not infer the live
 runtime or database revision from these branch files. Follow the migration and
-restart requirements in [README.md](../../README.md#notes)
+restart requirements in [docs/reference.md](../reference.md#notes)
 and [DESIGN.md](../../DESIGN.md), and the client process/catalog checks in
 [docs/runtime.md](../runtime.md#minimum-reliable-reconnect-procedure).
 
