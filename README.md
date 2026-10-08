@@ -63,7 +63,7 @@ wraps:
 ```
 
 To use a viewer that runs on another machine from this one's browser, run
-`./run.sh --remote [host]` (default host `example-host`). Over SSH it runs
+`./run.sh --remote [host]` (the host defaults to `$TASK_MCP_REMOTE_HOST`). Over SSH it runs
 `run.sh` from the same checkout path on the host, which starts or reuses that
 viewer with the host's default database, then opens or reuses an SSH tunnel from
 a free `127.0.0.1` port here to the viewer's loopback port there and prints a

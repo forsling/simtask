@@ -6,7 +6,7 @@
 #   ./run.sh --stop     stop it
 #
 #   ./run.sh --remote [host] [--restart | --stop]
-#                       the same for the viewer on host (default example-host),
+#                       the same for the viewer on host (default $TASK_MCP_REMOTE_HOST),
 #                       reached through an SSH tunnel from a laptop loopback port
 #
 # Uses the live task database unless TASK_MCP_DB is set (local viewer only).
@@ -106,7 +106,11 @@ EOF
 }
 
 if [ -n "$remote" ]; then
-  host=${host:-example-host}
+  host=${host:-${TASK_MCP_REMOTE_HOST:-}}
+  if [ -z "$host" ]; then
+    echo "Give a host after --remote or set TASK_MCP_REMOTE_HOST." >&2
+    exit 2
+  fi
   # Per-host tunnel state: an ssh control socket and the forwarded ports. The
   # runtime directory is cleared on reboot, which also clears stale state.
   state_dir=${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/task-mcp

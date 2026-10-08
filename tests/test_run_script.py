@@ -29,6 +29,7 @@ def remote(tmp_path):
         FAKE_SSH_LOG=str(tmp_path / "ssh.log"),
         FAKE_REMOTE_DB=str(tmp_path / "remote.sqlite3"),
         FAKE_LOCAL_REPO=str(REPO),
+        TASK_MCP_REMOTE_HOST="example-host",
     )
     yield env, tmp_path
     pid = tmp_path / "run/task-mcp/remote-example-host.sock.pid"
@@ -132,6 +133,10 @@ def test_remote_errors(remote):
     expected = "task-mcp is not installed on example-host: expected a checkout with .venv at "
     assert expected + str(REPO) in result.stderr
     assert "Task MCP viewer" not in result.stdout and not tunnels_or_empty(tmp_path)
+
+    no_host = {k: v for k, v in env.items() if k != "TASK_MCP_REMOTE_HOST"}
+    result = run(no_host, "--remote")
+    assert result.returncode == 2 and "set TASK_MCP_REMOTE_HOST" in result.stderr
 
     result = run({**env, "TASK_MCP_DB": str(tmp_path / "local.sqlite3")}, "--remote")
     assert result.returncode == 2 and "TASK_MCP_DB selects a local database" in result.stderr
