@@ -27,6 +27,7 @@ _TASK_ID = rf"(?:id/{_PUBLIC_ID}|{_ID})"
 # forwards a different laptop port. A literal 127.0.0.1 still defeats DNS rebinding,
 # and Origin must still match this Host exactly.
 LOOPBACK_HOST = re.compile(r"127\.0\.0\.1:[1-9][0-9]{0,4}")
+DEFAULT_PORTS = {"http": 80, "https": 443}
 # Location URLs the app page is served for: /p/<id>[/t/<id> | /u[/t/<id>] | /g[/<id>]],
 # /w/<id>[/t/<id>], /g/<id> and /sg[/<id>]. /p/<id>/u is the project's Unassigned view.
 # Full public task/group IDs follow /id/; legacy hex prefixes stay unmarked.
@@ -83,19 +84,51 @@ def dispatch(store, action, data):
     return operations[action](**data)
 
 
+def public_origin_rule(url):
+    """The origin a browser sends for url and the Host values it sends with it.
+
+    A public origin is the name a reverse proxy on this machine publishes the viewer
+    under (./run.sh --tailscale); tailscale serve forwards the browser's Host header
+    unchanged, so requests through it carry that name, not the loopback address.
+    """
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme not in DEFAULT_PORTS
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(f"public origin must be http(s)://host[:port]: {url}")
+    port = parsed.port or DEFAULT_PORTS[parsed.scheme]
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    netloc = host if port == DEFAULT_PORTS[parsed.scheme] else f"{host}:{port}"
+    return f"{parsed.scheme}://{netloc}", frozenset({netloc, f"{host}:{port}"})
+
+
 class ViewerServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, store, token=None):
+    def __init__(self, store, token=None, port=0, public_origin=None):
         self.store = store
+        # Besides loopback, requests may arrive under one published name (see
+        # public_origin_rule); every other Host or Origin is still refused.
+        self.public_origin, self.public_hosts = (
+            public_origin_rule(public_origin) if public_origin else (None, frozenset())
+        )
         # Keep this process's UI paired with its loaded dispatch code. Source updates
         # take effect together only when the viewer is explicitly restarted.
         self.assets = {
             name: (ASSETS / name).read_bytes() for name in ("index.html", "app.js", "style.css")
         }
         self.token = token or secrets.token_urlsafe(32)
-        super().__init__(("127.0.0.1", 0), ViewerHandler)
+        super().__init__(("127.0.0.1", port), ViewerHandler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
+
+    @property
+    def url(self):
+        return (self.public_origin or self.origin) + "/#" + self.token
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
@@ -121,10 +154,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def allowed(self, authenticated=False):
         host = self.headers.get("Host") or ""
-        if not LOOPBACK_HOST.fullmatch(host):
+        if LOOPBACK_HOST.fullmatch(host):
+            self.origin = "http://" + host
+        elif host in self.server.public_hosts:
+            self.origin = self.server.public_origin
+        else:
             self.reply(403, {"error": "Invalid host"})
             return False
-        self.origin = "http://" + host
         origin = self.headers.get("Origin")
         if origin and origin != self.origin:
             self.reply(403, {"error": "Cross-origin requests are forbidden"})
@@ -214,6 +250,8 @@ def _control_open(request, timeout):
 
 
 def _live(state):
+    """The running viewer's state (loopback origin, token and any public origin), or
+    None. The probe always goes over loopback, whatever the viewer is published as."""
     try:
         info = json.loads(state.read_text())
         parsed = urlsplit(info["origin"])
@@ -230,17 +268,53 @@ def _live(state):
     return None
 
 
-def launch_viewer(database):
-    """Serialize launches across CLI/MCP processes and reuse the live database instance."""
+def _link(info):
+    return info.get("public_origin", info["origin"]) + "/#" + info["token"]
+
+
+def _matches(info, port, public_origin):
+    """Whether the running viewer is the one explicitly asked for: with a port or a
+    public origin given, both must agree (a public origin left out means none)."""
+    if port is None and public_origin is None:
+        return True
+    return (port is None or urlsplit(info["origin"]).port == port) and info.get(
+        "public_origin"
+    ) == public_origin
+
+
+def launch_viewer(database, port=None, public_origin=None):
+    """Serialize launches across CLI/MCP processes and reuse the live database instance.
+
+    port fixes the loopback port (default: a free one); public_origin is the URL the
+    viewer is published under by a proxy on this machine, which its link then uses.
+    A running viewer that does not match explicit settings is replaced (new token).
+    """
     database, state = _paths(database)
+    if public_origin:
+        public_origin = public_origin_rule(public_origin)[0]
     database.parent.mkdir(parents=True, exist_ok=True)
     with _private_file(Path(str(state) + ".launch")) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         info = _live(state)
+        replaced = bool(info) and not _matches(info, port, public_origin)
+        if replaced:
+            _shutdown(info, state)
+            info = None
         reused = bool(info)
         if not info:
-            subprocess.Popen(
-                [sys.executable, "-m", "task_mcp.viewer", "--serve", "--db", str(database)],
+            options = [] if port is None else ["--port", str(port)]
+            if public_origin:
+                options += ["--public-origin", public_origin]
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "task_mcp.viewer",
+                    *options,
+                    "--serve",
+                    "--db",
+                    str(database),
+                ],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -249,16 +323,37 @@ def launch_viewer(database):
             for _ in range(100):
                 time.sleep(0.05)
                 info = _live(state)
-                if info:
+                if info or child.poll() is not None:
                     break
         if not info:
-            raise TaskError("viewer_start_failed: local listener could not start")
+            where = "" if port is None else f" on port {port} (is it in use?)"
+            raise TaskError(f"viewer_start_failed: local listener could not start{where}")
         return {
-            "url": info["origin"] + "/#" + info["token"],
+            "url": _link(info),
             "reused": reused,
             "changed": not reused,
+            "replaced": replaced,
             "lifecycle": "Runs until Stop viewer or task-mcp ui --stop; no automatic startup.",
         }
+
+
+def _shutdown(info, state):
+    request = urllib.request.Request(
+        info["origin"] + "/api/stop",
+        data=b"{}",
+        headers={
+            "X-Task-Token": info["token"],
+            "Origin": info["origin"],
+            "Content-Type": "application/json",
+        },
+    )
+    with _control_open(request, timeout=2):
+        pass
+    for _ in range(100):
+        if not state.exists():
+            return
+        time.sleep(0.02)
+    raise TaskError("viewer_stop_pending: shutdown requested; retry after it finishes")
 
 
 def stop_viewer(database):
@@ -270,36 +365,27 @@ def stop_viewer(database):
         info = _live(state)
         if not info:
             return False
-        request = urllib.request.Request(
-            info["origin"] + "/api/stop",
-            data=b"{}",
-            headers={
-                "X-Task-Token": info["token"],
-                "Origin": info["origin"],
-                "Content-Type": "application/json",
-            },
-        )
-        with _control_open(request, timeout=2):
-            pass
-        for _ in range(100):
-            if not state.exists():
-                return True
-            time.sleep(0.02)
-        raise TaskError("viewer_stop_pending: shutdown requested; retry after it finishes")
+        _shutdown(info, state)
+        return True
 
 
-def serve(database):
+def serve(database, port=0, public_origin=None):
     database, state = _paths(database)
     with _private_file(Path(str(state) + ".lock")) as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        server = ViewerServer(Store(database, actor="local-browser-human"))
+        server = ViewerServer(
+            Store(database, actor="local-browser-human"), port=port, public_origin=public_origin
+        )
+        info = {"origin": server.origin, "token": server.token}
+        if server.public_origin:
+            info["public_origin"] = server.public_origin
         try:
             with _private_file(state) as handle:
                 handle.seek(0)
-                json.dump({"origin": server.origin, "token": server.token}, handle)
+                json.dump(info, handle)
                 handle.truncate()
             server.serve_forever(poll_interval=0.1)
         finally:
@@ -310,5 +396,8 @@ def serve(database):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=default_database())
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--public-origin")
     parser.add_argument("--serve", action="store_true", required=True)
-    serve(parser.parse_args().db)
+    args = parser.parse_args()
+    serve(args.db, args.port, args.public_origin)

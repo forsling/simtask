@@ -3,6 +3,7 @@
 import asyncio
 import json
 import shutil
+import socket
 import stat
 import subprocess
 import threading
@@ -19,8 +20,15 @@ import pytest
 from task_mcp import store as store_module
 from task_mcp import viewer as viewer_module
 from task_mcp.server import create_server
-from task_mcp.store import Store
-from task_mcp.viewer import ASSETS, ViewerServer, _live, launch_viewer, stop_viewer
+from task_mcp.store import Store, TaskError
+from task_mcp.viewer import (
+    ASSETS,
+    ViewerServer,
+    _live,
+    launch_viewer,
+    public_origin_rule,
+    stop_viewer,
+)
 
 
 @pytest.fixture
@@ -354,6 +362,174 @@ def test_forwarded_loopback_port_keeps_same_origin_checks(viewer):
     for host in ("localhost:1", "127.0.0.1", "127.0.0.1:1.evil.invalid", "127.0.0.1:01"):
         headers = {"Host": host, "Origin": "http://" + host}
         assert request(server, "/api/projects", headers=headers)[0] == 403, host
+
+
+@pytest.fixture
+def published(tmp_path):
+    """A viewer published by a proxy on this machine (./run.sh --tailscale) under a
+    public origin: the proxy forwards the browser's Host header unchanged."""
+    store = Store(tmp_path / "tasks.sqlite3", "test-browser")
+    server = ViewerServer(store, public_origin="https://host.tail.ts.net:8443")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+def test_public_origin_is_accepted_beside_loopback(published):
+    server = published
+    public = "host.tail.ts.net:8443"
+    assert server.url == f"https://{public}/#{server.token}"
+    assert server.origin.startswith("http://127.0.0.1:")
+    forwarded = {"Host": public, "Origin": "https://" + public}
+    assert request(server, "/api/projects", headers=forwarded)[0] == 200
+    assert request(server, "/", headers=forwarded, method="GET")[0] == 200
+    assert request(server, "/api/ping", headers=forwarded, method="GET")[0] == 200
+    # Loopback keeps working as before, with its own exact Origin.
+    assert request(server, "/api/projects")[0] == 200
+    # The token still gates every request through the public name.
+    assert (
+        request(server, "/api/ping", headers={**forwarded, "X-Task-Token": ""}, method="GET")[0]
+        == 401
+    )
+    assert request(server, "/api/projects", headers={**forwarded, "X-Task-Token": "x"})[0] == 401
+    # Host and Origin must agree with each other and with the public origin.
+    for headers in (
+        {"Host": public},
+        {"Host": public, "Origin": "http://" + public},
+        {"Host": public, "Origin": "https://host.tail.ts.net"},
+        {"Origin": "https://" + public},
+        {"Host": "host.tail.ts.net", "Origin": "https://host.tail.ts.net"},
+        {"Host": "host.tail.ts.net:8444", "Origin": "https://host.tail.ts.net:8444"},
+        {"Host": "other.tail.ts.net:8443", "Origin": "https://other.tail.ts.net:8443"},
+        {"Host": "HOST.tail.ts.net:8443", "Origin": "https://HOST.tail.ts.net:8443"},
+        {"Host": public + ".evil.invalid", "Origin": "https://" + public + ".evil.invalid"},
+        {**forwarded, "Sec-Fetch-Site": "cross-site"},
+        {**forwarded, "Sec-Fetch-Site": "same-site"},
+    ):
+        assert request(server, "/api/projects", headers=headers)[0] == 403, headers
+        assert request(server, "/", headers=headers, method="GET")[0] == 403, headers
+
+
+def test_without_public_origin_only_loopback_is_accepted(viewer):
+    server, _, _ = viewer
+    assert server.url == server.origin + "/#" + server.token
+    public = {"Host": "host.tail.ts.net:8443", "Origin": "https://host.tail.ts.net:8443"}
+    assert request(server, "/api/projects", headers=public)[0] == 403
+
+
+def test_public_origin_rule_matches_what_browsers_send():
+    assert public_origin_rule("https://host.tail.ts.net:8443") == (
+        "https://host.tail.ts.net:8443",
+        {"host.tail.ts.net:8443"},
+    )
+    # On the scheme's default port browsers omit it from Host and Origin.
+    for url in (
+        "https://host.tail.ts.net",
+        "https://host.tail.ts.net:443/",
+        "HTTPS://Host.Tail.ts.net",
+    ):
+        assert public_origin_rule(url) == (
+            "https://host.tail.ts.net",
+            {"host.tail.ts.net", "host.tail.ts.net:443"},
+        ), url
+    assert public_origin_rule("http://host.tail.ts.net:8787")[0] == "http://host.tail.ts.net:8787"
+    for url in (
+        "host.tail.ts.net:8443",
+        "ftp://host",
+        "https://",
+        "https://host/path",
+        "https://host?q",
+        "https://user@host",
+        "https://host#x",
+    ):
+        with pytest.raises(ValueError, match="public origin must be"):
+            public_origin_rule(url)
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_fixed_port_and_public_link(tmp_path):
+    database = tmp_path / "tasks.sqlite3"
+    state = tmp_path / "tasks.sqlite3.viewer.json"
+    port = free_port()
+    public = f"https://host.tail.ts.net:{port}"
+    try:
+        first = launch_viewer(database, port=port, public_origin=public + "/")
+        info = json.loads(state.read_text())
+        assert info["origin"] == f"http://127.0.0.1:{port}" and info["public_origin"] == public
+        assert first["url"] == f"{public}/#{info['token']}" and not first["replaced"]
+        # The liveness probe stays on loopback; launches without settings reuse the
+        # viewer and get the public link (open_task_viewer, plain ./run.sh).
+        assert _live(state) == info
+        again = launch_viewer(database)
+        assert again["url"] == first["url"] and again["reused"] and not again["replaced"]
+        same = launch_viewer(database, port=port, public_origin=public)
+        assert same["url"] == first["url"] and same["reused"]
+        # Explicit settings the running viewer does not meet replace it (new token).
+        other = launch_viewer(database, port=port, public_origin=f"http://other.ts.net:{port}")
+        assert other["replaced"] and not other["reused"]
+        assert other["url"].startswith(f"http://other.ts.net:{port}/#")
+        assert other["url"] != first["url"]
+        plain = launch_viewer(database, port=port)
+        assert plain["replaced"] and plain["url"].startswith(f"http://127.0.0.1:{port}/#")
+        assert "public_origin" not in json.loads(state.read_text())
+        # A port in use fails fast with the port named; the other viewer stays.
+        with pytest.raises(TaskError, match=f"viewer_start_failed: .* on port {port}"):
+            launch_viewer(tmp_path / "other.sqlite3", port=port)
+        assert launch_viewer(database)["url"] == plain["url"]
+        with pytest.raises(ValueError, match="public origin must be"):
+            launch_viewer(database, public_origin="host.tail.ts.net:1")
+        assert stop_viewer(database)
+    finally:
+        stop_viewer(database)
+        stop_viewer(tmp_path / "other.sqlite3")
+
+
+def test_ui_command_takes_port_and_public_origin(tmp_path):
+    database = tmp_path / "tasks.sqlite3"
+    port = free_port()
+    cli = [
+        str(Path(__file__).resolve().parents[1] / ".venv/bin/task-mcp"),
+        "ui",
+        "--db",
+        str(database),
+    ]
+
+    def run(*args):
+        return subprocess.run([*cli, *args], capture_output=True, text=True, timeout=30)
+
+    try:
+        started = run("--port", str(port), "--public-origin", f"http://host.tail.ts.net:{port}")
+        assert started.returncode == 0, started.stderr
+        assert started.stdout.startswith(f"http://host.tail.ts.net:{port}/#")
+        assert run().stdout == started.stdout
+        bad = run("--public-origin", "host.tail.ts.net")
+        assert bad.returncode == 2 and "public origin must be" in bad.stderr
+        bad = run("--port", "0")
+        assert bad.returncode == 2 and "--port must be" in bad.stderr
+        bad = run("--stop", "--port", str(port))
+        assert bad.returncode == 2 and "ui --stop takes neither" in bad.stderr
+        taken = subprocess.run(
+            [*cli[:-2], "--db", str(tmp_path / "other.sqlite3"), "--port", str(port)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert taken.returncode == 1 and f"on port {port}" in taken.stderr
+        assert "usage:" not in taken.stderr
+    finally:
+        stop_viewer(database)
+    without_ui = subprocess.run(
+        [*cli[:-3], "--port", str(port)], capture_output=True, text=True, timeout=30
+    )
+    assert without_ui.returncode == 2 and "require ui" in without_ui.stderr
 
 
 def test_narrow_api_and_safe_assets(viewer):

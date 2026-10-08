@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sys
 from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
@@ -675,6 +676,15 @@ def main():
     parser = argparse.ArgumentParser(description="Local Task MCP v1 server (stdio).")
     parser.add_argument("command", nargs="?", choices=("ui", "trace-report"))
     parser.add_argument("--stop", action="store_true", help="Stop the explicit local viewer")
+    parser.add_argument(
+        "--port", type=int, metavar="N", help="Fixed loopback port for ui (default: a free port)"
+    )
+    parser.add_argument(
+        "--public-origin",
+        metavar="URL",
+        help="The https://host[:port] a proxy on this machine publishes the ui under; "
+        "its requests are accepted and the printed link uses it",
+    )
     parser.add_argument("--db", type=Path, default=default_database())
     parser.add_argument("--actor", default=os.environ.get("TASK_MCP_ACTOR", "local-agent"))
     parser.add_argument("--export-workstream", metavar="WORKSTREAM_ID")
@@ -728,12 +738,21 @@ def main():
         if args.export_workstream or args.export_format or args.exclude_closed:
             parser.error("ui cannot be combined with export options")
         if args.stop:
+            if args.port is not None or args.public_origin:
+                parser.error("ui --stop takes neither --port nor --public-origin")
             print("Viewer stopped." if stop_viewer(args.db) else "Viewer is not running.")
         else:
-            print(launch_viewer(args.db)["url"])
+            if args.port is not None and not 0 < args.port < 65536:
+                parser.error("--port must be between 1 and 65535")
+            try:
+                print(launch_viewer(args.db, args.port, args.public_origin)["url"])
+            except TaskError as exc:
+                sys.exit(f"task-mcp ui: {exc}")
+            except ValueError as exc:
+                parser.error(str(exc))
         return
-    if args.stop:
-        parser.error("--stop requires ui")
+    if args.stop or args.port is not None or args.public_origin:
+        parser.error("--stop, --port and --public-origin require ui")
     if not args.export_workstream and (args.export_format or args.exclude_closed):
         parser.error("--export-format and --exclude-closed require --export-workstream")
     store = Store(args.db, args.actor)
