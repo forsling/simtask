@@ -310,9 +310,11 @@ def test_dev_viewer_on_a_copy(dev, monkeypatch, tmp_path):
     assert link(kept) == (port, token) and f"Dev database: {copy} (kept)" in kept.stdout
     assert user_version(copy) == user_version(live) + 1
 
-    # --restart takes a fresh copy; --keep --restart restarts on the existing one.
+    # --restart stops the dev viewer, takes a fresh copy and starts a new viewer;
+    # --keep --restart restarts on the existing copy.
+    old = (port, token)
     port, token = link(run_dev(env, checkout, "--restart"))
-    assert token != kept and ping(port, token) == 200
+    assert (port, token) != old and ping(*old) is None and ping(port, token) == 200
     assert user_version(copy) == user_version(live) and workstreams(copy) == ["live"]
     monkeypatch.undo()
     Store(copy).init(
