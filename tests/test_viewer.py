@@ -472,7 +472,7 @@ def test_fixed_port_and_public_link(tmp_path):
         assert again["url"] == first["url"] and again["reused"] and not again["replaced"]
         same = launch_viewer(database, port=port, public_origin=public)
         assert same["url"] == first["url"] and same["reused"]
-        # Explicit settings the running viewer does not meet replace it (new token).
+        # Replace viewers that do not meet explicit settings; keep the database token.
         other = launch_viewer(database, port=port, public_origin=f"http://other.ts.net:{port}")
         assert other["replaced"] and not other["reused"]
         assert other["url"].startswith(f"http://other.ts.net:{port}/#")
@@ -1427,3 +1427,55 @@ def test_frontend_notes_lists_view_picker_and_stale_revision():
     script = Path(__file__).with_name("viewer_notes.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_bookmark_survives_restart_and_database_refresh(tmp_path):
+    database = tmp_path / "tasks.sqlite3"
+    token_file = Path(str(database) + ".viewer.token")
+    port = free_port()
+    origin = f"https://host.tail.ts.net:{port}"
+    try:
+        bookmark = launch_viewer(database, port=port, public_origin=origin)["url"]
+        credential = token_file.read_text().strip()
+        assert bookmark == f"{origin}/#{credential}"
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert stop_viewer(database)
+        assert token_file.exists()
+        assert launch_viewer(database, port=port, public_origin=origin)["url"] == bookmark
+        assert stop_viewer(database)
+        # A fresh dev database at the same location must keep the bookmark too.
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(database) + suffix).unlink(missing_ok=True)
+        assert launch_viewer(database, port=port, public_origin=origin)["url"] == bookmark
+        assert token_file.read_text().strip() == credential
+        other = ViewerServer(Store(tmp_path / "other.sqlite3"))
+        try:
+            assert other.token != credential
+        finally:
+            other.server_close()
+    finally:
+        stop_viewer(database)
+
+
+def test_persistent_token_first_use_is_serialized_and_private(tmp_path):
+    database = tmp_path / "tasks.sqlite3"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        tokens = list(pool.map(lambda _: viewer_module._persistent_token(database), range(16)))
+    assert len(set(tokens)) == 1
+    token_file = Path(str(database) + ".viewer.token")
+    token_file.chmod(0o644)
+    assert viewer_module._persistent_token(database) == tokens[0]
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    token_file.write_text("corrupted")
+    with pytest.raises(TaskError, match="viewer_token_invalid"):
+        viewer_module._persistent_token(database)
+    assert token_file.read_text() == "corrupted"
+
+
+def test_persistent_token_adopts_running_pre_upgrade_viewer(viewer):
+    server, store, _ = viewer
+    token_file = Path(str(store.path) + ".viewer.token")
+    token_file.unlink()
+    state = Path(str(store.path) + ".viewer.json")
+    state.write_text(json.dumps({"origin": server.origin, "token": server.token}))
+    assert viewer_module._persistent_token(store.path) == server.token

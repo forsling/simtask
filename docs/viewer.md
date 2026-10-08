@@ -426,12 +426,13 @@ that Host. No CORS permission is granted; cross-site browser
 requests are rejected. CSP disallows remote resources, framing and inline
 scripts. The private link places its token in the URL fragment, which is not
 sent to HTTP logs; the app immediately removes it from the address bar,
-retains it in that tab's session storage and replaces it with a token-free
+retains it in this origin's local storage across tabs and browser restarts and replaces it with a token-free
 location path. The server serves the same app page for `/` and for well-formed
 location paths (`/p/…`, `/w/…`, `/g/…`, `/sg…` with hexadecimal IDs) under the
 same Host/Origin/fetch-site checks; the page carries no data, and every API call
-still needs the token header. Other paths remain 404. Restarting the viewer rotates the
-token. Other local processes with the same user's filesystem privileges remain
+still needs the token header. Other paths remain 404. Restarting the viewer preserves
+the token in its private mode-0600 `<database>.viewer.token` file. That file also
+survives a fresh dev database copy, so a bookmarked Tailscale Serve link stays valid. Other local processes with the same user's filesystem privileges remain
 inside this trust boundary; actor labels and human assertions are not identity
 authentication.
 

@@ -133,7 +133,7 @@ class ViewerServer(ThreadingHTTPServer):
         self.assets = {
             name: (ASSETS / name).read_bytes() for name in ("index.html", "app.js", "style.css")
         }
-        self.token = token or secrets.token_urlsafe(32)
+        self.token = token or _persistent_token(store.path)
         super().__init__(("127.0.0.1", port), ViewerHandler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
 
@@ -255,6 +255,31 @@ def _private_file(path):
     return os.fdopen(fd, "r+")
 
 
+def _persistent_token(database):
+    """Keep one private credential per database, independently of viewer processes
+    and database refreshes. Serialize first use so concurrent starts agree."""
+    database, state = _paths(Path(database))
+    with _private_file(Path(str(database) + ".viewer.token")) as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        token = handle.read().strip()
+        if token:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+                raise TaskError("viewer_token_invalid: repair the private .viewer.token file")
+            return token
+        # Adopt a running pre-upgrade viewer's credential when preparing the first
+        # persistent token. Existing bookmarks then survive the upgrade as well.
+        info = _live(state)
+        token = info["token"] if info else secrets.token_urlsafe(32)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+            raise TaskError("viewer_token_invalid: running viewer has an invalid credential")
+        handle.seek(0)
+        handle.write(token + "\n")
+        handle.truncate()
+        handle.flush()
+        os.fsync(handle.fileno())
+        return token
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.full_url, code, "Viewer redirect refused", headers, fp)
@@ -305,7 +330,8 @@ def launch_viewer(database, port=None, public_origin=None):
 
     port fixes the loopback port (default: a free one); public_origin is the URL the
     viewer is published under by a proxy on this machine, which its link then uses.
-    A running viewer that does not match explicit settings is replaced (new token).
+    A running viewer that does not match explicit settings is replaced.
+    The database token stays the same.
     """
     database, state = _paths(database)
     if public_origin:

@@ -106,9 +106,9 @@ TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh    # a viewer on another database
 
 The link carries a private token; the viewer binds to loopback only. `open_task_viewer` returns the same link to an agent. See [docs/viewer.md](docs/viewer.md).
 
-`--tailscale` is the way to reach the viewer from another machine. It runs the viewer on a fixed loopback port (`TASK_MCP_TAILSCALE_PORT`, default 8787) and publishes that port on your tailnet with `tailscale serve` under this machine's MagicDNS name, so the link becomes `https://<machine>.<tailnet>.ts.net:8787/#<token>` and opens from any device on the tailnet without a tunnel. The viewer accepts that name besides loopback, still needs the token and is never published outside the tailnet (no Funnel). The link is `https` when HTTPS certificates are enabled for the tailnet (Tailscale admin console, DNS page, **Enable HTTPS**) and `http` otherwise; the tailnet encrypts both. Run `sudo tailscale set --operator=$USER` once so `tailscale serve` works without root. Repeated runs reuse the viewer and the mapping; `--restart` restarts the viewer (new token) on the same port.
+`--tailscale` is the way to reach the viewer from another machine. It runs the viewer on a fixed loopback port (`TASK_MCP_TAILSCALE_PORT`, default 8787) and publishes that port on your tailnet with `tailscale serve` under this machine's MagicDNS name, so the link becomes `https://<machine>.<tailnet>.ts.net:8787/#<token>` and opens from any device on the tailnet without a tunnel. The viewer accepts that name besides loopback, still needs the token and is never published outside the tailnet (no Funnel). The link is `https` when HTTPS certificates are enabled for the tailnet (Tailscale admin console, DNS page, **Enable HTTPS**) and `http` otherwise; the tailnet encrypts both. Run `sudo tailscale set --operator=$USER` once so `tailscale serve` works without root. Repeated runs reuse the viewer and the mapping; `--restart` restarts the viewer with the same token on the same port.
 
-`--tailscale --install-service` makes that viewer survive reboots: it writes `~/.config/systemd/user/task-mcp-viewer.service` (this checkout's `.venv` serving the live database on the fixed port with the tailnet origin), enables linger for your user with `loginctl enable-linger` so user services run without a login session, ensures the serve mapping and starts the unit. Once installed, `./run.sh`, `--restart` and `--stop` (with or without `--tailscale`) act on the service through `systemctl --user`: a run prints the current link (the token rotates on every start of the service), `--stop` leaves the unit installed, and `--tailscale --remove-service` removes it. No system (root) unit is involved.
+`--tailscale --install-service` makes that viewer survive reboots: it writes `~/.config/systemd/user/task-mcp-viewer.service` (this checkout's `.venv` serving the live database on the fixed port with the tailnet origin), enables linger for your user with `loginctl enable-linger` so user services run without a login session, ensures the serve mapping and starts the unit. Once installed, `./run.sh`, `--restart` and `--stop` (with or without `--tailscale`) act on the service through `systemctl --user`: a run prints the current link (the token stays the same across service starts), `--stop` leaves the unit installed, and `--tailscale --remove-service` removes it. No system (root) unit is involved.
 
 ## Tools
 
@@ -203,3 +203,13 @@ Roll out as above: merge to `main`, then restart every live server and the viewe
 | [docs/runtime.md](docs/runtime.md) | Runtime identity and reconnecting after an upgrade |
 | [docs/performance.md](docs/performance.md) | Call latency and client approval prompts |
 | [docs/usage-traces.md](docs/usage-traces.md) | Private usage traces and `trace-report` |
+
+
+The viewer generates its access token once per database and stores it privately in
+`<database>.viewer.token` (mode 0600). Restarts, service reinstallations, and fresh
+dev database copies at the same location reuse it. Bookmark the full launch link;
+with Tailscale Serve its hostname, port, and token remain stable. After the first
+launch, the browser remembers the token for this origin, so bookmarks of normal
+location URLs work in new tabs and after browser restarts too. The token is
+viewer authentication, separate from Tailscale access. Each database has its own
+token; local viewers with randomly assigned ports still need the current address.

@@ -4,10 +4,22 @@ const $ = (id) => document.getElementById(id);
 // The private launch link carries the token as a bare fragment (#<token>). Location
 // URLs are paths (/w/1c4684b6/t/a5dfba02) and never contain it, so drop any fragment
 // at once; one that is not a token (such as an old #/project/... address) is ignored.
+// Remember the stable token for this origin across tabs and browser restarts, so
+// a bookmark of the clean location URL stays connected after the initial launch.
 const launchHash = location.hash.slice(1);
 const launchToken = /^[A-Za-z0-9_-]+$/.test(launchHash) ? launchHash : "";
-const token = launchToken || sessionStorage.getItem("task-token") || "";
-if (token) sessionStorage.setItem("task-token", token);
+function rememberedToken() {
+  try { const saved = localStorage.getItem("task-token"); if (saved) return saved; } catch {}
+  // Adopt a connection made before persistent browser storage was introduced.
+  try { return sessionStorage.getItem("task-token") || ""; } catch { return ""; }
+}
+const token = launchToken || rememberedToken();
+if (token) {
+  // Storage may be unavailable in private or restricted browser contexts. The
+  // full launch link still works there for the current page.
+  try { localStorage.setItem("task-token", token); } catch {}
+  try { sessionStorage.setItem("task-token", token); } catch {}
+}
 history.replaceState(null, "", location.pathname || "/");
 
 // Where a task stands for the user. Cards show only this, never the agents' internal

@@ -204,7 +204,7 @@ if [ -n "$remote" ]; then
   token=${url#*/#}
 
   # Reuse the tunnel only while it forwards to the viewer's current port; a
-  # restarted viewer has a new port and token.
+  # restarted viewer may have a new port; its database token stays the same.
   local_port=""
   if tunnel_open && read -r old_local old_remote 2>/dev/null <"$ports" &&
     [ "$old_remote" = "$remote_port" ] && forwards "$old_local" "$token"; then

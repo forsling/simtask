@@ -42,7 +42,7 @@ const groupInfo = {
 const groupLists = {[P1]: [G1, G2, G4], [P2]: [G2, G3, G5]};
 const allStreams = Object.values(streams).flat();
 
-function viewer(initial, stored = "") {
+function viewer(initial, stored = "", persistent = new Map()) {
   const entries = [{...initial}], listeners = {}, notices = [], calls = [];
   let index = 0, reloaded = 0, storedToken = stored;
   const elements = new Map();
@@ -60,6 +60,7 @@ function viewer(initial, stored = "") {
     setTimeout() {},
     location: {get pathname() {return entries[index].path;}, get hash() {return entries[index].hash;}, reload() {reloaded++;}},
     sessionStorage: {getItem() {return storedToken;}, setItem(k, v) {storedToken = v;}},
+    localStorage: {getItem(k) {return persistent.get(k) || "";}, setItem(k, v) {persistent.set(k, v);}},
     history: {
       pushState(_, __, url) {entries.splice(index + 1); entries.push(urlOf(url)); index++;},
       replaceState(_, __, url) {entries[index] = urlOf(url);},
@@ -118,6 +119,19 @@ function viewer(initial, stored = "") {
 }
 
 async function main() {
+  // Clean bookmarks retain access in a new tab or browser session after one launch.
+  const persistent = new Map();
+  viewer({path: "/", hash: "#stable-token"}, "", persistent);
+  const bookmarked = viewer({path: "/w/a1a1a1a1", hash: ""}, "", persistent);
+  assert.equal(await bookmarked.run("token"), "stable-token");
+  // A new launch credential wins over remembered credentials and updates other tabs.
+  viewer({path: "/", hash: "#replacement-token"}, "old-tab-token", persistent);
+  const reopened = viewer({path: "/", hash: ""}, "stale-session-token", persistent);
+  assert.equal(await reopened.run("token"), "replacement-token");
+  const migrated = new Map();
+  viewer({path: "/", hash: ""}, "pre-upgrade-token", migrated);
+  assert.equal(migrated.get("task-token"), "pre-upgrade-token");
+
   // The launch link's token is stored and stripped before any request; the default
   // location then replaces the address without a new history entry.
   const v = viewer({path: "/", hash: "#launch-token-123"});

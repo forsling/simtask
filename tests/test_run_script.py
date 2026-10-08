@@ -130,9 +130,9 @@ def test_remote_viewer_through_tunnel(remote):
     port, token = link(run(env, "--remote"))
     assert ping(port, token) == 200 and len(tunnels(tmp_path)) == 2
 
-    # --restart rotates the remote viewer's token and follows its new port.
+    # --restart preserves the remote viewer's token and follows its new port.
     new_port, new_token = link(run(env, "--remote", "--restart"))
-    assert new_token != token and new_token == remote_viewer(env)["token"]
+    assert new_token == token and new_token == remote_viewer(env)["token"]
     assert ping(new_port, new_token) == 200 and ping(port, token) is None
 
     stopped = run(env, "--remote", "--stop")
@@ -349,7 +349,7 @@ def test_dev_viewer_on_a_copy(dev, monkeypatch, tmp_path):
     )
     restarted = run_dev(env, checkout, "--keep", "--restart")
     new_port, new_token = link(restarted)
-    assert new_token != token and ping(port, token) is None
+    assert new_token == token and ping(port, token) is None
     assert f"Dev database: {copy} (kept)" in restarted.stdout
     assert workstreams(copy) == ["live", "dev-only"] and workstreams(live) == ["live"]
 
@@ -607,11 +607,11 @@ def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
     plain = run(env)
     assert tailnet_link(plain)[3] == token and "tailscale serve" not in plain.stdout
 
-    # --restart rotates the token on the same port and keeps the mapping. With
+    # --restart preserves the token on the same port and keeps the mapping. With
     # certificates on the tailnet the link and the mapping become https.
     restarted = run({**env, "FAKE_TAILSCALE_CERTS": "1"}, "--tailscale", "--restart")
     scheme, _, new_port, new_token = tailnet_link(restarted)
-    assert (scheme, new_port) == ("https", port) and new_token != token
+    assert (scheme, new_port) == ("https", port) and new_token == token
     assert f"(https on port {port}, mapping added)" in restarted.stdout
     assert through_tailnet(port, new_token, f"https://fake-host.tail.ts.net:{port}") == 200
     assert through_tailnet(port, new_token, public) == 403
@@ -798,7 +798,7 @@ def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     )
     result = run_checkout("--tailscale", "--install-service")
     scheme, host, link_port, token = tailnet_link(result)
-    assert (scheme, link_port) == ("http", port) and token != detached_token
+    assert (scheme, link_port) == ("http", port) and token == detached_token
     assert result.stdout.startswith(f"Linger enabled for {os.environ['USER']}:")
     assert f"Task MCP viewer: {public}/#{token}" in result.stdout
     assert f"(http on port {port}, mapping added)" in result.stdout
@@ -838,11 +838,11 @@ def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     assert "Stop it with ./run.sh --stop." in plain.stdout
     assert systemctl_calls(env)[4:] == [["--user", "is-active", "--quiet", unit]] * 2
 
-    # The token rotates when systemd restarts the unit (a reboot); the link is
+    # The token stays the same when systemd restarts the unit (a reboot); the link is
     # printable without restarting anything.
     subprocess.run(["systemctl", "--user", "restart", unit], env=env, check=True)
     rotated = tailnet_link(run_checkout("--tailscale"))[3]
-    assert rotated != token and json.loads(state.read_text())["token"] == rotated
+    assert rotated == token and json.loads(state.read_text())["token"] == rotated
     assert systemctl_calls(env)[6:] == [
         ["--user", "restart", unit],
         ["--user", "is-active", "--quiet", unit],
@@ -851,11 +851,11 @@ def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     # --restart restarts the service; a second install keeps linger as it is.
     restarted = run_checkout("--tailscale", "--restart")
     new_token = tailnet_link(restarted)[3]
-    assert new_token != rotated and f"service {unit} (restarted)." in restarted.stdout
+    assert new_token == rotated and f"service {unit} (restarted)." in restarted.stdout
     assert systemctl_calls(env)[-1] == ["--user", "restart", unit]
     assert through_tailnet(port, new_token, public) == 200
     reinstalled = run_checkout("--tailscale", "--install-service")
-    assert tailnet_link(reinstalled)[3] != new_token and "Linger" not in reinstalled.stdout
+    assert tailnet_link(reinstalled)[3] == new_token and "Linger" not in reinstalled.stdout
     assert loginctl_calls(env)[-1] == ["show-user", os.environ["USER"], "-p", "Linger", "--value"]
     assert unit_file.read_text() == unit_text(checkout / ".venv/bin/python", live, port)
 
@@ -996,7 +996,7 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
     assert tailnet_link(again)[3] == token and f"service {unit} (reused)." in again.stdout
     assert "(kept while the dev viewer runs;" in again.stdout
     reinstalled = run_dev(env, checkout, "--tailscale", "--install-service")
-    assert tailnet_link(reinstalled)[3] != token
+    assert tailnet_link(reinstalled)[3] == token
     assert f"Dev database: {copy} (kept; ./run.sh --dev --tailscale --restart" in reinstalled.stdout
     assert workstreams(copy) == ["live", "dev-only"]
 
@@ -1004,7 +1004,7 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
     # --keep --restart restarts it on the existing copy.
     restarted = run_dev(env, checkout, "--tailscale", "--restart")
     new_token = tailnet_link(restarted)[3]
-    assert new_token != token and f"service {unit} (restarted)." in restarted.stdout
+    assert new_token == token and f"service {unit} (restarted)." in restarted.stdout
     assert f"Dev database: {copy} (fresh copy of {live})" in restarted.stdout
     assert workstreams(copy) == ["live"] and workstreams(live) == ["live"]
     assert systemctl_calls(env)[-2:] == [["--user", "stop", unit], ["--user", "start", unit]]
@@ -1017,7 +1017,7 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
         confirmed=True,
     )
     kept = run_dev(env, checkout, "--tailscale", "--keep", "--restart")
-    assert tailnet_link(kept)[3] != new_token and f"Dev database: {copy} (kept)" in kept.stdout
+    assert tailnet_link(kept)[3] == new_token and f"Dev database: {copy} (kept)" in kept.stdout
     assert systemctl_calls(env)[-1] == ["--user", "restart", unit]
     assert workstreams(copy) == ["live", "dev-only"]
 
@@ -1068,7 +1068,7 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
     taken = run_dev(env, checkout, "--tailscale")
     taken_token = tailnet_link(taken)[3]
     assert tailnet_link(taken)[:3] == ("http", "fake-host.tail.ts.net", port)
-    assert taken_token != detached_token and detached_token not in taken.stdout
+    assert taken_token == detached_token and detached_token in taken.stdout
     assert f"service {unit} (started)." in taken.stdout and "mapping added)" in taken.stdout
     assert "(kept while the dev viewer runs;" in taken.stdout
     assert ping(detached_port, detached_token) is None and unit_active(env, unit)

@@ -92,7 +92,7 @@ For a machine without Tailscale, run
 viewer with the host's default database, then opens or reuses an SSH tunnel from
 a free `127.0.0.1` port here to the viewer's loopback port there and prints a
 local link with the token. Both ends stay on loopback. `--remote [host] --restart`
-restarts the remote viewer (new port and token) and its tunnel; `--remote [host]
+restarts the remote viewer (new port, same token) and its tunnel; `--remote [host]
 --stop` closes the tunnel and stops the remote viewer. A live tunnel is reused
 only while it still forwards to the viewer's current port. Tunnel state (an ssh
 control socket) lives under `$XDG_RUNTIME_DIR/task-mcp/`. An unreachable host or
