@@ -98,6 +98,8 @@ A browser view of every project, workstream and task, with the task's spec, acti
 ./run.sh --stop             # stop it
 ./run.sh --tailscale        # the same, reachable from your other devices over Tailscale (see below)
 ./run.sh --tailscale --stop # stop it and remove its tailscale serve mapping
+./run.sh --tailscale --install-service  # run the tailnet viewer as a systemd user service that starts at boot
+./run.sh --tailscale --remove-service   # stop, disable and delete that service and its serve mapping
 ./run.sh --remote [host]    # a viewer on a machine without Tailscale, over an SSH tunnel
 TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh    # a viewer on another database
 ```
@@ -105,6 +107,8 @@ TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh    # a viewer on another database
 The link carries a private token; the viewer binds to loopback only. `open_task_viewer` returns the same link to an agent. See [docs/viewer.md](docs/viewer.md).
 
 `--tailscale` is the way to reach the viewer from another machine. It runs the viewer on a fixed loopback port (`TASK_MCP_TAILSCALE_PORT`, default 8787) and publishes that port on your tailnet with `tailscale serve` under this machine's MagicDNS name, so the link becomes `https://<machine>.<tailnet>.ts.net:8787/#<token>` and opens from any device on the tailnet without a tunnel. The viewer accepts that name besides loopback, still needs the token and is never published outside the tailnet (no Funnel). The link is `https` when HTTPS certificates are enabled for the tailnet (Tailscale admin console, DNS page, **Enable HTTPS**) and `http` otherwise; the tailnet encrypts both. Run `sudo tailscale set --operator=$USER` once so `tailscale serve` works without root. Repeated runs reuse the viewer and the mapping; `--restart` restarts the viewer (new token) on the same port.
+
+`--tailscale --install-service` makes that viewer survive reboots: it writes `~/.config/systemd/user/task-mcp-viewer.service` (this checkout's `.venv` serving the live database on the fixed port with the tailnet origin), enables linger for your user with `loginctl enable-linger` so user services run without a login session, ensures the serve mapping and starts the unit. Once installed, `./run.sh`, `--restart` and `--stop` (with or without `--tailscale`) act on the service through `systemctl --user`: a run prints the current link (the token rotates on every start of the service), `--stop` leaves the unit installed, and `--tailscale --remove-service` removes it. No system (root) unit is involved.
 
 ## Tools
 
@@ -158,7 +162,7 @@ task-mcp [command] [options]
 
 The database is one SQLite file in WAL mode. Each client runs its own server process; they share the file and serialise writes through short transactions and revision checks, so any number of sessions can work at once. Picked-up tasks show as in progress for four hours or until a result lands; that marker never locks anything.
 
-A server with a newer schema migrates the database the first time it opens it, after taking a verified backup next to it. Servers already running keep working until they stop, but cannot reopen the migrated file on old code, so restart every server and the viewer when you roll out new code. Details in [docs/reference.md](docs/reference.md#notes).
+A server with a newer schema migrates the database the first time it opens it, after taking a verified backup next to it. Servers already running keep working until they stop, but cannot reopen the migrated file on old code, so restart every server and the viewer when you roll out new code (restart the viewer service after a rollout: `./run.sh --tailscale --restart`). Details in [docs/reference.md](docs/reference.md#notes).
 
 ## Development
 
@@ -181,11 +185,13 @@ cd ../task-mcp-my-change
 ./run.sh --dev --restart    # restart the dev viewer on a fresh copy (--keep --restart: on the existing one)
 ./run.sh --dev --stop       # stop the dev viewer; the copy stays
 ./run.sh --dev --tailscale  # the dev viewer on the tailnet too, on TASK_MCP_DEV_TAILSCALE_PORT (8788), beside the live one
+./run.sh --dev --tailscale --install-service  # that dev viewer as its own user service (task-mcp-dev-viewer-<checkout>-<hash>.service) on the existing copy
+./run.sh --dev --tailscale --remove-service   # remove the dev service; the copy stays
 ```
 
 The dev viewer shows a `DEV` badge in its header (the copy's path is in its tooltip) and a `[DEV]` tab title, so it is never mistaken for the live one, on the tailnet too. `--dev` prints the dev viewer's link, the copy's path, the dev stop command and a `tasks-dev` MCP entry (the worktree's `.venv/bin/task-mcp` with `TASK_MCP_DB` set to the copy). Add that entry beside `tasks` to run the dev server in a client; a session on `tasks-dev` writes to the copy only. `--dev` only reads the live database and leaves the live viewer and running servers alone, so dogfooding through the live `tasks` entry keeps recording there, and `init` from the worktree binds a workstream to the worktree's path and branch as usual. `--dev` runs on the machine that holds the live database and cannot be combined with `--remote` or `TASK_MCP_DB`.
 
-Roll out as above: merge to `main`, then restart every live server and the viewer (`./run.sh --restart` in the main checkout); the first server with a newer schema migrates the live database after a backup. Nothing reloads while it runs.
+Roll out as above: merge to `main`, then restart every live server and the viewer; restart the viewer service after a rollout (`./run.sh --tailscale --restart` in the main checkout, or `./run.sh --restart` without a service). The first server with a newer schema migrates the live database after a backup. Nothing reloads while it runs. A dev service keeps its copy across restarts of the unit; `./run.sh --dev --tailscale --restart` takes a fresh copy.
 
 | Document | Contents |
 |----------|----------|

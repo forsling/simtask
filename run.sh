@@ -10,6 +10,12 @@
 #                       machine's MagicDNS name on port $TASK_MCP_TAILSCALE_PORT (8787);
 #                       --stop also removes the serve mapping. Never Funnel.
 #
+#   ./run.sh --tailscale --install-service
+#                       run that tailnet viewer as a systemd user service that starts at
+#                       boot (task-mcp-viewer.service, linger enabled). Once installed,
+#                       ./run.sh, --restart and --stop act on the service, with or without
+#                       --tailscale; --tailscale --remove-service removes it again.
+#
 #   ./run.sh --remote [host] [--restart | --stop]
 #                       the same for the viewer on a host without Tailscale (default
 #                       $TASK_MCP_REMOTE_HOST), reached through an SSH tunnel from a
@@ -21,13 +27,15 @@
 #                       tasks-dev MCP entry; --keep reuses the copy, --restart takes a
 #                       fresh one, --stop stops the dev viewer. Creates .venv when missing.
 #                       With --tailscale, the dev viewer is published on port
-#                       $TASK_MCP_DEV_TAILSCALE_PORT (8788) beside the live one.
+#                       $TASK_MCP_DEV_TAILSCALE_PORT (8788) beside the live one, and
+#                       --install-service installs a service per dev checkout
+#                       (task-mcp-dev-viewer-<checkout>-<hash>.service) on the copy.
 #
 # Uses the live task database unless TASK_MCP_DB is set (local viewer only).
 set -euo pipefail
 
 usage() {
-  echo "Usage: ./run.sh [--remote [host] | [--dev [--keep]] [--tailscale]] [--restart | --stop]" >&2
+  echo "Usage: ./run.sh [--remote [host] | [--dev [--keep]] [--tailscale [--install-service | --remove-service]]] [--restart | --stop]" >&2
   exit 2
 }
 
@@ -37,6 +45,8 @@ host=""
 dev=""
 keep=""
 tailscale=""
+install=""
+remove=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --restart | --stop)
@@ -63,6 +73,14 @@ while [ "$#" -gt 0 ]; do
       [ -z "$tailscale" ] || usage
       tailscale=1
       ;;
+    --install-service)
+      [ -z "$install" ] || usage
+      install=1
+      ;;
+    --remove-service)
+      [ -z "$remove" ] || usage
+      remove=1
+      ;;
     *) usage ;;
   esac
   shift
@@ -71,6 +89,10 @@ done
 [ -z "$tailscale" ] || [ -z "$remote" ] || usage
 [ -z "$keep" ] || [ -n "$dev" ] || usage
 [ -z "$keep" ] || [ "$action" != --stop ] || usage
+[ -z "$install$remove" ] || [ -n "$tailscale" ] || usage
+[ -z "$install" ] || [ -z "$remove" ] || usage
+[ -z "$install$remove" ] || [ -z "$action" ] || usage
+[ -z "$remove" ] || [ -z "$keep" ] || usage
 
 # Resolve a relative TASK_MCP_DB against the caller's directory, before changing it.
 db_args=()
@@ -81,6 +103,10 @@ if [ -n "${TASK_MCP_DB:-}" ]; then
   fi
   if [ -n "$dev" ]; then
     echo "--dev copies the live database itself; unset TASK_MCP_DB." >&2
+    exit 2
+  fi
+  if [ -n "$install$remove" ]; then
+    echo "The viewer service serves the live database; unset TASK_MCP_DB." >&2
     exit 2
   fi
   TASK_MCP_DB=$(realpath -m -- "$TASK_MCP_DB")
@@ -288,7 +314,7 @@ if [ -n "$tailscale" ]; then
     echo "TASK_MCP_TAILSCALE_PORT and TASK_MCP_DEV_TAILSCALE_PORT must be port numbers." >&2
     exit 2
   fi
-  if [ "$action" != --stop ]; then
+  if [ "$action" != --stop ] && [ -z "$remove" ]; then
     read -r scheme public_host < <(tailnet_origin) || true
     if [ -z "${public_host:-}" ]; then
       echo "Cannot read this machine's tailnet name (tailscale status --json failed)." >&2
@@ -311,6 +337,138 @@ if [ ! -x .venv/bin/task-mcp ]; then
   [ -x .venv/bin/task-mcp ] || { echo "The editable install did not produce .venv/bin/task-mcp." >&2; exit 1; }
 fi
 
+# The live database is the server's default: the same resolution as
+# task_mcp.store.live_database, with symlinks resolved like the viewer does.
+live_db=$(realpath -m -- "${XDG_DATA_HOME:-$HOME/.local/share}/task-mcp/tasks.sqlite3")
+
+# True while the viewer with state file $1 answers. The file alone proves nothing:
+# a viewer killed by a reboot, a logout or SIGKILL leaves it behind.
+viewer_live() {
+  .venv/bin/python -c \
+    'import sys; from pathlib import Path; from task_mcp.viewer import _live; sys.exit(not _live(Path(sys.argv[1])))' \
+    "$1"
+}
+
+# --install-service: the tailnet viewer runs as a systemd user service, started at
+# boot by the user manager (linger keeps it running without a login session). The
+# unit runs this checkout's .venv in the foreground on the fixed port; systemd stops
+# it with SIGTERM, which the viewer ends cleanly. Once a unit is installed, run.sh
+# starts, reuses, restarts and stops the service instead of a detached viewer.
+unit_path=""
+service_vars() {
+  service_db=$1
+  service_state=$service_db.viewer.json
+  unit=$2
+  unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+  unit_path=$unit_dir/$unit
+}
+
+service_installed() {
+  [ -n "$unit_path" ] && [ -f "$unit_path" ]
+}
+
+service_active() {
+  systemctl --user is-active --quiet "$unit"
+}
+
+# Stops a detached viewer on the service's database: it would hold the viewer
+# lock, and the service would exit at once.
+service_takeover() {
+  service_active || .venv/bin/task-mcp ui --stop --db "$service_db" >/dev/null
+}
+
+service_install() {
+  local user
+  mkdir -p -- "$unit_dir"
+  cat >"$unit_path" <<EOF
+[Unit]
+Description=Task MCP viewer on $service_db (tailnet port $port)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStart=$PWD/.venv/bin/python -m task_mcp.viewer --serve --db $service_db --port $port --public-origin $scheme://$public_host:$port
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+  systemctl --user daemon-reload
+  user=$(id -un)
+  if [ "$(loginctl show-user "$user" -p Linger --value 2>/dev/null)" != yes ]; then
+    if loginctl enable-linger "$user"; then
+      echo "Linger enabled for $user: user services run without a login session."
+    else
+      echo "loginctl enable-linger $user failed: the service stops at logout until you run it by hand." >&2
+    fi
+  fi
+  serve_map
+  service_takeover
+  systemctl --user enable --quiet "$unit"
+  systemctl --user restart "$unit"
+  service_note="installed as $unit_path"
+}
+
+service_start() {
+  if service_active && viewer_live "$service_state"; then
+    service_note="reused"
+  else
+    service_takeover
+    systemctl --user start "$unit"
+    service_note="started"
+  fi
+}
+
+service_restart() {
+  systemctl --user restart "$unit"
+  service_note="restarted"
+}
+
+service_stop() {
+  if service_active; then
+    systemctl --user stop "$unit"
+    echo "Viewer service stopped."
+  else
+    echo "Viewer service is not running."
+  fi
+  echo "($unit stays installed; ./run.sh${dev:+ --dev} --tailscale starts it, --remove-service removes it.)"
+}
+
+service_remove() {
+  if ! service_installed; then
+    echo "No viewer service is installed ($unit_path)."
+    return
+  fi
+  systemctl --user disable --quiet "$unit"
+  systemctl --user stop "$unit"
+  rm -f -- "$unit_path"
+  systemctl --user daemon-reload
+  echo "Viewer service $unit removed."
+}
+
+# The service's link, once its viewer answers; a service takes a moment to start.
+service_url() {
+  url=$(.venv/bin/python - "$service_state" <<'EOF'
+import sys, time
+from pathlib import Path
+
+from task_mcp.viewer import _link, _live
+
+state = Path(sys.argv[1])
+for _ in range(100):
+    if info := _live(state):
+        print(_link(info))
+        sys.exit()
+    time.sleep(0.05)
+sys.exit(1)
+EOF
+  ) || {
+    echo "The viewer service did not come up; see: systemctl --user status $unit" >&2
+    exit 1
+  }
+}
+
 # Copies the live database with SQLite's online backup API. The source is opened
 # read-only (mode=ro), so the live database is never written or migrated here.
 copy_live() {
@@ -329,57 +487,93 @@ os.chmod(copy, 0o600)
 EOF
 }
 
-# True while the dev viewer answers. Its state file alone proves nothing: a
-# viewer killed by a reboot, a logout or SIGTERM leaves the file behind.
-dev_viewer_live() {
-  .venv/bin/python -c \
-    'import sys; from pathlib import Path; from task_mcp.viewer import _live; sys.exit(not _live(Path(sys.argv[1])))' \
-    "$dev_state"
-}
-
 if [ -n "$dev" ]; then
-  # The dev copy lives in the checkout (.dev/ is gitignored). The live database
-  # is the server's default: the same resolution as task_mcp.store.default_database.
-  live_db=${XDG_DATA_HOME:-$HOME/.local/share}/task-mcp/tasks.sqlite3
+  # The dev copy lives in the checkout (.dev/ is gitignored). A dev service is
+  # named after the checkout, with a hash of its path to keep worktrees apart.
   dev_dir=$PWD/.dev
   dev_db=$dev_dir/tasks.sqlite3
   dev_state=$dev_db.viewer.json
+  checkout=$(basename -- "$PWD")
+  service_vars "$dev_db" \
+    "task-mcp-dev-viewer-${checkout//[^A-Za-z0-9_-]/_}-$(printf %s "$PWD" | sha256sum | cut -c1-8).service"
 
   if [ "$action" = --stop ]; then
     [ -z "$tailscale" ] || serve_unmap
-    .venv/bin/task-mcp ui --stop --db "$dev_db"
+    if service_installed; then
+      service_stop
+    else
+      .venv/bin/task-mcp ui --stop --db "$dev_db"
+    fi
+    echo "(The dev copy stays at $dev_db.)"
+    exit
+  fi
+  if [ -n "$remove" ]; then
+    serve_unmap
+    service_remove
     echo "(The dev copy stays at $dev_db.)"
     exit
   fi
   mkdir -p -- "$dev_dir"
-  if [ -n "$keep" ]; then
-    if [ ! -f "$dev_db" ]; then
-      echo "No dev copy at $dev_db; run ./run.sh --dev without --keep to take one." >&2
-      exit 1
-    fi
-    copy_note="kept"
-    [ "$action" != --restart ] || .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
-  elif [ "$action" = --restart ] || ! dev_viewer_live; then
-    # A fresh copy; the dev viewer, if any, is stopped first so nothing reads
-    # the copy while it is replaced. A dev viewer that answers is otherwise
-    # reused together with its copy (--restart takes a fresh one).
+  # A fresh copy; any viewer on the copy is stopped first so nothing reads it
+  # while it is replaced.
+  fresh_copy() {
     if [ ! -f "$live_db" ]; then
       echo "No live database at $live_db to copy." >&2
       exit 1
     fi
+    ! service_installed || systemctl --user stop "$unit"
     .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
     copy_live
     copy_note="fresh copy of $live_db"
+  }
+  if [ -n "$keep" ] && [ ! -f "$dev_db" ]; then
+    echo "No dev copy at $dev_db; run ./run.sh --dev without --keep to take one." >&2
+    exit 1
+  fi
+  if [ -n "$install" ]; then
+    # The service serves the existing copy; one is taken when there is none.
+    if [ -f "$dev_db" ]; then
+      copy_note="kept; ./run.sh --dev --tailscale --restart takes a fresh copy"
+    else
+      fresh_copy
+    fi
+    service_install
+  elif service_installed; then
+    if [ -n "$keep" ]; then
+      copy_note="kept"
+      if [ "$action" = --restart ]; then service_restart; else service_start; fi
+    elif [ "$action" = --restart ] || ! viewer_live "$dev_state"; then
+      fresh_copy
+      systemctl --user start "$unit"
+      if [ "$action" = --restart ]; then service_note="restarted"; else service_note="started"; fi
+    else
+      copy_note="kept while the dev viewer runs; ./run.sh --dev --restart takes a fresh copy"
+      service_note="reused"
+    fi
+  elif [ -n "$keep" ]; then
+    copy_note="kept"
+    [ "$action" != --restart ] || .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
+  elif [ "$action" = --restart ] || ! viewer_live "$dev_state"; then
+    # A dev viewer that answers is otherwise reused together with its copy
+    # (--restart takes a fresh one).
+    fresh_copy
   else
     copy_note="kept while the dev viewer runs; ./run.sh --dev --restart takes a fresh copy"
   fi
 
-  url=$(.venv/bin/task-mcp ui --db "$dev_db" ${ui_args[@]+"${ui_args[@]}"})
+  if service_installed; then
+    service_url
+  else
+    url=$(.venv/bin/task-mcp ui --db "$dev_db" ${ui_args[@]+"${ui_args[@]}"})
+  fi
   [ -z "$tailscale" ] || serve_map
   echo "Task MCP dev viewer: $url"
   echo "Dev database: $dev_db ($copy_note)"
   if [ -n "$tailscale" ]; then
     echo "Published on the tailnet by tailscale serve ($scheme on port $port, mapping $mapping)."
+  fi
+  [ -z "${service_note:-}" ] || echo "Runs as the systemd user service $unit ($service_note)."
+  if [ -n "$tailscale" ]; then
     echo "(The link includes a private access token. Stop it with ./run.sh --dev --tailscale --stop.)"
   else
     echo "(The link includes a private access token. Stop it with ./run.sh --dev --stop.)"
@@ -394,20 +588,47 @@ if [ -n "$dev" ]; then
   exit
 fi
 
-case "$action" in
-  "") ;;
-  --restart) .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"} >/dev/null ;;
-  --stop)
-    [ -z "$tailscale" ] || serve_unmap
-    exec .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"}
-    ;;
-esac
+# The live service; TASK_MCP_DB selects another database, which never has one.
+[ -n "${TASK_MCP_DB:-}" ] || service_vars "$live_db" task-mcp-viewer.service
 
-url=$(.venv/bin/task-mcp ui ${db_args[@]+"${db_args[@]}"} ${ui_args[@]+"${ui_args[@]}"})
-[ -z "$tailscale" ] || serve_map
+if [ -n "$remove" ]; then
+  serve_unmap
+  service_remove
+  exit
+fi
+if [ -n "$install" ]; then
+  service_install
+  service_url
+elif service_installed; then
+  case "$action" in
+    "") service_start ;;
+    --restart) service_restart ;;
+    --stop)
+      [ -z "$tailscale" ] || serve_unmap
+      service_stop
+      exit
+      ;;
+  esac
+  service_url
+  [ -z "$tailscale" ] || serve_map
+else
+  case "$action" in
+    "") ;;
+    --restart) .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"} >/dev/null ;;
+    --stop)
+      [ -z "$tailscale" ] || serve_unmap
+      exec .venv/bin/task-mcp ui --stop ${db_args[@]+"${db_args[@]}"}
+      ;;
+  esac
+  url=$(.venv/bin/task-mcp ui ${db_args[@]+"${db_args[@]}"} ${ui_args[@]+"${ui_args[@]}"})
+  [ -z "$tailscale" ] || serve_map
+fi
 echo "Task MCP viewer: $url"
 if [ -n "$tailscale" ]; then
   echo "Published on the tailnet by tailscale serve ($scheme on port $port, mapping $mapping)."
+fi
+[ -z "${service_note:-}" ] || echo "Runs as the systemd user service $unit ($service_note)."
+if [ -n "$tailscale" ]; then
   echo "(The link includes a private access token. Stop it with ./run.sh --tailscale --stop.)"
 else
   echo "(The link includes a private access token. Stop it with ./run.sh --stop.)"

@@ -450,8 +450,11 @@ The detached process outlives the launching terminal or stdio session. Stop it
 with the confirmed **Stop viewer** action, or `task-mcp ui --db PATH --stop`.
 Stopping the browser companion does not stop the MCP stdio server. Merely
 closing a tab does not stop the listener. No startup/login hook, service or
-Codex setting is installed or changed. The current launcher targets POSIX
-systems (Linux/macOS); Windows is not supported by this launcher.
+Codex setting is installed or changed by the launcher; a systemd user service
+is installed only on request (`./run.sh --tailscale --install-service`, see the
+README), and `systemctl --user stop` ends that viewer cleanly through SIGTERM.
+The current launcher targets POSIX systems (Linux/macOS); Windows is not
+supported by this launcher.
 
 The launch MCP annotation is a non-read-only, non-destructive, idempotent,
 closed-world operation. It creates/reuses a local listener and discovery files;

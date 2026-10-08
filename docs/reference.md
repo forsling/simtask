@@ -108,8 +108,11 @@ viewer for that database. The explicit `open_task_viewer` MCP tool returns the
 same link for its configured database; it does not change client approvals or
 open a browser automatically. The listener stays running after the CLI or MCP
 session ends, until **Stop viewer**, `ui --stop`, or the process/machine stops.
-There is no automatic startup or installed OS service. The current launcher
-uses POSIX file locking (Linux/macOS).
+There is no automatic startup unless `./run.sh --tailscale --install-service`
+(or `--dev --tailscale --install-service`) installs the viewer as a systemd
+user service that starts at boot; run.sh then starts, reuses, restarts and
+stops that service (see the README). The current launcher uses POSIX file
+locking (Linux/macOS).
 
 Browse projects and workstreams, search/filter task titles, and read
 specifications, evidence and audit history. Each project's **Unassigned** view,

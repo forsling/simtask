@@ -1,7 +1,10 @@
 """run.sh: --remote through a stand-in ssh (tests/fake_ssh.py), --dev in a stand-in
-checkout whose "live" database sits under a temporary XDG_DATA_HOME, and --tailscale
-through a stand-in tailscale (tests/fake_tailscale.py)."""
+checkout whose "live" database sits under a temporary XDG_DATA_HOME, --tailscale
+through a stand-in tailscale (tests/fake_tailscale.py) and the viewer services
+through stand-in systemctl and loginctl (tests/fake_systemctl.py,
+tests/fake_loginctl.py) with the units under a temporary XDG_CONFIG_HOME."""
 
+import hashlib
 import json
 import os
 import re
@@ -188,6 +191,16 @@ def tunnels_or_empty(tmp_path):
         ["--tailscale", "--remote", "a"],
         ["--tailscale", "--tailscale"],
         ["--tailscale", "--keep"],
+        ["--install-service"],
+        ["--remove-service"],
+        ["--dev", "--install-service"],
+        ["--remote", "--install-service"],
+        ["--tailscale", "--install-service", "--remove-service"],
+        ["--tailscale", "--install-service", "--install-service"],
+        ["--tailscale", "--install-service", "--stop"],
+        ["--tailscale", "--restart", "--install-service"],
+        ["--tailscale", "--remove-service", "--restart"],
+        ["--dev", "--tailscale", "--keep", "--remove-service"],
     ],
 )
 def test_argument_checks(remote, args):
@@ -370,8 +383,15 @@ def viewer_pid(database):
     raise LookupError(f"no viewer is serving {database}")
 
 
+def wait_dead(port, token):
+    for _ in range(100):
+        if not alive(port, token):
+            return
+        time.sleep(0.05)
+
+
 def test_dev_replaces_a_killed_viewer(dev, tmp_path):
-    """A dev viewer that dies without a clean stop (a reboot, a logout, SIGTERM) leaves
+    """A dev viewer that dies without a clean stop (a reboot, a logout, SIGKILL) leaves
     its state file behind; plain --dev must not take the file for a running viewer."""
     env, checkout, live = dev
     copy = checkout / ".dev/tasks.sqlite3"
@@ -384,11 +404,8 @@ def test_dev_replaces_a_killed_viewer(dev, tmp_path):
         action="create_project",
         confirmed=True,
     )
-    os.kill(viewer_pid(copy), signal.SIGTERM)
-    for _ in range(100):
-        if not alive(port, token):
-            break
-        time.sleep(0.05)
+    os.kill(viewer_pid(copy), signal.SIGKILL)
+    wait_dead(port, token)
     assert not alive(port, token) and state.exists()
 
     result = run_dev(env, checkout)
@@ -398,6 +415,25 @@ def test_dev_replaces_a_killed_viewer(dev, tmp_path):
     assert (new_port, new_token) != (port, token) and ping(new_port, new_token) == 200
     assert json.loads(state.read_text())["token"] == new_token
     assert workstreams(copy) == ["live"] and workstreams(live) == ["live"]
+
+
+def test_sigterm_stops_the_viewer_cleanly(dev):
+    """systemctl stop (and a logout) send SIGTERM: the viewer ends like /api/stop and
+    takes its state file with it."""
+    env, checkout, live = dev
+    copy = checkout / ".dev/tasks.sqlite3"
+    state = Path(str(copy) + ".viewer.json")
+    port, token = link(run_dev(env, checkout))
+    pid = viewer_pid(copy)
+    os.kill(pid, signal.SIGTERM)
+    wait_dead(port, token)
+    assert not alive(port, token) and not state.exists()
+    for _ in range(100):
+        if not Path(f"/proc/{pid}").exists():
+            break
+        time.sleep(0.05)
+    assert not Path(f"/proc/{pid}").exists()
+    assert run_dev(env, checkout, "--stop").stdout.startswith("Viewer is not running.\n")
 
 
 def test_dev_creates_venv(dev, tmp_path):
@@ -663,3 +699,341 @@ def test_dev_tailscale_uses_its_own_port(dev, tmp_path):
     )
     assert serve_config(tmp_path) == {} and copy.exists()
     assert tailscale_calls(tmp_path)[-1] == ["serve", f"--http={port}", "off"]
+
+
+@pytest.fixture
+def service(dev, tmp_path):
+    """The stand-in dev checkout with stand-in tailscale, systemctl and loginctl on
+    PATH and the units under a temporary XDG_CONFIG_HOME, so the real user manager,
+    tailscaled and ~/.config/systemd/user are untouched. The stand-in systemctl runs
+    a unit's ExecStart for real (detached) and stops it with SIGTERM."""
+    env, checkout, live = dev
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("tailscale", "systemctl", "loginctl"):
+        shutil.copy(REPO / f"tests/fake_{name}.py", bin_dir / name)
+        (bin_dir / name).chmod(0o755)
+    env = {
+        **env,
+        "PATH": f"{bin_dir}:{env['PATH']}",
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "FAKE_TAILSCALE_LOG": str(tmp_path / "tailscale.log"),
+        "FAKE_TAILSCALE_STATE": str(tmp_path / "serve.json"),
+        "FAKE_SYSTEMCTL_LOG": str(tmp_path / "systemctl.log"),
+        "FAKE_SYSTEMCTL_STATE": str(tmp_path / "systemd"),
+        "FAKE_LOGINCTL_LOG": str(tmp_path / "loginctl.log"),
+        "FAKE_LOGINCTL_STATE": str(tmp_path / "linger"),
+        "TASK_MCP_TAILSCALE_PORT": str(free_port()),
+        "TASK_MCP_DEV_TAILSCALE_PORT": str(free_port()),
+    }
+    yield env, checkout, live
+    for pid_file in (tmp_path / "systemd").glob("*.pid"):
+        try:
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+        except (OSError, ValueError):
+            pass
+
+
+def systemctl_calls(env):
+    log = Path(env["FAKE_SYSTEMCTL_LOG"])
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def loginctl_calls(env):
+    log = Path(env["FAKE_LOGINCTL_LOG"])
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def unit_active(env, unit):
+    """Whether the stand-in systemctl's process for unit runs, read from its state
+    directory so the probe leaves no trace in the systemctl log."""
+    try:
+        pid = int((Path(env["FAKE_SYSTEMCTL_STATE"]) / f"{unit}.pid").read_text())
+    except (OSError, ValueError):
+        return False
+    return Path(f"/proc/{pid}").exists()
+
+
+def unit_text(python, database, port):
+    return (
+        "[Unit]\n"
+        f"Description=Task MCP viewer on {database} (tailnet port {port})\n"
+        "After=network-online.target tailscaled.service\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        f"ExecStart={python} -m task_mcp.viewer --serve --db {database} --port {port}"
+        f" --public-origin http://fake-host.tail.ts.net:{port}\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
+    env, checkout, live = service
+    port = int(env["TASK_MCP_TAILSCALE_PORT"])
+    public = f"http://fake-host.tail.ts.net:{port}"
+    unit = "task-mcp-viewer.service"
+    unit_file = tmp_path / "config/systemd/user" / unit
+    state = Path(str(live) + ".viewer.json")
+
+    def run_checkout(*args):
+        return subprocess.run(
+            ["bash", str(checkout / "run.sh"), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    # A detached live viewer is running, as today; the service takes over from it.
+    detached_port, detached_token = link(
+        subprocess.run(
+            [REPO / ".venv/bin/task-mcp", "ui", "--db", live], capture_output=True, text=True
+        )
+    )
+    result = run_checkout("--tailscale", "--install-service")
+    scheme, host, link_port, token = tailnet_link(result)
+    assert (scheme, link_port) == ("http", port) and token != detached_token
+    assert result.stdout.startswith(f"Linger enabled for {os.environ['USER']}:")
+    assert f"Task MCP viewer: {public}/#{token}" in result.stdout
+    assert f"(http on port {port}, mapping added)" in result.stdout
+    assert f"Runs as the systemd user service {unit} (installed as {unit_file})." in result.stdout
+    assert "Stop it with ./run.sh --tailscale --stop." in result.stdout
+    # The unit runs this checkout's venv on the live database, the fixed port and the
+    # tailnet origin, in the foreground.
+    assert unit_file.read_text() == unit_text(checkout / ".venv/bin/python", live, port)
+    assert systemctl_calls(env) == [
+        ["--user", "daemon-reload"],
+        ["--user", "is-active", "--quiet", unit],
+        ["--user", "enable", "--quiet", unit],
+        ["--user", "restart", unit],
+    ]
+    assert loginctl_calls(env) == [
+        ["show-user", os.environ["USER"], "-p", "Linger", "--value"],
+        ["enable-linger", os.environ["USER"]],
+    ]
+    assert Path(env["FAKE_LOGINCTL_STATE"]).read_text() == "yes"
+    assert (tmp_path / "systemd" / f"{unit}.enabled").exists() and unit_active(env, unit)
+    assert ping(detached_port, detached_token) is None
+    assert json.loads(state.read_text()) == {
+        "origin": f"http://127.0.0.1:{port}",
+        "token": token,
+        "public_origin": public,
+    }
+    assert through_tailnet(port, token, public) == 200
+    assert list(serve_config(tmp_path)["TCP"]) == [str(port)]
+
+    # Runs with and without --tailscale reuse the service and print its link.
+    again = run_checkout("--tailscale")
+    assert tailnet_link(again)[3] == token
+    assert "mapping reused)" in again.stdout and f"service {unit} (reused)." in again.stdout
+    plain = run_checkout()
+    assert tailnet_link(plain)[3] == token and "tailscale serve" not in plain.stdout
+    assert f"service {unit} (reused)." in plain.stdout
+    assert "Stop it with ./run.sh --stop." in plain.stdout
+    assert systemctl_calls(env)[4:] == [["--user", "is-active", "--quiet", unit]] * 2
+
+    # The token rotates when systemd restarts the unit (a reboot); the link is
+    # printable without restarting anything.
+    subprocess.run(["systemctl", "--user", "restart", unit], env=env, check=True)
+    rotated = tailnet_link(run_checkout("--tailscale"))[3]
+    assert rotated != token and json.loads(state.read_text())["token"] == rotated
+    assert systemctl_calls(env)[6:] == [
+        ["--user", "restart", unit],
+        ["--user", "is-active", "--quiet", unit],
+    ]
+
+    # --restart restarts the service; a second install keeps linger as it is.
+    restarted = run_checkout("--tailscale", "--restart")
+    new_token = tailnet_link(restarted)[3]
+    assert new_token != rotated and f"service {unit} (restarted)." in restarted.stdout
+    assert systemctl_calls(env)[-1] == ["--user", "restart", unit]
+    assert through_tailnet(port, new_token, public) == 200
+    reinstalled = run_checkout("--tailscale", "--install-service")
+    assert tailnet_link(reinstalled)[3] != new_token and "Linger" not in reinstalled.stdout
+    assert loginctl_calls(env)[-1] == ["show-user", os.environ["USER"], "-p", "Linger", "--value"]
+    assert unit_file.read_text() == unit_text(checkout / ".venv/bin/python", live, port)
+
+    # --stop stops the service and removes the mapping; the unit stays installed.
+    stopped = run_checkout("--tailscale", "--stop")
+    assert stopped.returncode == 0, stopped.stderr
+    assert stopped.stdout == (
+        f"Tailnet mapping for port {port} removed.\nViewer service stopped.\n"
+        f"({unit} stays installed; ./run.sh --tailscale starts it, --remove-service removes it.)\n"
+    )
+    assert systemctl_calls(env)[-1] == ["--user", "stop", unit]
+    assert unit_file.exists() and not unit_active(env, unit)
+    assert serve_config(tmp_path) == {} and not state.exists()
+    assert run_checkout("--tailscale", "--stop").stdout.startswith(
+        "Viewer service is not running.\n"
+    )
+
+    # Starting again goes through the service. A detached viewer that got in first
+    # (task-mcp ui on the live database) is replaced, as it holds the viewer lock.
+    detached_port, detached_token = link(
+        subprocess.run(
+            [REPO / ".venv/bin/task-mcp", "ui", "--db", live], capture_output=True, text=True
+        )
+    )
+    started = run_checkout("--tailscale")
+    assert tailnet_link(started)[:3] == ("http", "fake-host.tail.ts.net", port)
+    assert f"service {unit} (started)." in started.stdout and "mapping added)" in started.stdout
+    assert ping(detached_port, detached_token) is None and unit_active(env, unit)
+    assert systemctl_calls(env)[-2:] == [
+        ["--user", "is-active", "--quiet", unit],
+        ["--user", "start", unit],
+    ]
+
+    # --remove-service stops, disables and deletes the unit and the mapping.
+    removed = run_checkout("--tailscale", "--remove-service")
+    assert removed.returncode == 0, removed.stderr
+    assert removed.stdout == (
+        f"Tailnet mapping for port {port} removed.\nViewer service {unit} removed.\n"
+    )
+    assert systemctl_calls(env)[-3:] == [
+        ["--user", "disable", "--quiet", unit],
+        ["--user", "stop", unit],
+        ["--user", "daemon-reload"],
+    ]
+    assert not unit_file.exists() and not (tmp_path / "systemd" / f"{unit}.enabled").exists()
+    assert not unit_active(env, unit) and not state.exists() and serve_config(tmp_path) == {}
+    assert run_checkout("--tailscale", "--stop").stdout == "Viewer is not running.\n"
+    assert run_checkout("--tailscale", "--remove-service").stdout == (
+        f"No viewer service is installed ({unit_file}).\n"
+    )
+    # Without a unit, --tailscale runs a detached viewer as before.
+    detached = run_checkout("--tailscale")
+    assert "systemd" not in detached.stdout and tailnet_link(detached)[2] == port
+    assert systemctl_calls(env)[-1] == ["--user", "daemon-reload"]
+    assert run_checkout("--tailscale", "--stop").returncode == 0
+    assert not any(call[0] == "funnel" for call in tailscale_calls(tmp_path))
+
+
+def test_install_service_without_linger(service, tmp_path):
+    """A refused enable-linger (polkit) is reported; the service is still installed."""
+    env, checkout, live = service
+    env = {**env, "FAKE_LOGINCTL_DENIED": "1"}
+    result = subprocess.run(
+        ["bash", str(checkout / "run.sh"), "--tailscale", "--install-service"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert tailnet_link(result)[2] == int(env["TASK_MCP_TAILSCALE_PORT"])
+    assert "Access denied" in result.stderr
+    assert f"loginctl enable-linger {os.environ['USER']} failed" in result.stderr
+    assert "Linger enabled" not in result.stdout
+    assert unit_active(env, "task-mcp-viewer.service")
+    assert (tmp_path / "config/systemd/user/task-mcp-viewer.service").exists()
+
+    with_db = subprocess.run(
+        ["bash", str(checkout / "run.sh"), "--tailscale", "--install-service"],
+        env={**env, "TASK_MCP_DB": str(tmp_path / "other.sqlite3")},
+        capture_output=True,
+        text=True,
+    )
+    assert with_db.returncode == 2 and "unset TASK_MCP_DB" in with_db.stderr
+    removed = subprocess.run(
+        ["bash", str(checkout / "run.sh"), "--tailscale", "--remove-service"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert removed.returncode == 0, removed.stderr
+
+
+def test_dev_install_service_serves_the_copy(service, tmp_path):
+    env, checkout, live = service
+    port = int(env["TASK_MCP_DEV_TAILSCALE_PORT"])
+    public = f"http://fake-host.tail.ts.net:{port}"
+    copy = checkout / ".dev/tasks.sqlite3"
+    state = Path(str(copy) + ".viewer.json")
+    key = hashlib.sha256(str(checkout).encode()).hexdigest()[:8]
+    unit = f"task-mcp-dev-viewer-checkout-{key}.service"
+    unit_file = tmp_path / "config/systemd/user" / unit
+
+    result = run_dev(env, checkout, "--tailscale", "--install-service")
+    token = tailnet_link(result)[3]
+    assert tailnet_link(result)[:3] == ("http", "fake-host.tail.ts.net", port)
+    assert f"Task MCP dev viewer: {public}/#{token}" in result.stdout
+    assert f"Dev database: {copy} (fresh copy of {live})" in result.stdout
+    assert f"Runs as the systemd user service {unit} (installed as {unit_file})." in result.stdout
+    assert "Stop it with ./run.sh --dev --tailscale --stop." in result.stdout
+    assert mcp_entry(result.stdout)["env"] == {"TASK_MCP_DB": str(copy)}
+    assert unit_file.read_text() == unit_text(checkout / ".venv/bin/python", copy, port)
+    assert systemctl_calls(env)[-1] == ["--user", "restart", unit] and unit_active(env, unit)
+    assert json.loads(state.read_text())["public_origin"] == public
+    assert through_tailnet(port, token, public) == 200
+    assert workstreams(copy) == ["live"] and list(serve_config(tmp_path)["TCP"]) == [str(port)]
+
+    # The service and its copy are reused; a reinstall keeps the copy too.
+    Store(copy).init(
+        str(tmp_path / "other"),
+        "main",
+        workstream_name="dev-only",
+        action="create_project",
+        confirmed=True,
+    )
+    again = run_dev(env, checkout, "--tailscale")
+    assert tailnet_link(again)[3] == token and f"service {unit} (reused)." in again.stdout
+    assert "(kept while the dev viewer runs;" in again.stdout
+    reinstalled = run_dev(env, checkout, "--tailscale", "--install-service")
+    assert tailnet_link(reinstalled)[3] != token
+    assert f"Dev database: {copy} (kept; ./run.sh --dev --tailscale --restart" in reinstalled.stdout
+    assert workstreams(copy) == ["live", "dev-only"]
+
+    # --restart takes a fresh copy while the service is stopped, then starts it;
+    # --keep --restart restarts it on the existing copy.
+    restarted = run_dev(env, checkout, "--tailscale", "--restart")
+    new_token = tailnet_link(restarted)[3]
+    assert new_token != token and f"service {unit} (restarted)." in restarted.stdout
+    assert f"Dev database: {copy} (fresh copy of {live})" in restarted.stdout
+    assert workstreams(copy) == ["live"] and workstreams(live) == ["live"]
+    assert systemctl_calls(env)[-2:] == [["--user", "stop", unit], ["--user", "start", unit]]
+    assert through_tailnet(port, new_token, public) == 200 and unit_active(env, unit)
+    Store(copy).init(
+        str(tmp_path / "other"),
+        "main",
+        workstream_name="dev-only",
+        action="create_project",
+        confirmed=True,
+    )
+    kept = run_dev(env, checkout, "--tailscale", "--keep", "--restart")
+    assert tailnet_link(kept)[3] != new_token and f"Dev database: {copy} (kept)" in kept.stdout
+    assert systemctl_calls(env)[-1] == ["--user", "restart", unit]
+    assert workstreams(copy) == ["live", "dev-only"]
+
+    # --stop leaves the unit and the copy; a plain --dev --tailscale starts it again
+    # on a fresh copy, as for a dev viewer that is not running.
+    stopped = run_dev(env, checkout, "--tailscale", "--stop")
+    assert stopped.returncode == 0, stopped.stderr
+    assert stopped.stdout == (
+        f"Tailnet mapping for port {port} removed.\nViewer service stopped.\n"
+        f"({unit} stays installed; ./run.sh --dev --tailscale starts it, "
+        "--remove-service removes it.)\n"
+        f"(The dev copy stays at {copy}.)\n"
+    )
+    assert unit_file.exists() and not unit_active(env, unit) and copy.exists()
+    assert not state.exists() and serve_config(tmp_path) == {}
+    started = run_dev(env, checkout, "--tailscale")
+    assert f"service {unit} (started)." in started.stdout and "mapping added)" in started.stdout
+    assert f"Dev database: {copy} (fresh copy of {live})" in started.stdout
+    assert workstreams(copy) == ["live"] and unit_active(env, unit)
+
+    removed = run_dev(env, checkout, "--tailscale", "--remove-service")
+    assert removed.returncode == 0, removed.stderr
+    assert removed.stdout == (
+        f"Tailnet mapping for port {port} removed.\nViewer service {unit} removed.\n"
+        f"(The dev copy stays at {copy}.)\n"
+    )
+    assert not unit_file.exists() and not unit_active(env, unit) and copy.exists()
+    assert not state.exists() and serve_config(tmp_path) == {}
+    assert run_dev(env, checkout, "--tailscale", "--stop").stdout.startswith(
+        "Viewer is not running.\n"
+    )
