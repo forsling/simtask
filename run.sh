@@ -425,10 +425,14 @@ service_restart() {
   service_note="restarted"
 }
 
+# A detached viewer (task-mcp ui or open_task_viewer on the same database) can
+# answer instead of a stopped unit; --stop ends that one too.
 service_stop() {
   if service_active; then
     systemctl --user stop "$unit"
     echo "Viewer service stopped."
+  elif [ "$(.venv/bin/task-mcp ui --stop --db "$service_db")" = "Viewer stopped." ]; then
+    echo "Viewer service is not running; the detached viewer on its database stopped."
   else
     echo "Viewer service is not running."
   fi
@@ -547,8 +551,10 @@ if [ -n "$dev" ]; then
       systemctl --user start "$unit"
       if [ "$action" = --restart ]; then service_note="restarted"; else service_note="started"; fi
     else
+      # The service is reused while it runs; a detached viewer on the copy (a
+      # stopped unit, then task-mcp ui or the tasks-dev entry) is taken over.
       copy_note="kept while the dev viewer runs; ./run.sh --dev --restart takes a fresh copy"
-      service_note="reused"
+      service_start
     fi
   elif [ -n "$keep" ]; then
     copy_note="kept"

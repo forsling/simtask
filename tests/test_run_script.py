@@ -872,6 +872,16 @@ def test_install_service_runs_the_live_viewer_as_a_user_unit(service, tmp_path):
     assert run_checkout("--tailscale", "--stop").stdout.startswith(
         "Viewer service is not running.\n"
     )
+    # With the unit stopped, --stop also ends a detached viewer on the database.
+    detached_port, detached_token = link(
+        subprocess.run(
+            [REPO / ".venv/bin/task-mcp", "ui", "--db", live], capture_output=True, text=True
+        )
+    )
+    assert run_checkout("--tailscale", "--stop").stdout.startswith(
+        "Viewer service is not running; the detached viewer on its database stopped.\n"
+    )
+    assert ping(detached_port, detached_token) is None and not state.exists()
 
     # Starting again goes through the service. A detached viewer that got in first
     # (task-mcp ui on the live database) is replaced, as it holds the viewer lock.
@@ -1027,6 +1037,44 @@ def test_dev_install_service_serves_the_copy(service, tmp_path):
     assert f"service {unit} (started)." in started.stdout and "mapping added)" in started.stdout
     assert f"Dev database: {copy} (fresh copy of {live})" in started.stdout
     assert workstreams(copy) == ["live"] and unit_active(env, unit)
+
+    # A detached viewer on the copy while the unit is stopped (task-mcp ui, or
+    # open_task_viewer through the tasks-dev entry): --stop ends it, and a plain run
+    # takes it over and starts the unit on the kept copy instead of reusing it.
+    stopped = run_dev(env, checkout, "--tailscale", "--stop")
+    assert stopped.returncode == 0 and not unit_active(env, unit) and not state.exists()
+    detached_port, detached_token = link(
+        subprocess.run(
+            [REPO / ".venv/bin/task-mcp", "ui", "--db", copy], capture_output=True, text=True
+        )
+    )
+    stopped = run_dev(env, checkout, "--tailscale", "--stop")
+    assert stopped.stdout.startswith(
+        "Viewer service is not running; the detached viewer on its database stopped.\n"
+    )
+    assert ping(detached_port, detached_token) is None and not state.exists()
+    detached_port, detached_token = link(
+        subprocess.run(
+            [REPO / ".venv/bin/task-mcp", "ui", "--db", copy], capture_output=True, text=True
+        )
+    )
+    Store(copy).init(
+        str(tmp_path / "other"),
+        "main",
+        workstream_name="dev-only",
+        action="create_project",
+        confirmed=True,
+    )
+    taken = run_dev(env, checkout, "--tailscale")
+    taken_token = tailnet_link(taken)[3]
+    assert tailnet_link(taken)[:3] == ("http", "fake-host.tail.ts.net", port)
+    assert taken_token != detached_token and detached_token not in taken.stdout
+    assert f"service {unit} (started)." in taken.stdout and "mapping added)" in taken.stdout
+    assert "(kept while the dev viewer runs;" in taken.stdout
+    assert ping(detached_port, detached_token) is None and unit_active(env, unit)
+    assert systemctl_calls(env)[-1] == ["--user", "start", unit]
+    assert through_tailnet(port, taken_token, public) == 200
+    assert workstreams(copy) == ["live", "dev-only"]
 
     removed = run_dev(env, checkout, "--tailscale", "--remove-service")
     assert removed.returncode == 0, removed.stderr
