@@ -635,8 +635,8 @@ if [ -n "$tailscale" ]; then
   echo "Published on the tailnet by tailscale serve ($scheme on port $port, mapping $mapping)."
 fi
 [ -z "${service_note:-}" ] || echo "Runs as the systemd user service $unit ($service_note)."
-if [ -n "$tailscale" ]; then
-  echo "(The link includes a private access token. Stop it with ./run.sh --tailscale --stop.)"
-else
-  echo "(The link includes a private access token. Stop it with ./run.sh --stop.)"
+stop_command="./run.sh${tailscale:+ --tailscale} --stop"
+if [ -n "${TASK_MCP_DB:-}" ]; then
+  printf -v stop_command 'TASK_MCP_DB=%q %s' "$TASK_MCP_DB" "$stop_command"
 fi
+echo "(The link includes a private access token. Stop it with $stop_command.)"

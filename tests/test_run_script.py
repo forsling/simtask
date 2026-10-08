@@ -232,6 +232,75 @@ def test_local_viewer_unchanged(tmp_path):
 
 
 @pytest.fixture
+def local_viewers(tmp_path):
+    """Isolate all default paths, including systemd units, from the user's viewers."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    shutil.copy(REPO / "run.sh", checkout / "run.sh")
+    (checkout / ".venv").symlink_to(REPO / ".venv")
+    env = {k: v for k, v in os.environ.items() if k != "TASK_MCP_DB"}
+    env.update(
+        HOME=str(tmp_path / "home"),
+        XDG_DATA_HOME=str(tmp_path / "data"),
+        XDG_CONFIG_HOME=str(tmp_path / "config"),
+        XDG_STATE_HOME=str(tmp_path / "state"),
+        XDG_RUNTIME_DIR=str(tmp_path / "runtime"),
+    )
+    yield env, checkout
+    for state in tmp_path.rglob("*.sqlite3.viewer.json"):
+        database = str(state).removesuffix(".viewer.json")
+        subprocess.run(
+            [REPO / ".venv/bin/task-mcp", "ui", "--stop", "--db", database],
+            env=env,
+            capture_output=True,
+            timeout=60,
+        )
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_custom_database_stop_hint_leaves_default_viewer_running(local_viewers, relative):
+    env, checkout = local_viewers
+    default = subprocess.run(
+        ["./run.sh"], cwd=checkout, env=env, capture_output=True, text=True, timeout=60
+    )
+    default_link = link(default)
+    assert "Stop it with ./run.sh --stop." in default.stdout
+
+    # Shell metacharacters must stay in the database filename when the command is pasted.
+    database = checkout / "custom space ' $HOME `touch injected` ;.sqlite3"
+    selected = database.name if relative else str(database)
+    started = subprocess.run(
+        ["./run.sh"],
+        cwd=checkout,
+        env={**env, "TASK_MCP_DB": selected},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    custom_link = link(started)
+    assert alive(*default_link) and alive(*custom_link)
+    command = re.search(r"Stop it with (.+)\.\)", started.stdout).group(1)
+    assert command.startswith("TASK_MCP_DB="), started.stdout
+    assert command.endswith(" ./run.sh --stop")
+    assert Path(str(database) + ".viewer.json").exists()
+
+    # A fresh shell has no TASK_MCP_DB; the printed command must select it itself.
+    stopped = subprocess.run(
+        ["bash", "-c", command],
+        cwd=checkout,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert stopped.returncode == 0, stopped.stderr
+    assert stopped.stdout == "Viewer stopped.\n"
+    assert not alive(*custom_link) and alive(*default_link)
+    assert not Path(str(database) + ".viewer.json").exists()
+    assert not (checkout / "injected").exists()
+
+
+@pytest.fixture
 def dev(tmp_path):
     """A stand-in dev checkout: run.sh beside a .venv link to the real one, and a seeded
     "live" database where the server's default path resolves under XDG_DATA_HOME."""
@@ -582,7 +651,10 @@ def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
     token = tailnet_link(result)[3]
     assert result.stdout.startswith(f"Task MCP viewer: {public}/#")
     assert f"(http on port {port}, mapping added)" in result.stdout
-    assert "Stop it with ./run.sh --tailscale --stop." in result.stdout
+    assert (
+        f"Stop it with TASK_MCP_DB={env['TASK_MCP_DB']} ./run.sh --tailscale --stop."
+        in result.stdout
+    )
     state = json.loads(Path(env["TASK_MCP_DB"] + ".viewer.json").read_text())
     assert state == {"origin": f"http://127.0.0.1:{port}", "token": token, "public_origin": public}
     assert serve_config(tmp_path) == mapping
@@ -624,7 +696,15 @@ def test_tailscale_publishes_the_viewer_on_a_fixed_port(tailnet):
     ]
 
     # --stop removes the mapping in the form it was made and stops the viewer.
-    stopped = run(env, "--tailscale", "--stop")
+    command = re.search(r"Stop it with (.+)\.\)", restarted.stdout).group(1)
+    stopped = subprocess.run(
+        ["bash", "-c", command],
+        cwd=REPO,
+        env={k: v for k, v in env.items() if k != "TASK_MCP_DB"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
     assert stopped.returncode == 0, stopped.stderr
     assert stopped.stdout == f"Tailnet mapping for port {port} removed.\nViewer stopped.\n"
     assert tailscale_calls(tmp_path)[-2:] == [
