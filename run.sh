@@ -224,6 +224,14 @@ os.chmod(copy, 0o600)
 EOF
 }
 
+# True while the dev viewer answers. Its state file alone proves nothing: a
+# viewer killed by a reboot, a logout or SIGTERM leaves the file behind.
+dev_viewer_live() {
+  .venv/bin/python -c \
+    'import sys; from pathlib import Path; from task_mcp.viewer import _live; sys.exit(not _live(Path(sys.argv[1])))' \
+    "$dev_state"
+}
+
 if [ -n "$dev" ]; then
   # The dev copy lives in the checkout (.dev/ is gitignored). The live database
   # is the server's default: the same resolution as task_mcp.store.default_database.
@@ -245,10 +253,10 @@ if [ -n "$dev" ]; then
     fi
     copy_note="kept"
     [ "$action" != --restart ] || .venv/bin/task-mcp ui --stop --db "$dev_db" >/dev/null
-  elif [ "$action" = --restart ] || [ ! -f "$dev_state" ]; then
+  elif [ "$action" = --restart ] || ! dev_viewer_live; then
     # A fresh copy; the dev viewer, if any, is stopped first so nothing reads
-    # the copy while it is replaced. A running dev viewer is otherwise reused
-    # together with its copy (--restart takes a fresh one).
+    # the copy while it is replaced. A dev viewer that answers is otherwise
+    # reused together with its copy (--restart takes a fresh one).
     if [ ! -f "$live_db" ]; then
       echo "No live database at $live_db to copy." >&2
       exit 1

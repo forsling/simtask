@@ -8,6 +8,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -345,6 +346,52 @@ def test_dev_viewer_on_a_copy(dev, monkeypatch, tmp_path):
     assert missing.returncode == 1 and f"No dev copy at {copy};" in missing.stderr
 
 
+def viewer_pid(database):
+    """The process serving the viewer on database, found through /proc: the state
+    file records its origin and token, not its pid."""
+    tail = ["-m", "task_mcp.viewer", "--serve", "--db", str(database)]
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            argv = (proc / "cmdline").read_bytes().decode().split("\0")
+        except OSError:
+            continue
+        if argv[-6:-1] == tail:
+            return int(proc.name)
+    raise LookupError(f"no viewer is serving {database}")
+
+
+def test_dev_replaces_a_killed_viewer(dev, tmp_path):
+    """A dev viewer that dies without a clean stop (a reboot, a logout, SIGTERM) leaves
+    its state file behind; plain --dev must not take the file for a running viewer."""
+    env, checkout, live = dev
+    copy = checkout / ".dev/tasks.sqlite3"
+    state = Path(str(copy) + ".viewer.json")
+    port, token = link(run_dev(env, checkout))
+    Store(copy).init(
+        str(tmp_path / "other"),
+        "main",
+        workstream_name="dev-only",
+        action="create_project",
+        confirmed=True,
+    )
+    os.kill(viewer_pid(copy), signal.SIGTERM)
+    for _ in range(100):
+        if not alive(port, token):
+            break
+        time.sleep(0.05)
+    assert not alive(port, token) and state.exists()
+
+    result = run_dev(env, checkout)
+    new_port, new_token = link(result)
+    assert f"Dev database: {copy} (fresh copy of {live})" in result.stdout
+    assert "kept" not in result.stdout
+    assert (new_port, new_token) != (port, token) and ping(new_port, new_token) == 200
+    assert json.loads(state.read_text())["token"] == new_token
+    assert workstreams(copy) == ["live"] and workstreams(live) == ["live"]
+
+
 def test_dev_creates_venv(dev, tmp_path):
     env, checkout, live = dev
     (checkout / ".venv").unlink()
@@ -383,7 +430,9 @@ def test_dev_creates_venv(dev, tmp_path):
     lines = log.read_text().splitlines()
     assert lines[0] == f"venv .venv in {checkout}"
     assert lines[1] == "-m pip install -q --disable-pip-version-check -e .[dev]"
-    assert lines[2] == f"- {live} {checkout}/.dev/tasks.sqlite3"  # the copy, by the new venv
+    # The viewer probe and the copy run through the new venv.
+    assert lines[2].startswith("-c import sys;") and lines[2].endswith(".viewer.json")
+    assert lines[3] == f"- {live} {checkout}/.dev/tasks.sqlite3"
     assert mcp_entry(result.stdout)["command"] == f"{checkout}/.venv/bin/task-mcp"
     assert ping(port, token) == 200 and user_version(checkout / ".dev/tasks.sqlite3") > 0
 
