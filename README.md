@@ -55,6 +55,9 @@ python3 -m venv .venv
 
 Point each MCP client at `.venv/bin/task-mcp`. It speaks stdio; there is no network listener.
 
+The personal laptop/workstation installation, single-source skill sync, and
+refusing laptop MCP selection are documented in [docs/workstation-setup.md](docs/workstation-setup.md).
+
 Claude Code (`~/.claude.json` or a project `.mcp.json`):
 
 ```json

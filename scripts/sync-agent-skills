@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Personal two-machine sync. Edit only the laptop's ~/.agents/skills.
+# On the laptop this pushes to herdr-server; on simon-lws it pulls from simbuntu.
+set -euo pipefail
+skills=(superdevloop task-signoff task-capture task-design
+  bughunt rethink bigthink lean-bughunt luna-bughunt grill-me)
+ssh_options=(-T -o BatchMode=yes -o ConnectTimeout=10)
+mode=${1:-}
+if [[ $# -gt 1 || ( -n $mode && $mode != --check ) ]]; then
+  echo 'Usage: sync-agent-skills [--check]' >&2
+  exit 2
+fi
+
+# These functions also run on the SSH destination. Backups are outside skill
+# discovery paths; real Claude directories and differing agent skills survive.
+digest() { (cd "$1" && find . -type f -exec sha256sum {} + | LC_ALL=C sort); }
+receive_skills() {
+  local mode=$1 stage backup name cleanup changed=0
+  shift
+  stage=$(mktemp -d)
+  printf -v cleanup 'rm -rf -- %q' "$stage"
+  trap "$cleanup" EXIT
+  tar -C "$stage" -xf -
+  backup=$HOME/.local/share/agent-skills-backups/$(date -u +%Y%m%dT%H%M%SZ)-$$
+  if [[ $mode != --check ]]; then
+    mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"
+  fi
+  for name in "$@"; do
+    [[ -f $stage/$name/SKILL.md ]] || { echo "Missing source skill: $name" >&2; exit 1; }
+    if [[ ! -d $HOME/.agents/skills/$name ]] ||
+       [[ $(digest "$stage/$name") != $(digest "$HOME/.agents/skills/$name") ]]; then
+      changed=1
+      if [[ $mode == --check ]]; then
+        echo "Skill differs: $name"
+      else
+        if [[ -e $HOME/.agents/skills/$name || -L $HOME/.agents/skills/$name ]]; then
+          mkdir -p "$backup/agents"
+          mv "$HOME/.agents/skills/$name" "$backup/agents/$name"
+        fi
+        mv "$stage/$name" "$HOME/.agents/skills/$name"
+        echo "Synced: $name"
+      fi
+    fi
+    if [[ ! -L $HOME/.claude/skills/$name ]] ||
+       [[ $(readlink "$HOME/.claude/skills/$name") != ../../.agents/skills/$name ]]; then
+      changed=1
+      if [[ $mode == --check ]]; then
+        echo "Claude link differs: $name"
+      else
+        if [[ -e $HOME/.claude/skills/$name || -L $HOME/.claude/skills/$name ]]; then
+          mkdir -p "$backup/claude"
+          mv "$HOME/.claude/skills/$name" "$backup/claude/$name"
+        fi
+        ln -s "../../.agents/skills/$name" "$HOME/.claude/skills/$name"
+      fi
+    fi
+  done
+  [[ ! -d $backup ]] || echo "Preserved prior copies: $backup"
+  if [[ $mode == --check && $changed == 1 ]]; then return 1; fi
+  echo 'All ten managed skills and Claude links match the laptop source.'
+}
+
+# Repair/check the source machine's Claude links through the same path.
+source_command='set -e; tar -C "$HOME/.agents/skills" -cf -'
+for name in "${skills[@]}"; do source_command+=" $name"; done
+if [[ $(hostname) == simon-lws ]]; then
+  # Pull from the source without requiring its non-interactive SSH agent to
+  # authenticate back to the workstation.
+  ssh "${ssh_options[@]}" simbuntu "$source_command" |
+    (receive_skills "$mode" "${skills[@]}")
+  remote_functions=$(declare -f digest receive_skills)
+  printf -v remote_command '%s\n%s | (receive_skills %q' "$remote_functions" "$source_command" "$mode"
+  for name in "${skills[@]}"; do printf -v remote_command '%s %q' "$remote_command" "$name"; done
+  remote_command+=')'
+  printf -v remote_command 'bash -c %q' "set -euo pipefail; $remote_command"
+  ssh "${ssh_options[@]}" simbuntu "$remote_command"
+else
+  tar -C "$HOME/.agents/skills" -cf - "${skills[@]}" |
+    (receive_skills "$mode" "${skills[@]}")
+  remote_functions=$(declare -f digest receive_skills)
+  printf -v remote_command '%s\nreceive_skills %q' "$remote_functions" "$mode"
+  for name in "${skills[@]}"; do printf -v remote_command '%s %q' "$remote_command" "$name"; done
+  printf -v remote_command 'bash -c %q' "set -euo pipefail; $remote_command"
+  tar -C "$HOME/.agents/skills" -cf - "${skills[@]}" |
+    ssh "${ssh_options[@]}" herdr-server "$remote_command"
+fi
