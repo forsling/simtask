@@ -53,12 +53,12 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-Point each MCP client at `.venv/bin/simtask`. It speaks stdio; there is no network listener.
+Point each MCP client at `.venv/bin/simtask`. The default entry point speaks stdio. The optional persistent HTTPS service is described below.
 
-`simtask` replaces the former `task-mcp` name. The old command, Python imports
-and `TASK_MCP_` settings remain compatible; `SIMTASK_` settings take precedence.
+`simtask` replaces the former `simtask` name. The old command, Python imports
+and `SIMTASK_` settings remain compatible; `SIMTASK_` settings take precedence.
 The data directory is `~/.local/share/simtask`. Before data is moved, an existing
-`~/.local/share/task-mcp/tasks.sqlite3` is used automatically. The workstation's
+`~/.local/share/simtask/tasks.sqlite3` is used automatically. The workstation's
 old data-directory path is an alias to the same relocated data.
 
 The workstation has two checkouts: `~/workspace/simtask` for live use and
@@ -228,3 +228,34 @@ launch, the browser remembers the token for this origin, so bookmarks of normal
 location URLs work in new tabs and after browser restarts too. The token is
 viewer authentication, separate from Tailscale access. Each database has its own
 token; local viewers with randomly assigned ports still need the current address.
+
+### Persistent MCP connections through Tailscale Serve
+
+For laptop clients, run the live MCP server on the workstation independently of
+SSH sessions. `python -m simtask.http_service --db /path/to/tasks.sqlite3
+--port 8789 --public-origin https://workstation.tailnet.ts.net:8789` binds only to
+`127.0.0.1`. Publish it with `tailscale serve --bg --https=8789
+http://127.0.0.1:8789`. Keep the existing viewer Serve ports. Do not use Funnel.
+
+Run that command in a systemd user service with `Restart=on-failure`, enable it
+under `default.target`, and enable user lingering so it starts before login.
+Enable the system `tailscaled` service as well. The MCP service does not need
+Tailscale to be ready when it starts listening; clients can connect once the
+network and Serve are ready.
+
+The private credential is generated once at `<database>.mcp.token` (mode 0600).
+It survives service restarts and must be retained when moving the installation.
+Send it as `Authorization: Bearer <credential>`. It is separate from viewer
+bookmark tokens. Requests without the credential are rejected. HTTP Host and
+Origin checks allow the configured public origin and loopback transport.
+
+Claude uses `https://workstation.tailnet.ts.net:8789/claude/mcp` (actor
+`claude-code`). Codex uses `/codex/mcp` (actor `codex-coordinator`). Configure
+Claude's `tasks` server with `type: "http"`, `url`, and the Authorization entry
+in `headers`. Configure Codex's `[mcp_servers.tasks]` with `url`,
+`http_headers = { Authorization = "Bearer <credential>" }`, and
+`startup_timeout_sec = 60`. Keep client configuration files private. These
+connections need neither an SSH agent nor a shell-exported credential.
+
+Both endpoints use stateless Streamable HTTP, so service restarts do not leave
+clients holding invalid server session IDs. Existing stdio usage is unchanged.
