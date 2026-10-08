@@ -56,7 +56,12 @@ way is `./run.sh`, which starts the viewer (or reuses the running one) and print
 its link; `./run.sh --restart` and `./run.sh --stop` restart or stop it, and
 `TASK_MCP_DB=/path/tasks.sqlite3 ./run.sh` selects another database. From a dev
 worktree, `./run.sh --dev` runs a separate viewer on a copy of the live database
-(see the README's development section). The script wraps:
+(see the README's development section). A viewer on any database other than the
+live one (`task_mcp.store.live_database()`, the user data path; a dev copy,
+`TASK_MCP_DB` or `--db` select another) shows a `DEV` badge in its header on
+every view, with the database path in the badge's tooltip, and its tab title
+starts with `[DEV]`; the server decides from its database path and says so in
+its `/api/ping` answer (`dev`, `database`). The live viewer shows nothing new. The script wraps:
 
 ```sh
 .venv/bin/task-mcp ui

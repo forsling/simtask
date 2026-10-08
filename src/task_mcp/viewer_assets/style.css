@@ -360,6 +360,24 @@ kbd {
   flex: 1;
   min-width: 0;
 }
+/* Not the live database (a dev copy, TASK_MCP_DB or --db): the server says so and the
+   page marks every view. The warn colour on the page background reads in both themes. */
+.env {
+  display: flex;
+  align-items: center;
+}
+.dev-badge {
+  flex: none;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--warn);
+  color: var(--bg);
+  cursor: help;
+}
 .list-title h1 {
   margin: 0;
   font-size: 16px;

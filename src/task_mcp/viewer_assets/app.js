@@ -90,6 +90,9 @@ const state = {
   // open workstream's and project's notes) or {kind: "note", id, back}. Quiet refreshes
   // keep it; navigation and a task click close it.
   panel: null,
+  // The server's /api/ping answer when its database is not the live one (a dev copy,
+  // TASK_MCP_DB or --db): {database, dev: true}; null on the live database.
+  environment: null,
 };
 let submitAction = null;
 let submissionPending = false;
@@ -641,6 +644,32 @@ function onLocationChange() {
 window.addEventListener("popstate", onLocationChange);
 window.addEventListener("hashchange", onLocationChange);
 
+/* ---------- environment ---------- */
+
+// The server decides from its database path whether this is the live database. Any
+// other one marks every view DEV, with the path in the badge's tooltip, and the tab
+// title [DEV], so a dev viewer (./run.sh --dev, on the tailnet too) is never taken for
+// the live one. Silent when the ping fails: the board's own errors are reported.
+async function environment() {
+  const r = await fetch("/api/ping", { headers: { "X-Task-Token": token } });
+  if (!r.ok) return;
+  const info = await r.json();
+  if (!info.dev) return;
+  state.environment = info;
+  if (!document.title.startsWith("[DEV] ")) document.title = "[DEV] " + document.title;
+  const env = $("env");
+  env.replaceChildren(devBadge());
+  env.hidden = false;
+}
+// The DEV badge for a header, or null on the live database.
+function devBadge(cls = "") {
+  if (!state.environment?.dev) return null;
+  const b = node("span", "DEV", "dev-badge" + (cls ? " " + cls : ""));
+  b.title = "Dev viewer, not the live database: " + state.environment.database;
+  b.setAttribute("aria-label", "Dev viewer on " + state.environment.database);
+  return b;
+}
+
 /* ---------- navigation ---------- */
 
 async function boot() {
@@ -648,6 +677,7 @@ async function boot() {
   $("refresh").append(icon("refresh"));
   $("close").append(icon("close"));
   $("search-icon").append(icon("search", 15));
+  environment().catch(() => {});
   try {
     state.projects = await pages("projects");
     if (!state.projects.length) {
@@ -1216,7 +1246,8 @@ function section(title, content, extra) {
 // listBack: false leaves out the phone-only Back to list where the crumbs already lead back.
 function topBar(crumbs, actions, { listBack = true } = {}) {
   const back = listBack ? iconButton("back", "Back to list", () => $("shell").classList.remove("detail-open"), "icon-btn only-mobile") : null;
-  return el("div", "topbar", back, el("div", "crumbs", ...crumbs), el("div", "top-actions", ...actions));
+  // On a phone the detail pane replaces the list, so the DEV badge is repeated here.
+  return el("div", "topbar", back, devBadge("only-mobile"), el("div", "crumbs", ...crumbs), el("div", "top-actions", ...actions));
 }
 function renderDetail(t) {
   const d = $("detail");

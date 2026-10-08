@@ -636,6 +636,48 @@ def test_unknown_paths_stay_not_found(viewer, path):
     assert request(server, path, method="GET") == (404, {"error": "Not found"})
 
 
+def test_ping_marks_a_viewer_off_the_live_database(viewer):
+    """Any database but the default live one is a dev one: the page shows the DEV
+    badge from these two fields."""
+    server, store, _ = viewer
+    status, body = request(server, "/api/ping", method="GET")
+    assert status == 200
+    assert body == {"service": "task-mcp-viewer", "database": str(store.path), "dev": True}
+
+
+@pytest.mark.parametrize("spelling", ["plain", "dotdot", "symlink"])
+def test_ping_marks_the_live_database_as_live(tmp_path, monkeypatch, spelling):
+    """The live database never shows the badge, however its path is spelled."""
+    data = tmp_path / "data"
+    live = data / "task-mcp" / "tasks.sqlite3"
+    if spelling == "dotdot":
+        data = tmp_path / "x" / ".." / "data"
+    elif spelling == "symlink":
+        (tmp_path / "link").symlink_to(tmp_path / "data", target_is_directory=True)
+        data = tmp_path / "link"
+    live.parent.mkdir(parents=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(data))
+    monkeypatch.delenv("TASK_MCP_DB", raising=False)
+    server = ViewerServer(Store(live, "test-browser"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert server.dev is False
+        status, body = request(server, "/api/ping", method="GET")
+        assert status == 200
+        assert body == {"service": "task-mcp-viewer", "database": str(live), "dev": False}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    # TASK_MCP_DB selects another database for ad-hoc viewers; it never makes that
+    # database the live one, so such a viewer shows the badge too.
+    copy = tmp_path / "copy.sqlite3"
+    monkeypatch.setenv("TASK_MCP_DB", str(copy))
+    assert store_module.default_database() == copy
+    assert ViewerServer(Store(copy, "test-browser")).dev is True
+
+
 def test_api_routes_keep_their_status_beside_location_paths(viewer):
     server, _, _ = viewer
     assert request(server, "/api/ping", method="GET")[0] == 200

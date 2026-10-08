@@ -359,11 +359,17 @@ def timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def live_database() -> Path:
+    """The user's one live database, in the user data directory. TASK_MCP_DB selects
+    another database for a process; it never makes that one the live one."""
+    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return base / "task-mcp" / "tasks.sqlite3"
+
+
 def default_database() -> Path:
     if configured := os.environ.get("TASK_MCP_DB"):
         return Path(configured).expanduser().absolute()
-    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-    return base / "task-mcp" / "tasks.sqlite3"
+    return live_database()
 
 
 def _id(prefix):

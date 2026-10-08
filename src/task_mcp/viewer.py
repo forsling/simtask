@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from task_mcp.store import Store, TaskError, default_database
+from task_mcp.store import Store, TaskError, default_database, live_database
 
 ASSETS = Path(__file__).with_name("viewer_assets")
 _ID = "[0-9a-f]{1,32}"
@@ -107,11 +107,21 @@ def public_origin_rule(url):
     return f"{parsed.scheme}://{netloc}", frozenset({netloc, f"{host}:{port}"})
 
 
+def is_dev_database(path):
+    """Whether path is any database but the live one (a ./run.sh --dev copy, a --db or
+    TASK_MCP_DB choice). Both sides are resolved so a differently spelled or symlinked
+    path to the live database never counts as a dev one."""
+    return Path(path).expanduser().resolve() != live_database().expanduser().resolve()
+
+
 class ViewerServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, store, token=None, port=0, public_origin=None):
         self.store = store
+        # The page marks every view DEV when the database is not the live one.
+        self.database = str(store.path)
+        self.dev = is_dev_database(store.path)
         # Besides loopback, requests may arrive under one published name (see
         # public_origin_rule); every other Host or Origin is still refused.
         self.public_origin, self.public_hosts = (
@@ -179,7 +189,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if not self.allowed(self.path.startswith("/api/")):
             return
         if self.path == "/api/ping":
-            self.reply(200, {"service": "task-mcp-viewer"})
+            self.reply(
+                200,
+                {
+                    "service": "task-mcp-viewer",
+                    "database": self.server.database,
+                    "dev": self.server.dev,
+                },
+            )
             return
         assets = {
             "/": ("index.html", "text/html; charset=utf-8"),

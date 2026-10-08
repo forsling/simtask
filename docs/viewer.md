@@ -9,7 +9,10 @@ and signs off nothing. `--db /absolute/path/tasks.sqlite3` selects a database at
 launch; the default follows `TASK_MCP_DB`, then `XDG_DATA_HOME`, then the normal
 user data directory. The browser cannot select another database. The MCP
 `open_task_viewer` tool explicitly starts/reuses the same viewer for its Store
-and returns the link. No browser is launched automatically.
+and returns the link. No browser is launched automatically. On any database other
+than the live one (a `./run.sh --dev` copy, `TASK_MCP_DB` or `--db`) the
+header shows a `DEV` badge on every view, with the database path in its tooltip,
+and the tab title starts with `[DEV]`.
 
 ## Location URLs
 
